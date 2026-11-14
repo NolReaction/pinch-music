@@ -35,7 +35,6 @@ kotlin {
         }
         androidMain.dependencies {
             implementation("androidx.activity:activity-compose:1.11.0")
-            implementation("androidx.media3:media3-exoplayer:1.8.0")
         }
         androidUnitTest.dependencies {
             implementation(kotlin("test-junit"))
@@ -50,8 +49,8 @@ android {
         applicationId = "music.pinch"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
     }
     sourceSets["main"].assets.srcDir(rootProject.file("media"))
     sourceSets["test"].resources.srcDir("src/androidUnitTest/resources")

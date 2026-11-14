@@ -1,7 +1,9 @@
 package music.pinch
 
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import music.pinch.core.Chart
+import music.pinch.core.Note
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -9,27 +11,27 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class SessionTest {
-    private val song = """
-        {"schemaVersion":1,"id":"test","title":"Тест","bpm":120,"durationMs":4000,"leadInMs":2000,
-         "timeSignature":{"numerator":4,"denominator":4},
-         "video":{"file":"demo-ball-muted.mp4","fps":60,"width":540,"height":960,"chartTimeAtVideoZeroMs":0},
-         "audio":{"mode":"oneShotSamples","sampleDirectory":"samples","sampleRateHz":48000},
-         "notes":[{"id":"a","atMs":2000,"midi":72,"durationMs":250,"velocity":0.5},
-                  {"id":"b","atMs":2500,"midi":76,"durationMs":250,"velocity":0.8}]}
-    """.trimIndent()
+    private val song = Song("test", "Тест", "Test", Chart("Тест", 120, 4000, listOf(
+        Note("a", 2000, 72, 250, .5f), Note("b", 2500, 76, 250, .8f)
+    )))
+    private val scope = CoroutineScope(Dispatchers.Unconfined)
+    private fun session(host: Host) = Session(host, scope, listOf(song, Song("custom","Другой трек","Test")))
 
-    private class Host(var json: String) : Platform {
-        override fun chartJson() = json
+    private class Host : Platform {
+        val values = mutableMapOf("pace" to "Standard")
+        override fun readValue(key: String) = values[key]
+        override fun writeValue(key: String, value: String) { values[key] = value }
+        override suspend fun pickAudio(): FloatArray? = null
+        val bestScore: Int? get() = values["record.test.Standard.bundled"]?.toInt()
         override var volume = .5f
         override var haptics = false
-        override var bestScore: Int? = null
         override fun feedback() {}
         val players = mutableListOf<Player>()
         val player get() = players.last()
-        override fun newMedia(preview: Boolean) = Player(preview).also(players::add)
+        override fun newMedia(durationMs: Long, instrument: Instrument) = Player().also(players::add)
     }
 
-    private class Player(val preview: Boolean) : GameMedia {
+    private class Player : GameMedia {
         var status = Playback(ready = false, playing = false, ended = false, positionMs = 0, observedUptimeMs = 10_000)
         val sounds = mutableListOf<Pair<Int, Float>>()
         var prepared = emptySet<Int>()
@@ -37,12 +39,10 @@ class SessionTest {
         var starts = 0
         var closes = 0
         override fun prepare(pitches: Set<Int>) { prepared = pitches }
-        @Composable override fun Video(modifier: Modifier) {}
         override fun snapshot() = status
         override fun play() { starts++; status = status.copy(playing = true) }
         override fun pause() { status = status.copy(playing = false) }
         override fun note(midi: Int, gain: Float) { sounds += midi to gain }
-        override fun setPreviewVolume(volume: Float) {}
         override fun close() { closes++ }
 
         fun tick(position: Long, uptime: Long = 10_000 + position) {
@@ -55,8 +55,8 @@ class SessionTest {
 
     @Test
     fun loadedChartConnectsTimestampedTouchToTheCorrectVoiceAndRecord() {
-        val host = Host(song)
-        val session = Session(host)
+        val host = Host()
+        val session = session(host)
         session.start(false)
         val player = host.player
         assertEquals(setOf(72, 76), player.prepared)
@@ -86,8 +86,8 @@ class SessionTest {
 
     @Test
     fun backgroundRequiresResumeAndAFrozenCountdown() {
-        val host = Host(song)
-        val session = Session(host)
+        val host = Host()
+        val session = session(host)
         session.start(false)
         val player = host.player
         player.ready()
@@ -117,21 +117,23 @@ class SessionTest {
 
     @Test
     fun silenceAndPreviewAndRestartHaveSeparateLifetimes() {
-        val host = Host(song)
-        val session = Session(host)
+        val host = Host()
+        val session = session(host)
         session.start(true)
         val preview = host.player
-        assertTrue(preview.preview)
-        assertTrue(preview.prepared.isEmpty())
+        assertTrue(session.state.preview)
+        assertEquals(setOf(72, 76), preview.prepared)
         preview.ready()
         session.observe()
         preview.tick(2_000)
+        session.observe()
+        session.observe()
         session.tap(12_000)
         preview.end()
         session.observe()
         assertEquals(Scene.Menu, session.state.scene)
         assertNull(host.bestScore)
-        assertTrue(preview.sounds.isEmpty())
+        assertEquals(listOf(72 to .25f), preview.sounds)
         session.start(false)
         repeat(5) {
             val previous = host.player
@@ -145,13 +147,13 @@ class SessionTest {
         session.observe()
         assertEquals(2, session.state.stats?.missed)
         assertEquals(0, host.bestScore)
-        assertTrue(host.players.all { it.sounds.isEmpty() && it.closes == 1 })
+        assertTrue(host.players.drop(1).all { it.sounds.isEmpty() && it.closes == 1 })
     }
 
     @Test
     fun interruptionDuringLoadingRequiresAnExplicitResumeAndIgnoresObsoleteCallbacks() {
-        val host = Host(song)
-        val session = Session(host)
+        val host = Host()
+        val session = session(host)
         session.start(false)
         val obsoleteCallback = host.player.onInterrupted!!
         session.restart()
@@ -173,8 +175,8 @@ class SessionTest {
 
     @Test
     fun slowNativePlaybackUsesMediaPositionEvenWhenTheWallClockCrossesBothNotes() {
-        val host = Host(song)
-        val session = Session(host)
+        val host = Host()
+        val session = session(host)
         session.start(false)
         val player = host.player
         player.ready()
@@ -193,8 +195,8 @@ class SessionTest {
 
     @Test
     fun playerClockCanCatchUpAfterResumeWithoutANativeSeek() {
-        val host = Host(song)
-        val session = Session(host)
+        val host = Host()
+        val session = session(host)
         session.start(false)
         val player = host.player
         player.ready()
@@ -224,8 +226,8 @@ class SessionTest {
 
     @Test
     fun nativeDiscontinuityDiscardsThePartialRunAndAllowsRetry() {
-        val host = Host(song)
-        val session = Session(host)
+        val host = Host()
+        val session = session(host)
         session.start(false)
         val player = host.player
         player.ready()
@@ -251,8 +253,8 @@ class SessionTest {
 
     @Test
     fun playbackFailureClearsMediaAndDoesNotStoreAPartialScore() {
-        val host = Host(song)
-        val session = Session(host)
+        val host = Host()
+        val session = session(host)
         session.start(false)
         host.player.ready()
         session.observe()
@@ -267,14 +269,14 @@ class SessionTest {
     }
 
     @Test
-    fun invalidChartAndSlowPreparationBothHaveAnExit() {
-        val host = Host("{}")
-        val session = Session(host)
+    fun unavailableSongAndSlowPreparationBothHaveAnExit() {
+        val host = Host()
+        val session = session(host)
+        session.selectSong("custom")
         session.start(false)
-        assertEquals(Scene.Error, session.state.scene)
+        assertEquals(Scene.Menu, session.state.scene)
         assertTrue(host.players.isEmpty())
-        session.menu()
-        host.json = song
+        session.selectSong("test")
         session.start(false)
         session.observe()
         host.player.tick(0, 25_001)
@@ -283,5 +285,40 @@ class SessionTest {
         assertEquals(1, host.player.closes)
         session.menu()
         assertEquals(Scene.Menu, session.state.scene)
+    }
+
+    @Test
+    fun relaxedHasRoomBetweenJumpsAndItsOwnRecord() {
+        val host = Host()
+        val session = session(host)
+        session.selectPace(Pace.Relaxed)
+        val chart = requireNotNull(session.state.chart)
+        assertTrue(chart.notes.zipWithNext().all { (a,b) -> b.atMs - a.atMs >= 740 })
+        session.start(false)
+        host.player.ready()
+        session.observe()
+        host.player.tick(2155)
+        session.tap(12155)
+        assertEquals(1, session.state.stats?.okay)
+        host.player.end()
+        session.observe()
+        assertEquals(20000, session.state.bestScore)
+        session.menu()
+        session.selectPace(Pace.Standard)
+        assertNull(session.state.bestScore)
+    }
+
+    @Test
+    fun importsRoundTripAndSurviveReopeningTheApp() {
+        val host = Host()
+        host.writeValue("chart.custom", encodeChart(requireNotNull(song.bundled)))
+        val session = session(host)
+        session.selectSong("custom")
+        session.selectInstrument(Instrument.Mallet)
+        val reopened = session(host)
+        assertEquals("custom", reopened.state.selectedSong.id)
+        assertEquals(Instrument.Mallet, reopened.state.instrument)
+        assertTrue("custom" in reopened.state.availableIds)
+        assertEquals(listOf(72,76), reopened.state.chart!!.notes.map { it.midi })
     }
 }

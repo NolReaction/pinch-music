@@ -1,5 +1,6 @@
 package music.pinch
 
+import kotlinx.coroutines.*
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -9,36 +10,113 @@ import music.pinch.core.RhythmGame
 import music.pinch.core.TapResult
 
 /** Session commands, native events and frame observations all run on the UI thread. */
-internal class Session(private val platform: Platform) : Actions {
-    var state by mutableStateOf(ScreenState(bestScore = platform.bestScore, volume = platform.volume, haptics = platform.haptics))
+internal class Session(
+    private val platform: Platform,
+    private val scope: CoroutineScope,
+    songs: List<Song> = songLibrary,
+) : Actions {
+    private val imports = songs.mapNotNull { song ->
+        platform.readValue("chart.${song.id}")?.takeIf { it.isNotBlank() }?.let { raw ->
+            runCatching { decodeChart(raw, song.title) }.getOrNull()?.let { song.id to it }
+        }
+    }.toMap().toMutableMap()
+    private val initialSong = songs.find { it.id == platform.readValue("selected.song") }
+        ?: songs.first { it.bundled != null || it.id in imports }
+    var state by mutableStateOf(ScreenState(songs = songs, selectedSong = initialSong,
+        instrument = Instrument.entries.find { it.name == platform.readValue("instrument") } ?: Instrument.Piano,
+        pace = Pace.entries.find { it.name == platform.readValue("pace") } ?: Pace.Relaxed,
+        volume = platform.volume, haptics = platform.haptics))
         private set
     var media by mutableStateOf<GameMedia?>(null)
         private set
-    private var chart: Chart? = null
     private var game: RhythmGame? = null
     private var hasPlayed = false
     private var playRequestedAt = 0L
     private var waitingSince: Long? = null
     private var resumeAt: Long? = null
     private var reactionUntil = 0L
+    private var nextPreviewNote = 0
+    private var recordKey = ""
+
+    init { refreshSong() }
+
+    private fun refreshSong() {
+        val song = state.selectedSong
+        val imported = imports[song.id]
+        val chart = (imported ?: song.bundled)?.atPace(state.pace)
+        // A new arrangement of the same song has its own record.
+        val arrangement = imported?.let { encodeChart(it).hashCode().toString() } ?: "bundled"
+        recordKey = "record.${song.id}.${state.pace.name}.$arrangement"
+        state = state.copy(chart = chart, importedIds = imports.keys.toSet(), bestScore = platform.readValue(recordKey)?.toIntOrNull(),
+            availableIds = state.songs.filter { it.bundled != null || it.id in imports }.map { it.id }.toSet())
+    }
+
+    override fun selectSong(id: String) {
+        if (state.scene != Scene.Menu || state.importing) return
+        val song = state.songs.find { it.id == id } ?: return
+        platform.writeValue("selected.song", id)
+        state = state.copy(selectedSong = song, notice = null)
+        refreshSong()
+    }
+
+    override fun selectInstrument(value: Instrument) {
+        if (state.scene != Scene.Menu) return
+        platform.writeValue("instrument", value.name)
+        state = state.copy(instrument = value)
+    }
+
+    override fun selectPace(value: Pace) {
+        if (state.scene != Scene.Menu) return
+        platform.writeValue("pace", value.name)
+        state = state.copy(pace = value)
+        refreshSong()
+    }
+
+    override fun restoreBundled() {
+        val song = state.selectedSong
+        if (state.scene != Scene.Menu || state.importing || song.bundled == null || song.id !in imports) return
+        platform.writeValue("chart.${song.id}", "")
+        imports.remove(song.id)
+        refreshSong()
+    }
+
+    override fun importAudio() {
+        if (state.importing || state.scene != Scene.Menu) return
+        val song = state.selectedSong
+        state = state.copy(importing = true, notice = null)
+        scope.launch {
+            try {
+                val pcm = platform.pickAudio() ?: return@launch
+                val chart = withContext(Dispatchers.Default) { extractLeadChart(pcm, 11025, song.title) }
+                platform.writeValue("chart.${song.id}", encodeChart(chart))
+                imports[song.id] = chart
+                refreshSong()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                state = state.copy(notice = e.message ?: "Не удалось разобрать аудиофайл.")
+            } finally {
+                state = state.copy(importing = false)
+            }
+        }
+    }
+
+    override fun dismissNotice() { state = state.copy(notice = null) }
 
     override fun start(preview: Boolean) {
+        val song = state.chart ?: return
+        if (state.importing) return
         close()
-        state = ScreenState(scene = Scene.Loading, preview = preview, bestScore = platform.bestScore,
-            volume = platform.volume, haptics = platform.haptics)
+        game = if (preview) null else RhythmGame(song, forgiving = state.pace == Pace.Relaxed)
+        state = state.copy(scene = Scene.Loading, preview = preview, positionMs = 0, notice = null,
+            countdown = null, reaction = null, error = null, newRecord = false, stats = game?.stats)
         try {
-            val song = decodeDemoChart(platform.chartJson())
-            chart = song
-            game = if (preview) null else RhythmGame(song)
-            state = state.copy(title = song.title, durationMs = song.durationMs, bpm = song.bpm,
-                lastHitWindowMs = song.notes.last().atMs + 120, stats = game?.stats)
-            val player = platform.newMedia(preview)
+            val player = platform.newMedia(song.durationMs, state.instrument)
             media = player
             player.onInterrupted = { if (media === player) pause() }
-            player.prepare(if (preview) emptySet() else song.notes.map { it.midi }.toSet())
-            player.setPreviewVolume(state.volume)
+            player.prepare(song.notes.map { it.midi }.toSet())
         } catch (e: Exception) {
-            fail("Не удалось открыть демо. " + e.message.orEmpty())
+            fail("Не удалось начать игру. " + e.message.orEmpty())
         }
     }
 
@@ -48,14 +126,14 @@ internal class Session(private val platform: Platform) : Actions {
         val player = media ?: return
         val snap = player.snapshot()
         if (snap.error != null) {
-            fail("Не удалось воспроизвести демо. " + snap.error)
+            fail("Не удалось воспроизвести мелодию. " + snap.error)
             return
         }
         when (state.scene) {
             Scene.Loading, Scene.Resuming -> {
                 if (!snap.ready) {
                     val start = waitingSince ?: snap.observedUptimeMs.also { waitingSince = it }
-                    if (snap.observedUptimeMs - start >= 15_000) fail("Плеер не смог подготовить видео и звук.")
+                    if (snap.observedUptimeMs - start >= 15_000) fail("Не удалось подготовить звуки инструмента.")
                 } else if (state.scene == Scene.Loading) {
                     beginPlayback(player, snap)
                 } else {
@@ -75,15 +153,19 @@ internal class Session(private val platform: Platform) : Actions {
                         // Players can report a stopped clock for a frame just before their end event.
                         val since = waitingSince ?: snap.observedUptimeMs.also { waitingSince = it }
                         if (snap.observedUptimeMs - since > 160) pause()
-                    } else if (snap.observedUptimeMs - playRequestedAt > 5000) fail("Видеоплеер не начал воспроизведение.")
+                    } else if (snap.observedUptimeMs - playRequestedAt > 5000) fail("Не удалось запустить часы воспроизведения.")
                     return
                 }
                 waitingSince = null
-                // Decode stalls and clock corrections are normal. Only the native player
-                // can identify a seek; it reports a discontinuity through snapshot.error.
                 hasPlayed = true
-                val song = chart ?: return
+                val song = state.chart ?: return
                 val now = snap.positionMs.coerceIn(0L, song.durationMs)
+                if (state.preview) {
+                    while (nextPreviewNote < song.notes.size && song.notes[nextPreviewNote].atMs <= now) {
+                        val note = song.notes[nextPreviewNote++]
+                        if (now - note.atMs <= 180) player.note(note.midi, note.velocity * state.volume)
+                    }
+                }
                 // A small delivery margin lets a frame and a queued input of the same vsync settle.
                 val missed = game?.advance(now - 32) ?: 0
                 val leadRemaining = song.notes.first().atMs - now
@@ -157,23 +239,23 @@ internal class Session(private val platform: Platform) : Actions {
     private fun finish() {
         if (state.preview) { menu(); return }
         val final = game?.finish() ?: return
-        val previous = platform.bestScore
+        val previous = state.bestScore
         val record = previous == null || final.score > previous
-        if (record) platform.bestScore = final.score
+        if (record) platform.writeValue(recordKey, final.score.toString())
         close()
         state = state.copy(scene = Scene.Result, positionMs = state.durationMs, reaction = null,
-            countdown = null, stats = final, bestScore = platform.bestScore, newRecord = record)
+            countdown = null, stats = final, bestScore = if (record) final.score else previous, newRecord = record)
     }
 
     override fun menu() {
         close()
-        state = ScreenState(volume = platform.volume, haptics = platform.haptics, bestScore = platform.bestScore)
+        state = state.copy(scene = Scene.Menu, positionMs = 0, preview = false, stats = null,
+            error = null, countdown = null, reaction = null, newRecord = false)
     }
 
     override fun volume(value: Float) {
         platform.volume = value.coerceIn(0f, 1f)
         state = state.copy(volume = platform.volume)
-        media?.setPreviewVolume(state.volume)
     }
 
     override fun haptics(value: Boolean) {
@@ -192,7 +274,7 @@ internal class Session(private val platform: Platform) : Actions {
         media = null
         old?.onInterrupted = null
         old?.close()
-        chart = null
+        nextPreviewNote = 0
         game = null
         waitingSince = null
         resumeAt = null

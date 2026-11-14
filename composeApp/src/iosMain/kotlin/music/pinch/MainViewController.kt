@@ -2,19 +2,15 @@
 
 package music.pinch
 
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.viewinterop.UIKitView
 import androidx.compose.ui.window.ComposeUIViewController
+import platform.Foundation.NSProcessInfo
 import platform.Foundation.NSUserDefaults
 import platform.UIKit.UISelectionFeedbackGenerator
-import platform.UIKit.UIView
 import platform.UIKit.UIViewController
 
-// These three interfaces are the Objective-C boundary for the native AVFoundation implementation.
 interface AppleMediaFactoryProtocol {
-    fun readChart(): String?
-    fun createMedia(preview: Boolean, observer: AppleInterruptListener): AppleMediaSession
+    fun createMedia(instrument: String, observer: AppleInterruptListener): AppleMediaSession
+    fun pickAudio(listener: AppleAudioImportListener)
 }
 
 interface AppleInterruptListener {
@@ -22,14 +18,12 @@ interface AppleInterruptListener {
 }
 
 interface AppleMediaSession {
-    val videoView: UIView
-    fun includeSample(midi: Int)
+    fun includeSample(midi: Int, root: Int)
     fun prepare()
-    fun snapshot(): Playback
-    fun play()
-    fun pause()
+    val failure: String?
+    fun activate(): Boolean
+    fun silence()
     fun note(midi: Int, gain: Float)
-    fun setPreviewVolume(volume: Float)
     fun close()
 }
 
@@ -42,9 +36,9 @@ private class IosPlatform(private val factory: AppleMediaFactoryProtocol) : Plat
     private val defaults = NSUserDefaults.standardUserDefaults
     private val selectionFeedback = UISelectionFeedbackGenerator()
 
-    override fun chartJson(): String = requireNotNull(factory.readChart()) {
-        "Не удалось прочитать media/demo-chart.json."
-    }
+    override suspend fun pickAudio() = pickLocalSong(factory::pickAudio)
+    override fun readValue(key: String): String? = defaults.stringForKey(key)
+    override fun writeValue(key: String, value: String) = defaults.setObject(value, forKey = key)
 
     override var volume: Float
         get() = if (defaults.objectForKey("volume") == null) 0.8f else defaults.floatForKey("volume")
@@ -54,51 +48,51 @@ private class IosPlatform(private val factory: AppleMediaFactoryProtocol) : Plat
         get() = defaults.boolForKey("haptics")
         set(value) = defaults.setBool(value, forKey = "haptics")
 
-    override var bestScore: Int?
-        get() = if (defaults.objectForKey("bestScore") == null) null else defaults.integerForKey("bestScore").toInt()
-        set(value) {
-            if (value == null) defaults.removeObjectForKey("bestScore")
-            else defaults.setInteger(value.toLong(), forKey = "bestScore")
-        }
-
     override fun feedback() = selectionFeedback.selectionChanged()
-    override fun newMedia(preview: Boolean): GameMedia = IosMedia(factory, preview)
+    override fun newMedia(durationMs: Long, instrument: Instrument): GameMedia =
+        IosMedia(factory, durationMs, instrument)
 }
 
-private class IosMedia(factory: AppleMediaFactoryProtocol, private val preview: Boolean) :
+private class IosMedia(factory: AppleMediaFactoryProtocol, durationMs: Long, instrument: Instrument) :
     GameMedia, AppleInterruptListener {
-    private val session = factory.createMedia(preview, this)
-    private var pendingInterruption = false
+    private val clock = SessionClock(durationMs)
+    private val session = factory.createMedia(instrument.name.lowercase(), this)
+    private var ready = false
+    private var closed = false
     override var onInterrupted: (() -> Unit)? = null
-        set(value) {
-            field = value
-            if (pendingInterruption && value != null) {
-                pendingInterruption = false
-                value()
-            }
-        }
+
+    private fun nowMs() = (NSProcessInfo.processInfo.systemUptime * 1_000).toLong()
 
     override fun interrupted() {
-        val listener = onInterrupted
-        if (listener == null) pendingInterruption = true else listener()
+        if (closed) return
+        pause()
+        onInterrupted?.invoke()
     }
 
     override fun prepare(pitches: Set<Int>) {
-        if (!preview) pitches.forEach(session::includeSample)
+        if (ready || closed) return
+        for (pitch in pitches) session.includeSample(pitch, instrumentRoot(pitch))
         session.prepare()
+        ready = session.failure == null
     }
 
-    @Composable
-    override fun Video(modifier: Modifier) {
-        UIKitView(factory = { session.videoView }, modifier = modifier)
+    override fun snapshot() = clock.snapshot(nowMs(), ready && !closed, session.failure)
+    override fun play() {
+        if (ready && !closed && session.activate()) clock.play(nowMs())
     }
 
-    override fun snapshot() = session.snapshot()
-    override fun play() = session.play()
-    override fun pause() = session.pause()
-    override fun note(midi: Int, gain: Float) = session.note(midi, gain)
-    override fun setPreviewVolume(volume: Float) = session.setPreviewVolume(volume)
+    override fun pause() {
+        clock.pause(nowMs())
+        session.silence()
+    }
+
+    override fun note(midi: Int, gain: Float) {
+        if (ready && !closed && snapshot().playing) session.note(midi, gain)
+    }
+
     override fun close() {
+        if (closed) return
+        closed = true
         onInterrupted = null
         session.close()
     }

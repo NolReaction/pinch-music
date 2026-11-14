@@ -40,7 +40,8 @@ data class GameStats(
  * A video frame can arrive before a slightly older touch: keep frame-only misses provisional
  * until the next touch, so crossing a window during dispatch does not silence a valid note.
  */
-class RhythmGame(chart: Chart) {
+class RhythmGame(chart: Chart, private val forgiving: Boolean = false) {
+    private val windowMs = if (forgiving) 165L else WINDOW_MS
     private val notes = chart.notes.toList()
     private val hit = BooleanArray(notes.size)
     private enum class Phase { Playing, Paused, Finished }
@@ -63,7 +64,7 @@ class RhythmGame(chart: Chart) {
 
     fun tap(positionMs: Long): TapResult {
         if (phase != Phase.Playing || positionMs < 0 || positionMs < lastTouchMs) return TapResult.Ignored
-        if (positionMs - notes.first().atMs < -WINDOW_MS || positionMs - notes.last().atMs > WINDOW_MS) {
+        if (positionMs - notes.first().atMs < -windowMs || positionMs - notes.last().atMs > windowMs) {
             advance(positionMs)
             return TapResult.Ignored
         }
@@ -78,7 +79,7 @@ class RhythmGame(chart: Chart) {
         for (index in firstUnexpired until notes.size) {
             val note = notes[index]
             val error = positionMs - note.atMs
-            if (error < -WINDOW_MS) break
+            if (error < -windowMs) break
             if (hit[index]) continue
             val distance = abs(error)
             if (distance < nearestDistance ||
@@ -95,7 +96,11 @@ class RhythmGame(chart: Chart) {
         }
         val note = notes[nearestIndex]
         val error = positionMs - note.atMs
-        val grade = requireNotNull(gradeFor(error))
+        val grade = if (forgiving) when (abs(error)) {
+            in 0..65 -> Grade.Perfect
+            in 66..110 -> Grade.Good
+            else -> Grade.Okay
+        } else requireNotNull(gradeFor(error))
         hit[nearestIndex] = true
         val combo = committed.combo + 1
         committed = committed.copy(
@@ -111,7 +116,7 @@ class RhythmGame(chart: Chart) {
 
     private fun expiryEnd(positionMs: Long): Int {
         var end = firstUnexpired
-        while (end < notes.size && positionMs - notes[end].atMs > WINDOW_MS) end++
+        while (end < notes.size && positionMs - notes[end].atMs > windowMs) end++
         return end
     }
 

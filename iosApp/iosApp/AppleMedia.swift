@@ -4,177 +4,73 @@ import UIKit
 
 @MainActor
 final class AppleMediaFactory: NSObject, @preconcurrency AppleMediaFactoryProtocol {
-    func readChart() -> String? {
-        guard let url = resource("demo-chart", "json") else { return nil }
-        return try? String(contentsOf: url, encoding: .utf8)
+    private let songImport = AppleSongImport()
+
+    func pickAudio(listener: AppleAudioImportListener) { songImport.pick(listener) }
+
+    func createMedia(instrument: String, observer: AppleInterruptListener) -> AppleMediaSession {
+        NativeMedia(instrument: instrument, observer: observer)
     }
-
-    func createMedia(preview: Bool, observer: AppleInterruptListener) -> AppleMediaSession {
-        NativeMedia(preview: preview, observer: observer)
-    }
 }
 
-private func resource(_ name: String, _ ext: String, folder: String = "media") -> URL? {
-    Bundle.main.url(forResource: name, withExtension: ext, subdirectory: folder)
-}
-
-private final class PlayerSurface: UIView {
-    override class var layerClass: AnyClass { AVPlayerLayer.self }
-    var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
-}
-
-private struct MediaFailure: LocalizedError {
+private struct AudioFailure: LocalizedError {
     let errorDescription: String?
     init(_ message: String) { errorDescription = message }
 }
 
-// The shared Kotlin controller calls this object on the main thread. Notification delivery
-// is also serialized there, including the audio session's interruption and route callbacks.
+// The shared controller and UIKit notifications access the audio session on the main actor.
 @MainActor
 private final class NativeMedia: NSObject, @preconcurrency AppleMediaSession {
-    private let preview: Bool
+    private let instrument: String
     private var observer: AppleInterruptListener?
-    private let surface = PlayerSurface()
-    private let player = AVPlayer()
     private let audioSession = AVAudioSession.sharedInstance()
     private var voices: SampleVoices?
-    private var pitches = Set<Int32>()
+    private var roots = [Int32: Int32]()
     private var tokens = [NSObjectProtocol]()
-    private var prepared = false
-    private var ready = false
-    private var ended = false
-    private var playbackRequested = false
-    private var lastPlayingSample: (position: Double, uptime: Double)?
-    private var closed = false
-    private var prerollRequested = false
     private var sessionWasActivated = false
-    private var failure: String?
-    private var previewVolume: Float = 0.8
+    private var closed = false
+    private(set) var failure: String?
 
-    var videoView: UIView { surface }
-
-    init(preview: Bool, observer: AppleInterruptListener) {
-        self.preview = preview
+    init(instrument: String, observer: AppleInterruptListener) {
+        self.instrument = instrument
         self.observer = observer
         super.init()
-        surface.backgroundColor = .black
-        surface.isUserInteractionEnabled = false
-        surface.playerLayer.videoGravity = .resizeAspect
-        surface.playerLayer.player = player
-        player.isMuted = !preview
-        player.actionAtItemEnd = .pause
         observeSession()
     }
 
-    func includeSample(midi: Int32) { pitches.insert(midi) }
+    func includeSample(midi: Int32, root: Int32) { roots[midi] = root }
 
     func prepare() {
-        guard !closed, !prepared, failure == nil else { return }
-        let filename = preview ? "demo-preview" : "demo-ball-muted"
+        guard !closed, voices == nil, failure == nil else { return }
         do {
-            guard let url = resource(filename, "mp4") else {
-                throw MediaFailure("Видео \(filename).mp4 отсутствует в приложении.")
-            }
-            let item = AVPlayerItem(url: url)
-            observe(AVPlayerItem.didPlayToEndTimeNotification, object: item) { media, _ in
-                media.ended = true
-            }
-            observe(AVPlayerItem.failedToPlayToEndTimeNotification, object: item) { media, notification in
-                let error = notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
-                media.fail(error?.localizedDescription ?? "Не удалось дочитать видео.")
-            }
-            observe(AVPlayerItem.timeJumpedNotification, object: item) { media, _ in
-                media.checkTimeJump()
-            }
-            observe(AVPlayerItem.playbackStalledNotification, object: item) { media, _ in
-                if media.ready { media.interrupt() }
-            }
-            player.replaceCurrentItem(with: item)
-            player.volume = previewVolume
-
-            // No audio-session activation while the application is in the background. Decoding
-            // the small bundled PCM bank has no dependency on a currently connected output.
-            if !preview { voices = try SampleVoices(pitches: pitches) }
-            if UIApplication.shared.applicationState == .active {
-                try activateAudio()
-            } else {
-                interrupt()
-            }
-            prepared = true
+            voices = try SampleVoices(instrument: instrument, roots: roots)
+            if UIApplication.shared.applicationState != .active { interrupt() }
         } catch {
-            fail(error.localizedDescription)
+            failure = error.localizedDescription
         }
     }
 
-    func snapshot() -> Playback {
-        let item = player.currentItem
-        if failure == nil, item?.status == .failed || player.status == .failed {
-            fail(item?.error?.localizedDescription ?? player.error?.localizedDescription ?? "Ошибка декодирования видео.")
-        }
-
-        if prepared, !ready, failure == nil, item?.status == .readyToPlay {
-            if surface.playerLayer.isReadyForDisplay {
-                ready = true
-            } else if !prerollRequested, player.status == .readyToPlay,
-                      UIApplication.shared.applicationState == .active {
-                // Decode the first frame without advancing the timeline.
-                prerollRequested = true
-                player.preroll(atRate: 1) { _ in }
-            }
-        }
-
-        let seconds = player.currentTime().seconds
-        let uptime = ProcessInfo.processInfo.systemUptime
-        let playing = player.timeControlStatus == .playing && player.rate > 0
-        if playbackRequested, playing, seconds.isFinite {
-            lastPlayingSample = (position: seconds, uptime: uptime)
-        } else {
-            lastPlayingSample = nil
-        }
-        // AVPlayer can report a paused rate just before the item-end notification is delivered.
-        if ready, playbackRequested, player.timeControlStatus == .paused,
-           let duration = item?.duration.seconds, duration.isFinite, duration > 0,
-           seconds.isFinite, seconds >= duration - 0.001 {
-            ended = true
-        }
-        return Playback(
-            ready: ready, playing: playing,
-            ended: ended, positionMs: seconds.isFinite ? max(0, Int64((seconds * 1_000).rounded())) : 0,
-            observedUptimeMs: Int64(uptime * 1_000), error: failure
-        )
-    }
-
-    func play() {
-        guard ready, !ended, !closed, failure == nil else { return }
+    func activate() -> Bool {
+        guard !closed, let voices = voices, failure == nil else { return false }
         guard UIApplication.shared.applicationState == .active else {
             interrupt()
-            return
+            return false
         }
         do {
-            try activateAudio()
-            playbackRequested = true
-            player.play()
+            if audioSession.category != .playback { try audioSession.setCategory(.playback, mode: .default) }
+            try? audioSession.setPreferredIOBufferDuration(0.005)
+            try audioSession.setActive(true)
+            sessionWasActivated = true
+            try voices.start()
+            return true
         } catch {
-            fail(error.localizedDescription)
+            failure = error.localizedDescription
+            return false
         }
     }
 
-    func pause() {
-        playbackRequested = false
-        lastPlayingSample = nil
-        player.pause()
-        voices?.silence()
-    }
-
-    func note(midi: Int32, gain: Float) {
-        guard !closed, !preview, player.timeControlStatus == .playing else { return }
-        voices?.play(midi, gain: gain)
-    }
-
-    func setPreviewVolume(volume: Float) {
-        previewVolume = min(1, max(0, volume))
-        if preview { player.volume = previewVolume }
-    }
+    func silence() { voices?.silence() }
+    func note(midi: Int32, gain: Float) { voices?.play(midi, gain: gain) }
 
     func close() {
         guard !closed else { return }
@@ -182,10 +78,6 @@ private final class NativeMedia: NSObject, @preconcurrency AppleMediaSession {
         observer = nil
         tokens.forEach { NotificationCenter.default.removeObserver($0) }
         tokens.removeAll()
-        pause()
-        player.cancelPendingPrerolls()
-        player.replaceCurrentItem(with: nil)
-        surface.playerLayer.player = nil
         voices?.shutdown()
         voices = nil
         if sessionWasActivated {
@@ -193,41 +85,9 @@ private final class NativeMedia: NSObject, @preconcurrency AppleMediaSession {
         }
     }
 
-    private func activateAudio() throws {
-        if audioSession.category != .playback {
-            try audioSession.setCategory(.playback, mode: .default)
-        }
-        // A hardware route may ignore this preferred duration.
-        try? audioSession.setPreferredIOBufferDuration(0.005)
-        try audioSession.setActive(true)
-        sessionWasActivated = true
-        try voices?.start()
-    }
-
-    private func checkTimeJump() {
-        guard !preview, ready, playbackRequested, !ended, failure == nil,
-              player.timeControlStatus == .playing, player.rate == 1,
-              let previous = lastPlayingSample else { return }
-        let position = player.currentTime().seconds
-        guard position.isFinite else { return }
-        // The notification contains neither endpoint. Accept any forward progress physically
-        // possible since the last observation (including a stall) and one judgement window
-        // of timestamp correction. Only a notified jump outside that envelope invalidates play.
-        let elapsed = max(0, ProcessInfo.processInfo.systemUptime - previous.uptime)
-        let delta = position - previous.position
-        if delta < -0.120 || delta > elapsed + 0.120 {
-            fail("Позиция видео изменилась скачком. Начните попытку заново.")
-        }
-    }
-
-    private func fail(_ message: String) {
-        if failure == nil { failure = message }
-        pause()
-    }
-
     private func interrupt() {
         guard !closed else { return }
-        pause()
+        silence()
         observer?.interrupted()
     }
 
@@ -254,49 +114,70 @@ private final class NativeMedia: NSObject, @preconcurrency AppleMediaSession {
                   let reason = AVAudioSession.RouteChangeReason(rawValue: raw) else { return }
             let previous = notification.userInfo?[AVAudioSessionRouteChangePreviousRouteKey] as? AVAudioSessionRouteDescription
             let changed = previous.map { $0.outputs.map(\.uid) != media.audioSession.currentRoute.outputs.map(\.uid) } ?? false
-            if reason == .oldDeviceUnavailable || reason == .newDeviceAvailable || changed {
+            if reason == .oldDeviceUnavailable || reason == .newDeviceAvailable || changed { media.interrupt() }
+        }
+        observe(.AVAudioEngineConfigurationChange) { media, notification in
+            if let changed = notification.object as? AVAudioEngine, changed === media.voices?.engine, !changed.isRunning {
                 media.interrupt()
             }
         }
-        observe(AVAudioSession.mediaServicesWereResetNotification, object: nil) { media, _ in
-            media.fail("Система перезапустила звук. Начните попытку заново.")
+        observe(AVAudioSession.mediaServicesWereResetNotification) { media, _ in
+            media.failure = "Система перезапустила звук. Начните попытку заново."
+            media.silence()
         }
     }
 }
 
-// Each WAV is decoded once per attempt. Eight independent nodes preserve the decay of
-// neighboring hits, including two hits that use the very same buffer.
 private final class SampleVoices {
-    private let engine = AVAudioEngine()
+    let engine = AVAudioEngine()
     private var buffers = [Int32: AVAudioPCMBuffer]()
     private var nodes = [AVAudioPlayerNode]()
     private var next = 0
 
-    init(pitches: Set<Int32>) throws {
-        for pitch in pitches {
-            guard let url = resource("midi-\(pitch)", "wav", folder: "media/samples") else {
-                throw MediaFailure("Отсутствует сэмпл MIDI \(pitch).")
+    init(instrument: String, roots: [Int32: Int32]) throws {
+        var source = [Int32: AVAudioPCMBuffer]()
+        for root in Set(roots.values) {
+            let folder = "media/instruments/\(instrument)"
+            guard let url = Bundle.main.url(forResource: String(root), withExtension: "wav", subdirectory: folder) else {
+                throw AudioFailure("Отсутствует сэмпл \(instrument) / \(root).")
             }
-            let file = try AVAudioFile(forReading: url)
-            guard file.length > 0, file.length <= Int64(UInt32.max),
-                  let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat,
-                                                frameCapacity: AVAudioFrameCount(file.length)) else {
-                throw MediaFailure("Не удалось загрузить сэмпл MIDI \(pitch).")
+            let file = try AVAudioFile(forReading: url, commonFormat: .pcmFormatFloat32, interleaved: false)
+            guard file.length > 1, file.length <= Int64(UInt32.max), file.processingFormat.channelCount == 1,
+                  let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)) else {
+                throw AudioFailure("Недопустимый формат сэмпла \(root).")
             }
             try file.read(into: buffer)
-            guard buffer.frameLength > 0 else { throw MediaFailure("Пустой сэмпл MIDI \(pitch).") }
-            buffers[pitch] = buffer
+            source[root] = buffer
         }
-        guard let format = buffers.values.first?.format else { throw MediaFailure("В мелодии нет сэмплов.") }
-        guard buffers.values.allSatisfy({ $0.format.isEqual(format) }) else {
-            throw MediaFailure("Форматы сэмплов мелодии различаются.")
+        // Pretranspose each required note once. The tap handler only schedules a ready PCM buffer.
+        for (midi, root) in roots {
+            guard let pcm = source[root] else { throw AudioFailure("Нет звука для ноты \(midi).") }
+            buffers[midi] = try Self.transpose(pcm, semitones: midi - root)
         }
+        guard let format = source.values.first?.format else { throw AudioFailure("В мелодии нет нот.") }
         for _ in 0..<8 {
             let node = AVAudioPlayerNode()
             engine.attach(node)
             engine.connect(node, to: engine.mainMixerNode, format: format)
             nodes.append(node)
         }
+    }
+
+    private static func transpose(_ input: AVAudioPCMBuffer, semitones: Int32) throws -> AVAudioPCMBuffer {
+        if semitones == 0 { return input }
+        let step = pow(2, Double(semitones) / 12)
+        let length = Int(input.frameLength)
+        let frames = Int(Double(length - 1) / step) + 1
+        guard length > 1, let samples = input.floatChannelData?[0],
+              let result = AVAudioPCMBuffer(pcmFormat: input.format, frameCapacity: AVAudioFrameCount(frames)),
+              let output = result.floatChannelData?[0] else { throw AudioFailure("Не удалось подготовить ноту.") }
+        for i in 0..<frames {
+            let position = Double(i) * step
+            let index = min(Int(position), length - 2)
+            output[i] = samples[index] + Float(position - Double(index)) * (samples[index + 1] - samples[index])
+        }
+        result.frameLength = AVAudioFrameCount(frames)
+        return result
     }
 
     func start() throws {
@@ -318,8 +199,8 @@ private final class SampleVoices {
 
     func silence() {
         nodes.forEach { $0.stop() }
+        if engine.isRunning { engine.pause() }
     }
-
     func shutdown() {
         silence()
         engine.stop()

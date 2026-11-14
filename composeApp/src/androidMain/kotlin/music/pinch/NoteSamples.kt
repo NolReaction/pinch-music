@@ -3,6 +3,7 @@ package music.pinch
 import android.content.res.AssetManager
 import android.media.AudioAttributes
 import android.media.SoundPool
+import kotlin.math.pow
 
 /** Created on the main looper, so load completions and gameplay share one thread. */
 internal class NoteSamples {
@@ -14,7 +15,7 @@ internal class NoteSamples {
     private val active = ArrayDeque<Int>()
     private var released = false
 
-    fun load(assets: AssetManager, pitches: Set<Int>, done: () -> Unit, failed: (String) -> Unit) {
+    fun load(assets: AssetManager, instrument: Instrument, pitches: Set<Int>, done: () -> Unit, failed: (String) -> Unit) {
         check(idsByPitch.isEmpty())
         if (pitches.isEmpty()) {
             done()
@@ -33,8 +34,8 @@ internal class NoteSamples {
             if (status != 0) fail()
             else if (pending.remove(id) && pending.isEmpty()) done()
         }
-        for (pitch in pitches) {
-            val id = assets.openFd("samples/midi-$pitch.wav").use { pool.load(it, 1) }
+        for (pitch in pitches.map(::instrumentRoot).toSet()) {
+            val id = assets.openFd("instruments/${instrument.name.lowercase()}/$pitch.wav").use { pool.load(it, 1) }
             if (id == 0) {
                 fail()
                 return
@@ -46,9 +47,11 @@ internal class NoteSamples {
 
     fun play(pitch: Int, gain: Float) {
         if (released) return
-        val sample = idsByPitch[pitch] ?: return
+        val root = instrumentRoot(pitch)
+        val sample = idsByPitch[root] ?: return
+        val rate = 2.0.pow((pitch - root) / 12.0).toFloat()
         val level = gain.coerceIn(0f, 1f)
-        val stream = pool.play(sample, level, level, 1, 0, 1f)
+        val stream = pool.play(sample, level, level, 1, 0, rate)
         if (stream == 0) return
         if (active.size == 8) pool.stop(active.removeFirst())
         active.addLast(stream)

@@ -8,6 +8,7 @@
 /* Begin PBXBuildFile section */
         1A0000000000000000000001 /* PinchMusicApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000000000000000000001 /* PinchMusicApp.swift */; };
         1A0000000000000000000002 /* AppleMedia.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000000000000000000002 /* AppleMedia.swift */; };
+        1A0000000000000000000005 /* AppleSongImport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000000000000000000008 /* AppleSongImport.swift */; };
         1A0000000000000000000003 /* media in Resources */ = {isa = PBXBuildFile; fileRef = 2A0000000000000000000003 /* media */; };
         1A0000000000000000000004 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 2A0000000000000000000007 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
@@ -15,6 +16,7 @@
 /* Begin PBXFileReference section */
         2A0000000000000000000001 /* PinchMusicApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PinchMusicApp.swift; sourceTree = "<group>"; };
         2A0000000000000000000002 /* AppleMedia.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleMedia.swift; sourceTree = "<group>"; };
+        2A0000000000000000000008 /* AppleSongImport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleSongImport.swift; sourceTree = "<group>"; };
         2A0000000000000000000003 /* media */ = {isa = PBXFileReference; lastKnownFileType = folder; name = media; path = "../media"; sourceTree = SOURCE_ROOT; };
         2A0000000000000000000004 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
         2A0000000000000000000005 /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
@@ -37,6 +39,7 @@
             children = (
                 2A0000000000000000000001 /* PinchMusicApp.swift */,
                 2A0000000000000000000002 /* AppleMedia.swift */,
+                2A0000000000000000000008 /* AppleSongImport.swift */,
                 2A0000000000000000000004 /* Info.plist */,
                 2A0000000000000000000005 /* Config.xcconfig */,
                 2A0000000000000000000007 /* Assets.xcassets */,
@@ -90,6 +93,7 @@
             files = (
                 1A0000000000000000000001 /* PinchMusicApp.swift in Sources */,
                 1A0000000000000000000002 /* AppleMedia.swift in Sources */,
+                1A0000000000000000000005 /* AppleSongImport.swift in Sources */,
             );
             runOnlyForDeploymentPostprocessing = 0;
         };

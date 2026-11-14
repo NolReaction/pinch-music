@@ -19,10 +19,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -35,113 +34,138 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import music.pinch.Actions
-import music.pinch.GameMedia
 import music.pinch.Scene
 import music.pinch.ScreenState
+import music.pinch.core.Chart
 
 @Composable
-internal fun PerformanceScreen(state: ScreenState, actions: Actions, media: GameMedia?) {
-    BoxWithConstraints(Modifier.fillMaxSize()) {
-        // Keep the media view at the same composition location in every session state.
-        // Only the controls below it change. Native video surfaces can sit above Compose overlays.
-        val padHeight = (maxHeight * .18f).coerceIn(94.dp, 148.dp)
-        val panelLimit = maxHeight * .53f
-        Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-            SessionHeader(state, actions)
-            val progress = (state.positionMs.toFloat() / state.durationMs.coerceAtLeast(1L)).coerceIn(0f, 1f)
-            Box(Modifier.fillMaxWidth().height(3.dp).clip(RoundedCornerShape(2.dp)).background(Line)) {
-                Spacer(Modifier.fillMaxWidth(progress).fillMaxHeight().background(Amber))
-            }
-            Spacer(Modifier.height(8.dp))
-            Box(Modifier.weight(1f).fillMaxWidth().background(Color(0xff091221)),
-                contentAlignment = Alignment.Center) {
-                key(media) {
-                    media?.Video(Modifier.aspectRatio(9f / 16f))
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-            when (state.scene) {
-                Scene.Loading -> {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        CircularProgressIndicator(Modifier.size(18.dp), color = Mint, strokeWidth = 2.dp)
-                        Spacer(Modifier.width(12.dp))
-                        Text("Подготовка трека…", color = White, modifier = Modifier.weight(1f))
-                        TextButton(onClick = actions::menu) { Text("В меню", color = Muted) }
-                    }
-                }
-                Scene.Paused -> {
-                    Column(Modifier.fillMaxWidth().heightIn(max = panelLimit).verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Caption("Пауза", Mint)
-                        ActionButton("Продолжить", actions::resume, icon = IconShape.Play)
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            ActionButton("Начать заново", actions::restart, Modifier.weight(1f), primary = false)
-                            ActionButton("В меню", actions::menu, Modifier.weight(1f), primary = false)
-                        }
-                    }
-                }
-                Scene.Resuming -> {
-                    Row(Modifier.fillMaxWidth().heightIn(min = padHeight), verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center) {
-                        Text("Продолжаем через ", color = Muted, fontSize = 18.sp)
-                        Text(state.countdown?.toString() ?: "…", color = Amber, fontSize = 32.sp,
-                            fontWeight = FontWeight.Bold)
-                    }
-                }
-                Scene.Playing -> {
-                    if (state.preview) {
-                        Row(Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Text("Эталонное исполнение", color = White, fontWeight = FontWeight.Bold)
-                                Caption("Слушай мелодию и следи за шариком.")
+internal fun PerformanceScreen(state: ScreenState, actions: Actions, chart: Chart?) {
+    Column(Modifier.fillMaxSize()) {
+        SessionHeader(state, actions)
+        val progress = (state.positionMs.toFloat() / state.durationMs.coerceAtLeast(1L)).coerceIn(0f, 1f)
+        Box(Modifier.fillMaxWidth().height(3.dp).background(Line)) {
+            Spacer(Modifier.fillMaxWidth(progress).fillMaxHeight().background(Lilac))
+        }
+
+        val interactive = state.scene == Scene.Playing && !state.preview
+        val playable = if (interactive) Modifier.rhythmInput(actions) else Modifier
+        Column(Modifier.fillMaxWidth().weight(1f).then(playable)) {
+            Box(Modifier.fillMaxWidth().weight(1f).background(Surface)) {
+                if (chart != null) MarbleStage(chart, state.positionMs, Modifier.matchParentSize())
+                if (state.scene == Scene.Loading || state.scene == Scene.Resuming || state.scene == Scene.Paused) {
+                    val dim = if (state.scene == Scene.Paused) .72f else .32f
+                    Box(Modifier.matchParentSize().background(Ink.copy(alpha = dim)), contentAlignment = Alignment.Center) {
+                        when (state.scene) {
+                            Scene.Paused -> PauseSheet(actions)
+                            Scene.Loading -> Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                CircularProgressIndicator(Modifier.size(26.dp), color = Lilac, strokeWidth = 2.dp)
+                                Caption("Готовим мелодию", White)
+                                TextButton(onClick = actions::menu) { Text("В меню", color = White) }
                             }
-                            TextButton(onClick = actions::menu) { Text("В меню", color = Mint) }
+                            Scene.Resuming -> Countdown(state.countdown, "Продолжаем")
+                            else -> Unit
                         }
-                    } else {
-                        Row(Modifier.fillMaxWidth().padding(bottom = 6.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween) {
-                            Caption("Комбо  ×${state.stats?.combo ?: 0}")
-                            Caption("Счёт  ${number(state.stats?.score ?: 0)}")
-                        }
-                        TouchPad(state, actions, Modifier.fillMaxWidth().height(padHeight))
+                    }
+                } else if (state.countdown != null && !state.preview) {
+                    Box(Modifier.align(Alignment.TopCenter).padding(top = 14.dp)) {
+                        Countdown(state.countdown, "До старта")
                     }
                 }
-                else -> Unit
             }
-            Spacer(Modifier.height(10.dp))
+            if (state.preview) PreviewControls(state, actions) else PlayControls(state)
         }
     }
 }
 
+private fun Modifier.rhythmInput(actions: Actions): Modifier =
+    semantics {
+        role = Role.Button
+        onClick(label = "Сыграть ноту") { actions.tapNow(); true }
+    }.pointerInput(actions) {
+        awaitEachGesture {
+            val first = awaitFirstDown(requireUnconsumed = true)
+            first.consume()
+            actions.tap(first.uptimeMillis)
+            // One note per gesture, even if another finger lands while the first is held.
+            do {
+                val event = awaitPointerEvent()
+                event.changes.forEach { if (it.pressed) it.consume() }
+            } while (event.changes.any { it.pressed })
+        }
+    }
+
 @Composable
 private fun SessionHeader(state: ScreenState, actions: Actions) {
-    Row(Modifier.fillMaxWidth().heightIn(min = 54.dp), verticalAlignment = Alignment.CenterVertically) {
-        Column(modifier = Modifier.weight(1f)) {
-            if (state.preview) Caption("Прослушивание", Mint)
-            Text(state.title, color = White, fontSize = 20.sp, lineHeight = 23.sp,
-                fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 6.dp).heightIn(min = 62.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(Modifier.weight(1f)) {
+            if (state.preview) Caption("Прослушивание", Lilac)
+            Text(state.title, color = White, fontSize = 19.sp, lineHeight = 22.sp,
+                fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
         val seconds = state.positionMs.coerceIn(0L, state.durationMs) / 1000L
-        val end = state.durationMs / 1000L
-        Text("${clock(seconds)} / ${clock(end)}", color = Muted, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+        Text("${clock(seconds)} / ${clock(state.durationMs / 1000L)}", color = Muted,
+            fontSize = 12.sp, fontFamily = FontFamily.Monospace)
         if (state.scene == Scene.Playing || state.scene == Scene.Resuming) {
             IconButton(onClick = actions::pause, modifier = Modifier.semantics { contentDescription = "Пауза" }) {
                 Symbol(IconShape.Pause, White)
             }
+        } else Spacer(Modifier.width(6.dp))
+    }
+}
+
+internal fun clock(seconds: Long): String = "${seconds / 60}:${(seconds % 60).toString().padStart(2, '0')}"
+
+@Composable
+private fun Countdown(count: Int?, label: String) {
+    Row(Modifier.background(Ink.copy(alpha = .9f), RoundedCornerShape(24.dp)).padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Caption(label, White)
+        Text(count?.toString() ?: "…", fontFamily = FontFamily.Monospace, color = Lilac,
+            fontWeight = FontWeight.Bold, fontSize = 20.sp)
+    }
+}
+
+@Composable
+private fun PauseSheet(actions: Actions) {
+    Column(Modifier.widthIn(max = 360.dp).fillMaxWidth(.86f).verticalScroll(rememberScrollState())
+        .background(Ink, RoundedCornerShape(22.dp)).border(1.dp, Line, RoundedCornerShape(22.dp)).padding(18.dp),
+        verticalArrangement = Arrangement.spacedBy(9.dp)) {
+        Heading("Пауза")
+        ActionButton("Продолжить", actions::resume, icon = IconShape.Play)
+        ActionButton("Начать заново", actions::restart, primary = false)
+        TextButton(onClick = actions::menu, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+            Text("В меню", color = Muted)
         }
     }
 }
 
-private fun clock(seconds: Long): String = "${seconds / 60}:${(seconds % 60).toString().padStart(2, '0')}"
+@Composable
+private fun PreviewControls(state: ScreenState, actions: Actions) {
+    Row(Modifier.fillMaxWidth().heightIn(min = 78.dp).padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("Эталонное исполнение", color = White, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+            if (state.scene == Scene.Playing) Caption("Шарик играет мелодию")
+        }
+        TextButton(onClick = actions::menu) { Text("В меню", color = Lilac) }
+    }
+}
 
 @Composable
-private fun TouchPad(state: ScreenState, actions: Actions, modifier: Modifier) {
-    val latestActions by rememberUpdatedState(actions)
+private fun PlayControls(state: ScreenState) {
     val tail = state.positionMs > state.lastHitWindowMs
     val hit = when (state.reaction) {
         "Идеально", "Хорошо", "Попал" -> true
         else -> false
+    }
+    val accent = when {
+        tail -> Muted
+        state.reaction == null -> Lilac
+        hit -> Mint
+        else -> Coral
     }
     val pulse = remember { Animatable(0f) }
     LaunchedEffect(state.reactionId) {
@@ -150,49 +174,27 @@ private fun TouchPad(state: ScreenState, actions: Actions, modifier: Modifier) {
             pulse.animateTo(0f, tween(190))
         }
     }
-    val accent = when {
-        tail -> Muted
-        state.reaction == null -> Amber
-        hit -> Mint
-        else -> Color(0xffff9b90)
-    }
-    val shape = RoundedCornerShape(18.dp)
-    val padTitle = when {
-        tail -> "Конец мелодии"
-        state.reaction != null -> state.reaction
-        state.countdown != null -> state.countdown.toString()
-        else -> "В такт"
-    }
-    // Leave the touch detector mounted across count-in, reaction and score changes.
-    Row(modifier.clip(shape).background(lerp(Surface, accent, pulse.value * .22f))
-        .border(1.dp, accent.copy(alpha = if (state.reaction == null) .5f else 1f), shape)
-        .semantics(mergeDescendants = true) {
-            role = Role.Button
-            if (!tail) onClick(label = "Сыграть ноту") { latestActions.tapNow(); true }
+    Column(Modifier.fillMaxWidth().background(lerp(Ink, accent, .1f * pulse.value)).padding(horizontal = 18.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Caption("Комбо  ×${state.stats?.combo ?: 0}")
+            Caption("Счёт  ${number(state.stats?.score ?: 0)}")
         }
-        .pointerInput(Unit) {
-            awaitEachGesture {
-                val first = awaitFirstDown(requireUnconsumed = true)
-                first.consume()
-                latestActions.tap(first.uptimeMillis)
-                // No repeat on hold or extra fingers; re-arm only when every finger is up.
-                do {
-                    val event = awaitPointerEvent()
-                    event.changes.forEach { if (it.pressed) it.consume() }
-                } while (event.changes.any { it.pressed })
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Canvas(Modifier.size(29.dp)) {
+                val radius = size.minDimension * .47f
+                drawCircle(accent.copy(alpha = .5f), radius, style = Stroke(1.dp.toPx()))
+                drawCircle(accent, radius * (.4f + .22f * pulse.value))
             }
-        }
-        .padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-            Text(padTitle, color = accent, fontWeight = FontWeight.Bold, fontSize = 24.sp, lineHeight = 28.sp)
-            if (!tail) Caption("Нажимай, когда шарик касается клавиши")
-        }
-        if (!tail) {
-            Spacer(Modifier.width(8.dp))
-            Canvas(Modifier.size(34.dp)) {
-                drawCircle(accent.copy(alpha = .4f), size.minDimension * .47f, style = Stroke(1.dp.toPx()))
-                drawCircle(accent, size.minDimension * .26f, style = Stroke(1.5.dp.toPx()))
-                drawCircle(accent, size.minDimension * .09f, center = Offset(size.width / 2, size.height / 2))
+            Column {
+                Text(when {
+                    tail -> "Конец мелодии"
+                    state.reaction != null -> state.reaction
+                    else -> "Нажимай при приземлении"
+                }, color = accent, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                // Keep HUD height stable when a judgement replaces the hint. The world
+                // projection uses the remaining space, so a collapsing footer would shift the ball.
+                if (!tail) Caption("Касайся любой точки сцены") else Spacer(Modifier.height(20.dp))
             }
         }
     }

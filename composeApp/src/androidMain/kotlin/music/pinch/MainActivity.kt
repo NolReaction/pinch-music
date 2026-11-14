@@ -48,8 +48,13 @@ private class AndroidPlatform(private val activity: MainActivity) : Platform {
     var active: AndroidMedia? = null
         private set
 
-    override fun chartJson(): String =
-        activity.assets.open("demo-chart.json").bufferedReader().use { it.readText() }
+    private val songImport = AndroidSongImport(activity)
+
+    override suspend fun pickAudio() = songImport.pickAudio()
+    override fun readValue(key: String): String? = settings.getString(key, null)
+    override fun writeValue(key: String, value: String) {
+        settings.edit().putString(key, value).apply()
+    }
 
     override var volume: Float
         get() = settings.getFloat("volume", 0.8f).coerceIn(0f, 1f)
@@ -59,21 +64,13 @@ private class AndroidPlatform(private val activity: MainActivity) : Platform {
         get() = settings.getBoolean("haptics", false)
         set(value) = settings.edit().putBoolean("haptics", value).apply()
 
-    override var bestScore: Int?
-        get() = if (settings.contains("best")) settings.getInt("best", 0) else null
-        set(value) {
-            val update = settings.edit()
-            if (value == null) update.remove("best") else update.putInt("best", value)
-            update.apply()
-        }
-
     override fun feedback() {
         activity.window.decorView.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
     }
 
-    override fun newMedia(preview: Boolean): GameMedia {
+    override fun newMedia(durationMs: Long, instrument: Instrument): GameMedia {
         active?.close()
-        return AndroidMedia(activity, preview, volume, { foreground }) { media ->
+        return AndroidMedia(activity, durationMs, instrument, { foreground }) { media ->
             if (active === media) active = null
         }.also { active = it }
     }
