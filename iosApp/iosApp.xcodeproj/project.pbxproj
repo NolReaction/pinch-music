@@ -1,0 +1,195 @@
+// !$*UTF8*$!
+{
+    archiveVersion = 1;
+    classes = {};
+    objectVersion = 56;
+    objects = {
+
+/* Begin PBXBuildFile section */
+        1A0000000000000000000001 /* PinchMusicApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000000000000000000001 /* PinchMusicApp.swift */; };
+        1A0000000000000000000002 /* AppleMedia.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000000000000000000002 /* AppleMedia.swift */; };
+        1A0000000000000000000003 /* media in Resources */ = {isa = PBXBuildFile; fileRef = 2A0000000000000000000003 /* media */; };
+        1A0000000000000000000004 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 2A0000000000000000000007 /* Assets.xcassets */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+        2A0000000000000000000001 /* PinchMusicApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PinchMusicApp.swift; sourceTree = "<group>"; };
+        2A0000000000000000000002 /* AppleMedia.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleMedia.swift; sourceTree = "<group>"; };
+        2A0000000000000000000003 /* media */ = {isa = PBXFileReference; lastKnownFileType = folder; name = media; path = "../media"; sourceTree = SOURCE_ROOT; };
+        2A0000000000000000000004 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+        2A0000000000000000000005 /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
+        2A0000000000000000000006 /* PinchMusic.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PinchMusic.app; sourceTree = BUILT_PRODUCTS_DIR; };
+        2A0000000000000000000007 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+        3A0000000000000000000001 = {
+            isa = PBXGroup;
+            children = (
+                3A0000000000000000000002 /* iosApp */,
+                2A0000000000000000000003 /* media */,
+                3A0000000000000000000003 /* Products */,
+            );
+            sourceTree = "<group>";
+        };
+        3A0000000000000000000002 /* iosApp */ = {
+            isa = PBXGroup;
+            children = (
+                2A0000000000000000000001 /* PinchMusicApp.swift */,
+                2A0000000000000000000002 /* AppleMedia.swift */,
+                2A0000000000000000000004 /* Info.plist */,
+                2A0000000000000000000005 /* Config.xcconfig */,
+                2A0000000000000000000007 /* Assets.xcassets */,
+            );
+            path = iosApp;
+            sourceTree = "<group>";
+        };
+        3A0000000000000000000003 /* Products */ = {
+            isa = PBXGroup;
+            children = (2A0000000000000000000006 /* PinchMusic.app */,);
+            name = Products;
+            sourceTree = "<group>";
+        };
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+        4A0000000000000000000001 /* iosApp */ = {
+            isa = PBXNativeTarget;
+            buildConfigurationList = 6A0000000000000000000002 /* iosApp configurations */;
+            buildPhases = (
+                5A0000000000000000000001 /* Compile Kotlin framework */,
+                5A0000000000000000000002 /* Sources */,
+                5A0000000000000000000003 /* Frameworks */,
+                5A0000000000000000000004 /* Resources */,
+            );
+            buildRules = ();
+            dependencies = ();
+            name = iosApp;
+            productName = PinchMusic;
+            productReference = 2A0000000000000000000006 /* PinchMusic.app */;
+            productType = "com.apple.product-type.application";
+        };
+/* End PBXNativeTarget section */
+
+/* Begin build phases */
+        5A0000000000000000000001 /* Compile Kotlin framework */ = {
+            isa = PBXShellScriptBuildPhase;
+            alwaysOutOfDate = 1;
+            buildActionMask = 2147483647;
+            files = ();
+            inputPaths = ();
+            name = "Compile Kotlin framework";
+            outputPaths = ();
+            runOnlyForDeploymentPostprocessing = 0;
+            shellPath = "/bin/sh";
+            shellScript = "set -e\nif [ \"$OVERRIDE_KOTLIN_BUILD_IDE_SUPPORTED\" = \"YES\" ]; then exit 0; fi\ncd \"$SRCROOT/..\"\nif [ -z \"${JAVA_HOME:-}\" ] || ! grep -Eq '^JAVA_VERSION=\"17([.+-]|\")' \"$JAVA_HOME/release\" 2>/dev/null; then\n  JAVA_HOME=\"$(unset JAVA_HOME JAVA_VERSION; /usr/libexec/java_home -F -v 17)\" || {\n    echo \"error: Install JDK 17 (brew install --cask temurin@17) and run the build again.\" >&2\n    exit 1\n  }\nfi\nexport JAVA_HOME\n\"$JAVA_HOME/bin/java\" -version\nexec ./gradlew :composeApp:embedAndSignAppleFrameworkForXcode\n";
+        };
+        5A0000000000000000000002 /* Sources */ = {
+            isa = PBXSourcesBuildPhase;
+            buildActionMask = 2147483647;
+            files = (
+                1A0000000000000000000001 /* PinchMusicApp.swift in Sources */,
+                1A0000000000000000000002 /* AppleMedia.swift in Sources */,
+            );
+            runOnlyForDeploymentPostprocessing = 0;
+        };
+        5A0000000000000000000003 /* Frameworks */ = {
+            isa = PBXFrameworksBuildPhase;
+            buildActionMask = 2147483647;
+            files = ();
+            runOnlyForDeploymentPostprocessing = 0;
+        };
+        5A0000000000000000000004 /* Resources */ = {
+            isa = PBXResourcesBuildPhase;
+            buildActionMask = 2147483647;
+            files = (
+                1A0000000000000000000003 /* media in Resources */,
+                1A0000000000000000000004 /* Assets.xcassets in Resources */,
+            );
+            runOnlyForDeploymentPostprocessing = 0;
+        };
+/* End build phases */
+
+/* Begin PBXProject section */
+        4A0000000000000000000002 /* Project object */ = {
+            isa = PBXProject;
+            attributes = {
+                BuildIndependentTargetsInParallel = 1;
+                LastSwiftUpdateCheck = 2600;
+                LastUpgradeCheck = 2600;
+                TargetAttributes = {4A0000000000000000000001 = {CreatedOnToolsVersion = 26.0; }; };
+            };
+            buildConfigurationList = 6A0000000000000000000001 /* project configurations */;
+            compatibilityVersion = "Xcode 14.0";
+            developmentRegion = ru;
+            hasScannedForEncodings = 0;
+            knownRegions = (ru, Base,);
+            mainGroup = 3A0000000000000000000001;
+            productRefGroup = 3A0000000000000000000003 /* Products */;
+            projectDirPath = "";
+            projectRoot = "";
+            targets = (4A0000000000000000000001 /* iosApp */,);
+        };
+/* End PBXProject section */
+
+/* Begin XCBuildConfiguration section */
+        7A0000000000000000000001 /* project Debug */ = {
+            isa = XCBuildConfiguration;
+            buildSettings = {
+                CLANG_ENABLE_MODULES = YES;
+                DEBUG_INFORMATION_FORMAT = dwarf;
+                ENABLE_TESTABILITY = YES;
+                GCC_OPTIMIZATION_LEVEL = 0;
+                ONLY_ACTIVE_ARCH = YES;
+                SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+                SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+            };
+            name = Debug;
+        };
+        7A0000000000000000000002 /* project Release */ = {
+            isa = XCBuildConfiguration;
+            buildSettings = {
+                CLANG_ENABLE_MODULES = YES;
+                DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+                SWIFT_COMPILATION_MODE = wholemodule;
+                VALIDATE_PRODUCT = YES;
+            };
+            name = Release;
+        };
+        7A0000000000000000000003 /* target Debug */ = {
+            isa = XCBuildConfiguration;
+            baseConfigurationReference = 2A0000000000000000000005 /* Config.xcconfig */;
+            buildSettings = {};
+            name = Debug;
+        };
+        7A0000000000000000000004 /* target Release */ = {
+            isa = XCBuildConfiguration;
+            baseConfigurationReference = 2A0000000000000000000005 /* Config.xcconfig */;
+            buildSettings = {};
+            name = Release;
+        };
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+        6A0000000000000000000001 /* project configurations */ = {
+            isa = XCConfigurationList;
+            buildConfigurations = (
+                7A0000000000000000000001 /* project Debug */,
+                7A0000000000000000000002 /* project Release */,
+            );
+            defaultConfigurationIsVisible = 0;
+            defaultConfigurationName = Release;
+        };
+        6A0000000000000000000002 /* iosApp configurations */ = {
+            isa = XCConfigurationList;
+            buildConfigurations = (
+                7A0000000000000000000003 /* target Debug */,
+                7A0000000000000000000004 /* target Release */,
+            );
+            defaultConfigurationIsVisible = 0;
+            defaultConfigurationName = Release;
+        };
+/* End XCConfigurationList section */
+    };
+    rootObject = 4A0000000000000000000002 /* Project object */;
+}

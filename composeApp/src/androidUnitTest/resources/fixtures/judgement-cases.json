@@ -1,0 +1,70 @@
+{
+  "description": "Reference examples for the future Kotlin implementation. This is test data, not an implemented or verified mobile game engine.",
+  "windowsMs": {"perfect": 45, "good": 90, "okay": 120},
+  "judgeOnly": [
+    {"errorMs": -121, "expected": "NoCandidate"},
+    {"errorMs": -120, "expected": "Okay"},
+    {"errorMs": -91, "expected": "Okay"},
+    {"errorMs": -90, "expected": "Good"},
+    {"errorMs": -46, "expected": "Good"},
+    {"errorMs": -45, "expected": "Perfect"},
+    {"errorMs": 0, "expected": "Perfect"},
+    {"errorMs": 45, "expected": "Perfect"},
+    {"errorMs": 46, "expected": "Good"},
+    {"errorMs": 90, "expected": "Good"},
+    {"errorMs": 91, "expected": "Okay"},
+    {"errorMs": 120, "expected": "Okay"},
+    {"errorMs": 121, "expected": "NoCandidate"}
+  ],
+  "expiry": [
+    {"noteAtMs": 2000, "judgementNowMs": 2120, "expected": "Pending"},
+    {"noteAtMs": 2000, "judgementNowMs": 2121, "expected": "Missed"}
+  ],
+  "sessions": [
+    {
+      "name": "miss_does_not_shift_pitch",
+      "notes": [{"id": "a", "atMs": 2000, "midi": 72}, {"id": "b", "atMs": 2500, "midi": 76}],
+      "tapTimesMs": [2500],
+      "expectedAudioMidi": [76],
+      "expectedFinal": {"perfect": 1, "good": 0, "okay": 0, "missed": 1, "stray": 0, "score": 50000}
+    },
+    {
+      "name": "duplicate_tap_is_not_second_hit",
+      "notes": [{"id": "a", "atMs": 2000, "midi": 72}, {"id": "b", "atMs": 2500, "midi": 76}],
+      "tapTimesMs": [2000, 2010, 2500],
+      "expectedAudioMidi": [72, 76],
+      "expectedFinal": {"perfect": 2, "good": 0, "okay": 0, "missed": 0, "stray": 1, "score": 66667}
+    },
+    {
+      "name": "same_pitch_distinct_ids",
+      "notes": [{"id": "a", "atMs": 2000, "midi": 72}, {"id": "b", "atMs": 2500, "midi": 72}],
+      "tapTimesMs": [2000, 2500],
+      "expectedAudioMidi": [72, 72],
+      "expectedFinal": {"perfect": 2, "good": 0, "okay": 0, "missed": 0, "stray": 0, "score": 100000}
+    },
+    {
+      "name": "stray_does_not_consume_future_note",
+      "notes": [{"id": "a", "atMs": 2000, "midi": 72}, {"id": "b", "atMs": 2500, "midi": 76}],
+      "tapTimesMs": [2000, 2250, 2500],
+      "expectedAudioMidi": [72, 76],
+      "expectedFinal": {"perfect": 2, "good": 0, "okay": 0, "missed": 0, "stray": 1, "score": 66667}
+    }
+  ],
+  "scores": [
+    {"notes": 40, "perfect": 40, "good": 0, "okay": 0, "stray": 0, "expectedScore": 100000},
+    {"notes": 40, "perfect": 0, "good": 0, "okay": 0, "stray": 0, "expectedScore": 0},
+    {"notes": 40, "perfect": 40, "good": 0, "okay": 0, "stray": 40, "expectedScore": 50000},
+    {"notes": 4, "perfect": 1, "good": 2, "okay": 0, "stray": 1, "expectedScore": 48000}
+  ],
+  "offset": [
+    {"rawTapMs": 2100, "inputOffsetMs": 100, "expectedJudgedTapMs": 2000},
+    {"rawNowMs": 2220, "inputOffsetMs": 100, "noteAtMs": 2000, "expectedExpiry": "Pending"},
+    {"rawNowMs": 2221, "inputOffsetMs": 100, "noteAtMs": 2000, "expectedExpiry": "Missed"}
+  ],
+  "integrationNotes": [
+    "Session tapTimes represent independent press/release cycles, not multiple fingers or held repeats.",
+    "Finish each session after its last late window to expire remaining notes.",
+    "Countdown and post-song ignored taps are integration policy; judgeOnly tests do not apply that gate.",
+    "Freeze media/judgement time during pause rather than feeding wall-clock elapsed time."
+  ]
+}

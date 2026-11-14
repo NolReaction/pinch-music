@@ -1,0 +1,306 @@
+{
+  "schemaVersion": 1,
+  "id": "first-rhythm",
+  "title": "Первый ритм",
+  "bpm": 120,
+  "timeSignature": {
+    "numerator": 4,
+    "denominator": 4
+  },
+  "leadInMs": 2000,
+  "durationMs": 20000,
+  "video": {
+    "file": "demo-ball-muted.mp4",
+    "fps": 60,
+    "width": 540,
+    "height": 960,
+    "chartTimeAtVideoZeroMs": 0
+  },
+  "audio": {
+    "mode": "oneShotSamples",
+    "sampleRateHz": 48000,
+    "sampleDirectory": "samples"
+  },
+  "notes": [
+    {
+      "id": "n001",
+      "atMs": 2000,
+      "midi": 72,
+      "durationMs": 250,
+      "velocity": 0.8
+    },
+    {
+      "id": "n002",
+      "atMs": 2250,
+      "midi": 76,
+      "durationMs": 250,
+      "velocity": 0.8
+    },
+    {
+      "id": "n003",
+      "atMs": 2500,
+      "midi": 79,
+      "durationMs": 500,
+      "velocity": 0.8
+    },
+    {
+      "id": "n004",
+      "atMs": 3000,
+      "midi": 76,
+      "durationMs": 500,
+      "velocity": 0.8
+    },
+    {
+      "id": "n005",
+      "atMs": 3500,
+      "midi": 74,
+      "durationMs": 500,
+      "velocity": 0.8
+    },
+    {
+      "id": "n006",
+      "atMs": 4000,
+      "midi": 74,
+      "durationMs": 250,
+      "velocity": 0.8
+    },
+    {
+      "id": "n007",
+      "atMs": 4250,
+      "midi": 77,
+      "durationMs": 250,
+      "velocity": 0.8
+    },
+    {
+      "id": "n008",
+      "atMs": 4500,
+      "midi": 81,
+      "durationMs": 500,
+      "velocity": 0.8
+    },
+    {
+      "id": "n009",
+      "atMs": 5000,
+      "midi": 79,
+      "durationMs": 500,
+      "velocity": 0.8
+    },
+    {
+      "id": "n010",
+      "atMs": 5500,
+      "midi": 76,
+      "durationMs": 500,
+      "velocity": 0.8
+    },
+    {
+      "id": "n011",
+      "atMs": 6000,
+      "midi": 76,
+      "durationMs": 250,
+      "velocity": 0.8
+    },
+    {
+      "id": "n012",
+      "atMs": 6250,
+      "midi": 79,
+      "durationMs": 250,
+      "velocity": 0.8
+    },
+    {
+      "id": "n013",
+      "atMs": 6500,
+      "midi": 83,
+      "durationMs": 500,
+      "velocity": 0.8
+    },
+    {
+      "id": "n014",
+      "atMs": 7000,
+      "midi": 81,
+      "durationMs": 250,
+      "velocity": 0.8
+    },
+    {
+      "id": "n015",
+      "atMs": 7250,
+      "midi": 79,
+      "durationMs": 250,
+      "velocity": 0.8
+    },
+    {
+      "id": "n016",
+      "atMs": 7500,
+      "midi": 76,
+      "durationMs": 500,
+      "velocity": 0.8
+    },
+    {
+      "id": "n017",
+      "atMs": 8000,
+      "midi": 74,
+      "durationMs": 500,
+      "velocity": 0.8
+    },
+    {
+      "id": "n018",
+      "atMs": 8500,
+      "midi": 79,
+      "durationMs": 500,
+      "velocity": 0.8
+    },
+    {
+      "id": "n019",
+      "atMs": 9000,
+      "midi": 72,
+      "durationMs": 1000,
+      "velocity": 0.8
+    },
+    {
+      "id": "n020",
+      "atMs": 10000,
+      "midi": 69,
+      "durationMs": 250,
+      "velocity": 0.8
+    },
+    {
+      "id": "n021",
+      "atMs": 10250,
+      "midi": 72,
+      "durationMs": 250,
+      "velocity": 0.8
+    },
+    {
+      "id": "n022",
+      "atMs": 10500,
+      "midi": 76,
+      "durationMs": 250,
+      "velocity": 0.8
+    },
+    {
+      "id": "n023",
+      "atMs": 10750,
+      "midi": 79,
+      "durationMs": 250,
+      "velocity": 0.8
+    },
+    {
+      "id": "n024",
+      "atMs": 11000,
+      "midi": 81,
+      "durationMs": 500,
+      "velocity": 0.8
+    },
+    {
+      "id": "n025",
+      "atMs": 11500,
+      "midi": 79,
+      "durationMs": 500,
+      "velocity": 0.8
+    },
+    {
+      "id": "n026",
+      "atMs": 12000,
+      "midi": 77,
+      "durationMs": 250,
+      "velocity": 0.8
+    },
+    {
+      "id": "n027",
+      "atMs": 12250,
+      "midi": 81,
+      "durationMs": 250,
+      "velocity": 0.8
+    },
+    {
+      "id": "n028",
+      "atMs": 12500,
+      "midi": 79,
+      "durationMs": 500,
+      "velocity": 0.8
+    },
+    {
+      "id": "n029",
+      "atMs": 13000,
+      "midi": 76,
+      "durationMs": 500,
+      "velocity": 0.8
+    },
+    {
+      "id": "n030",
+      "atMs": 13500,
+      "midi": 74,
+      "durationMs": 500,
+      "velocity": 0.8
+    },
+    {
+      "id": "n031",
+      "atMs": 14000,
+      "midi": 72,
+      "durationMs": 250,
+      "velocity": 0.8
+    },
+    {
+      "id": "n032",
+      "atMs": 14250,
+      "midi": 74,
+      "durationMs": 250,
+      "velocity": 0.8
+    },
+    {
+      "id": "n033",
+      "atMs": 14500,
+      "midi": 76,
+      "durationMs": 250,
+      "velocity": 0.8
+    },
+    {
+      "id": "n034",
+      "atMs": 14750,
+      "midi": 79,
+      "durationMs": 250,
+      "velocity": 0.8
+    },
+    {
+      "id": "n035",
+      "atMs": 15000,
+      "midi": 77,
+      "durationMs": 250,
+      "velocity": 0.8
+    },
+    {
+      "id": "n036",
+      "atMs": 15250,
+      "midi": 76,
+      "durationMs": 250,
+      "velocity": 0.8
+    },
+    {
+      "id": "n037",
+      "atMs": 15500,
+      "midi": 74,
+      "durationMs": 500,
+      "velocity": 0.8
+    },
+    {
+      "id": "n038",
+      "atMs": 16000,
+      "midi": 67,
+      "durationMs": 500,
+      "velocity": 0.8
+    },
+    {
+      "id": "n039",
+      "atMs": 16500,
+      "midi": 71,
+      "durationMs": 500,
+      "velocity": 0.8
+    },
+    {
+      "id": "n040",
+      "atMs": 17000,
+      "midi": 72,
+      "durationMs": 1000,
+      "velocity": 0.8
+    }
+  ]
+}

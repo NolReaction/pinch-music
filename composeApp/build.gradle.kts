@@ -1,0 +1,67 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
+plugins {
+    kotlin("multiplatform")
+    id("org.jetbrains.kotlin.plugin.compose")
+    id("org.jetbrains.compose")
+    id("com.android.application")
+}
+
+kotlin {
+    androidTarget {
+        compilerOptions {
+            jvmTarget.set(JvmTarget.JVM_17)
+        }
+    }
+
+    listOf(iosArm64(), iosSimulatorArm64(), iosX64()).forEach { target ->
+        target.binaries.framework {
+            baseName = "ComposeApp"
+            isStatic = true
+        }
+    }
+
+    sourceSets {
+        commonMain.dependencies {
+            implementation(compose.runtime)
+            implementation(compose.foundation)
+            implementation(compose.ui)
+            implementation(compose.material3)
+            implementation(compose.components.resources)
+            implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
+        }
+        commonTest.dependencies {
+            implementation(kotlin("test"))
+        }
+        androidMain.dependencies {
+            implementation("androidx.activity:activity-compose:1.11.0")
+            implementation("androidx.media3:media3-exoplayer:1.8.0")
+        }
+        androidUnitTest.dependencies {
+            implementation(kotlin("test-junit"))
+        }
+    }
+}
+
+android {
+    namespace = "music.pinch"
+    compileSdk = 36
+    defaultConfig {
+        applicationId = "music.pinch"
+        minSdk = 24
+        targetSdk = 36
+        versionCode = 1
+        versionName = "0.1.0"
+    }
+    sourceSets["main"].assets.srcDir(rootProject.file("media"))
+    sourceSets["test"].resources.srcDir("src/androidUnitTest/resources")
+    androidResources.noCompress += listOf("wav", "mp4")
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
+compose.resources {
+    packageOfResClass = "music.pinch.resources"
+}

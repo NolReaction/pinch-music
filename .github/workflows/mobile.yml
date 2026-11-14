@@ -1,0 +1,57 @@
+name: Mobile
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android:
+    name: Android build and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - run: sdkmanager "platforms;android-36" "build-tools;35.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+      - run: ./gradlew --max-workers=2 :composeApp:testDebugUnitTest --stacktrace
+      - run: ./gradlew --max-workers=2 :composeApp:assembleDebug --stacktrace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pinch-music-debug
+          path: composeApp/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+  ios:
+    name: iOS Simulator build
+    runs-on: macos-15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.0.1.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - run: xcodebuild -version
+      - run: |
+          xcodebuild -project iosApp/iosApp.xcodeproj -scheme iosApp -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' ARCHS=arm64 ONLY_ACTIVE_ARCH=YES \
+            -derivedDataPath "$RUNNER_TEMP/PinchBuild" CODE_SIGNING_ALLOWED=NO build
+          app="$RUNNER_TEMP/PinchBuild/Build/Products/Debug-iphonesimulator/PinchMusic.app"
+          test -f "$app/media/demo-ball-muted.mp4"
+          test -f "$app/media/samples/midi-72.wav"
+          test -n "$(find "$app" -name first_rhythm.png -print -quit)"
