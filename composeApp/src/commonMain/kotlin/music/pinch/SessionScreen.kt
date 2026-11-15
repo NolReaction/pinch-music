@@ -34,7 +34,6 @@ data class ScreenState(
     val echoesCaught: Int = 0,
     val collectedEchoMs: Long? = null,
     val stageMode: StageMode = StageMode.Orbit,
-    val lastPanelHitMs: Long? = null,
     val lastLedTapMs: Long? = null,
 ) {
     val backingAsset: String? get() = selectedSong.backingAsset.takeUnless { selectedSong.id in importedIds }

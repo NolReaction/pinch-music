@@ -5,7 +5,6 @@ import kotlinx.coroutines.Dispatchers
 import music.pinch.core.Chart
 import music.pinch.core.Note
 import music.pinch.core.echoTargetTimes
-import music.pinch.ui.PlanarPath
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -66,115 +65,106 @@ class SessionTest {
     }
 
     @Test
-    fun planarLampSoundsFollowMediaCrossingsThroughResumeAndRestart() {
+    fun recordedCascadePreviewUsesOnlyTheBackingThroughLampCrossingsAndResume() {
         val host = Host()
-        host.writeValue("stage.mode", "obsolete")
         val session = Session(host, scope)
-        assertEquals(StageMode.Orbit, session.state.stageMode)
         session.selectStageMode(StageMode.Planar)
-        assertEquals(StageMode.Planar, Session(host, scope).state.stageMode)
-        val cues = PlanarPath(requireNotNull(session.state.chart)).ledCues
-        assertTrue(cues.size > 3)
         session.start(true)
         session.selectStageMode(StageMode.Orbit)
         assertEquals(StageMode.Planar, session.state.stageMode)
+        val cues = requireNotNull(session.planarPath).ledCues
+        assertTrue(cues.isNotEmpty())
         val player = host.player
+        assertEquals("backing/stereo-love.m4a", player.backing)
+        assertTrue(player.prepared.isEmpty())
         player.ready()
         session.observe()
-        assertEquals(cues.map { it.midi }.toSet(), player.prepared)
-        val first = cues.first()
-        val last = cues.last()
-        player.tick(first.atMs - 1)
-        session.observe()
-        assertTrue(player.sounds.isEmpty())
-        player.tick(first.atMs)
-        session.observe()
+        player.tick(cues.first().atMs)
         session.observe()
         session.pause()
-        session.observe()
         session.resume()
         session.observe()
-        player.tick(first.atMs, 10_000 + first.atMs + 1_500)
+        player.tick(cues.first().atMs, 11_500 + cues.first().atMs)
         session.observe()
+        player.tick(cues.last().atMs)
         session.observe()
-        assertEquals(listOf(first.midi to .10f), player.sounds)
-        session.volume(.25f)
-        player.tick(last.atMs, 10_000 + last.atMs + 1_500)
-        session.observe()
-        assertEquals(listOf(first.midi to .10f, last.midi to .05f), player.sounds)
-        session.restart()
-        host.player.ready()
-        session.observe()
-        host.player.tick(last.atMs + 500)
-        session.observe()
-        assertTrue(host.player.sounds.isEmpty())
-        session.menu()
-        session.selectStageMode(StageMode.Orbit)
-        session.start(true)
-        assertTrue(host.player.prepared.isEmpty())
+        assertTrue(player.sounds.isEmpty() && player.strikes.isEmpty())
     }
 
     @Test
-    fun extraLampTapRingsOnceAndLeavesTheChartScoreAlone() {
+    fun aRailOrnamentAcceptsOneOptionalTapWithoutReplayingItsPitch() {
         val host = Host()
-        val chart = Chart("Полоса", 120, 5_000, listOf(
-            Note("a", 500, 64, 400, .8f), Note("b", 3_300, 67, 400, .8f)
-        ))
-        val session = Session(host, scope, listOf(song.copy(bundled = chart, backingAsset = "demo.m4a")))
+        val session = Session(host, scope)
         session.selectStageMode(StageMode.Planar)
         session.start(false)
+        val course = requireNotNull(session.planarPath)
+        val cue = course.ledCues.first { light ->
+            course.attacks.all { kotlin.math.abs(it.atMs - light.atMs) > 200 }
+        }
         val player = host.player
         player.ready()
         session.observe()
-        session.tap(10_500)
-        assertEquals(500L, session.state.lastPanelHitMs)
-        val previousStats = session.state.stats
-        val cue = PlanarPath(chart).ledCues.first { it.atMs in 900L..2_700L }
-        player.tick(cue.atMs - 15)
-        session.observe()
-        player.sounds.clear()
-        session.tap(10_000 + cue.atMs - 15)
-        session.tap(10_000 + cue.atMs + 10)
         player.tick(cue.atMs)
         session.observe()
-        assertEquals(listOf(cue.midi to .21f), player.sounds)
-        assertEquals(cue.atMs, session.state.lastLedTapMs)
-        assertEquals(500L, session.state.lastPanelHitMs)
-        assertEquals(previousStats, session.state.stats)
-        session.tap(13_300)
-        player.end()
+        val combo = session.state.stats?.combo
+        player.sounds.clear()
+        session.tap(10_000 + cue.atMs)
+        session.tap(10_008 + cue.atMs)
         session.observe()
-        assertEquals(100_000, session.state.stats?.score)
+        assertEquals(cue.atMs, session.state.lastLedTapMs)
+        assertEquals(listOf(.22f * host.volume), player.strikes)
+        assertTrue(player.sounds.isEmpty())
+        assertEquals(combo, session.state.stats?.combo)
+        assertEquals(0, session.state.stats?.stray)
         session.restart()
-        assertNull(session.state.lastPanelHitMs)
         assertNull(session.state.lastLedTapMs)
     }
 
     @Test
-    fun earlyLampTapCanAlsoScoreThePreviousGoldWithoutReplayingTheLamp() {
-        val host = Host()
-        val chart = Chart("Перекрытие", 120, 2_500, listOf(
-            Note("a", 500, 64, 400, .8f), Note("b", 1_150, 67, 400, .8f)
+    fun skippedMelodyAndChordVoicesSoundOnceAndOnlyVisibleKeysAreScored() {
+        val raw = Chart("Тест", 120, 3000, listOf(
+            Note("target", 500, 72, 200, .9f), Note("unison", 500, 72, 40, .4f),
+            Note("harmony", 500, 64, 200, .5f, false), Note("turn", 630, 74, 60, .4f),
+            Note("end", 1600, 67, 300, .9f)
         ))
-        val session = Session(host, scope, listOf(song.copy(bundled = chart, backingAsset = "demo.m4a")))
+        val host = Host()
+        host.writeValue("record.v3.test.bundled", "50000")
+        val session = Session(host, scope, listOf(song.copy(bundled = raw)))
         session.selectStageMode(StageMode.Planar)
+        assertNull(session.state.bestScore)
+        val score = requireNotNull(session.state.chart)
+        assertEquals(listOf("target", "end"), score.notes.map { it.id })
         session.start(false)
+        assertEquals(score.notes.map { it.atMs }, requireNotNull(session.planarPath).attacks.map { it.atMs })
         val player = host.player
         player.ready()
         session.observe()
-        val cue = PlanarPath(chart).ledCues.first()
-        player.tick(cue.atMs - 12)
+        for (time in listOf(500L, 630L, 1600L)) {
+            player.tick(time)
+            session.observe()
+            if (time != 630L) session.tap(10_000 + time)
+        }
+        assertEquals(listOf(64, 72, 74, 67), player.sounds.map { it.first })
+        player.end()
         session.observe()
-        session.tap(10_000 + cue.atMs - 12)
-        session.tap(10_000 + cue.atMs - 6)
-        player.tick(cue.atMs)
+        assertEquals(2, session.state.stats?.maxCombo)
+        assertEquals(100_000, session.state.bestScore)
+        session.menu()
+        session.start(true)
+        val preview = host.player
+        preview.ready()
         session.observe()
-        assertEquals(listOf(cue.midi to .21f), player.sounds)
-        assertEquals(1, player.strikes.size)
-        assertEquals(cue.atMs, session.state.lastLedTapMs)
-        assertEquals(500L, session.state.lastPanelHitMs)
-        assertEquals(1, session.state.stats?.combo)
-        assertEquals(0, session.state.stats?.stray)
+        for (time in listOf(500L, 630L, 1600L)) {
+            preview.tick(time)
+            session.observe()
+        }
+        assertEquals(listOf(72, 64, 74, 67), preview.sounds.map { it.first })
+        session.menu()
+        session.selectStageMode(StageMode.Orbit)
+        assertEquals(raw, session.state.chart)
+        assertEquals(50_000, session.state.bestScore)
+        session.selectStageMode(StageMode.Planar)
+        assertEquals(100_000, session.state.bestScore)
     }
 
     @Test

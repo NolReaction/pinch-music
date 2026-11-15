@@ -120,7 +120,7 @@ struct Piece {
 struct Stage {
     Program scene, wall;
     Buffer wallMesh, marble;
-    std::array<Buffer, 8> keys; // short vs full, mount side, numbered vs plain
+    std::array<Buffer, 8> keys; // short vs full, mount side, accent vs plain
     std::vector<Piece> pieces;
     float longestDrop = 0;
     GLsizei backdropIndices = 0, shadowIndices = 0;
@@ -205,15 +205,13 @@ struct Stage {
         if (width <= 0 || height <= 0 || !f)
             return;
         const float aspect = static_cast<float>(width) / height;
-        const float halfHeight = std::max(2.42f, 1.77f / aspect);
+        // Frame both banks together. Keys remain stationary in X as the marble changes direction.
+        const float halfHeight = std::max(2.42f, 2.06f / aspect);
         const float lensY = 9.93f / halfHeight, lensX = lensY / aspect;
         const float camera = f[3] + .26f, strength = std::max(0.f, std::min(1.f, f[6]));
         const int active = static_cast<int>(f[5]), roll = static_cast<int>(f[7]),
                   next = static_cast<int>(f[9]);
-        // Smoothly approach a modest lateral limit before each strike/reversal.
-        const float panT = std::max(-1.f, std::min(1.f, f[0] / 1.075f));
-        const float pan = .31f * panT * (1.5f - .5f * panT * panT);
-        const V ball{f[0] - pan, f[1] - camera, f[2]};
+        const V ball{f[0], f[1] - camera, f[2]};
         // Lens sees slightly more course below the marble than above due to the
         // elevated eye. Expand for the wall mounts and the full drop of a curved rail.
         const float range = halfHeight * 1.9f + 2.4f + longestDrop;
@@ -261,7 +259,7 @@ struct Stage {
         };
         for (auto it = lo; it != hi; ++it) {
             float center = keyCenterX(it->route.size() >= 2, it->side);
-            shadow(it->x - pan + center * it->tiltCos,
+            shadow(it->x + center * it->tiltCos,
                    it->y - camera + center * it->tiltSin, 0, it->slope);
         }
         shadow(ball.x, ball.y, 1, 0);
@@ -281,7 +279,7 @@ struct Stage {
             // Bounding boxes for the two slab clip planes, including mounting
             // hardware and a curved rail extending inwards from a guided key.
             const float extension = guided ? p.route.back().x * .5f : 0.f;
-            V center{p.x - pan + extension, p.y - camera + .22f, -.32f};
+            V center{p.x + extension, p.y - camera + .22f, -.32f};
             V halfSize{.76f + std::abs(extension), .56f + (guided ? longestDrop : 0.f), 1.06f};
             bool clipped = false;
             for (float sign : {-1.f, 1.f}) {
@@ -297,9 +295,8 @@ struct Stage {
             int shape = (guided ? 4 : 0) + (p.side > 0 ? 2 : 0) + (p.style == 1.f ? 1 : 0);
             float impact = i == active ? strength : 0.f;
             bool upcoming = i == next && f[10] > .5f;
-            float style = impact > .05f ? f[11] : (upcoming ? f[10] : p.style);
-            glUniform3f(scene.offset, p.x - pan, p.y - camera, 0);
-            glUniform4f(scene.key, impact, style, upcoming ? 1.f : 0.f, i == roll ? f[8] : -2.f);
+            glUniform3f(scene.offset, p.x, p.y - camera, 0);
+            glUniform4f(scene.key, impact, p.style, upcoming ? 1.f : 0.f, -2.f);
             glUniform2f(scene.tilt, p.tiltCos, p.tiltSin);
             keys[shape].bind();
             keys[shape].draw();
@@ -307,6 +304,7 @@ struct Stage {
                 if (!p.rail.count)
                     p.rail.upload(railMesh(p.route, p.lamps));
                 // Rails are already built in world axes from the physics samples.
+                glUniform4f(scene.key, 0.f, p.style, i == roll ? f[11] : 0.f, i == roll ? f[8] : -2.f);
                 glUniform2f(scene.tilt, 1.f, 0.f);
                 p.rail.bind();
                 p.rail.draw();

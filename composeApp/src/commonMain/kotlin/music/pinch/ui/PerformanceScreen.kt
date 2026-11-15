@@ -48,8 +48,7 @@ internal fun PerformanceScreen(state: ScreenState, actions: Actions, positionMs:
             when (state.stageMode) {
                 StageMode.Orbit -> MarbleStage(chart, positionMs, Modifier.matchParentSize(), state.collectedEchoMs)
                 StageMode.Planar -> if (planarPath != null) PlanarStage(planarPath, positionMs,
-                    Modifier.matchParentSize(), state.scene == Scene.Playing,
-                    state.lastPanelHitMs, state.collectedEchoMs, state.lastLedTapMs)
+                    Modifier.matchParentSize(), state.scene == Scene.Playing, state.lastLedTapMs)
             }
             if (interactive) Box(Modifier.matchParentSize().rhythmInput(actions))
         }
@@ -60,7 +59,9 @@ internal fun PerformanceScreen(state: ScreenState, actions: Actions, positionMs:
                 .padding(start = 18.dp, end = 14.dp, top = 22.dp, bottom = 10.dp)) {
                 if (state.preview) {
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Text("Все ноты звучат автоматически", modifier = Modifier.weight(1f), color = White,
+                        val hint = if (state.stageMode == StageMode.Planar) "Шарик отбивает основные ноты"
+                            else "Все ноты звучат автоматически"
+                        Text(hint, modifier = Modifier.weight(1f), color = White,
                             fontSize = 15.sp, fontWeight = FontWeight.Medium)
                         TextButton(onClick = actions::menu) { Text("В меню", color = White) }
                     }

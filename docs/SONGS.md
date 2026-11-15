@@ -7,7 +7,7 @@
 | Песня | Партия для игры | Музыкальный ориентир |
 | --- | --- | --- |
 | On the Floor — Jennifer Lopez ft. Pitbull | Нисходящий мотив из «Llorando se fue», знакомый по «Lambada». Перенесён в ре минор. | [Мелодия](https://melodicnotes.com/song/jennifer-lopez-on-the-floor-4003/) |
-| Stereo Love — Edward Maya & Vika Jigulina | 127 BPM, 3:04. Аккордеон, бас и ударные ведут игру от вступления до коды. Шарик встречает 508 нот, из них 159 акцентов отбивает игрок. | [Mark Richards, пример 14](https://mtosmt.org/issues/mto.17.23.3/mto.17.23.3.richards.html) |
+| Stereo Love — Edward Maya & Vika Jigulina | 127 BPM, 3:04. Аккордеон, бас и ударные ведут игру от вступления до коды. В партитуре 508 нот, из них 159 помечены как игровые акценты. Орбита использует все ноты, каскад строит маршрут по основным ударам. | [Mark Richards, пример 14](https://mtosmt.org/issues/mto.17.23.3/mto.17.23.3.richards.html) |
 | Gypsy Woman — Crystal Waters | Отдельные ступени органных аккордов, включая хроматическое движение ми – ми-бемоль – ре. | [Гармония органного риффа](https://dancenastysmusicblog.wordpress.com/2019/05/03/crystal-waters-gypsy-woman-a-transcription/) |
 | Levels — Avicii | Две нисходящие фразы синтезатора с разными окончаниями. | [Rick Snoman, Dance Music Manual, пример 1.5](https://api.pageplace.de/preview/DT0400.9783840313257_A38251302/preview-9783840313257_A38251302.pdf) |
 | Stay — The Kid LAROI & Justin Bieber | Контур вокальной фразы припева. | [Нотный ориентир](https://easyletternotes.wordpress.com/2021/09/09/stay-the-kid-laroi-justin-bieber/) |

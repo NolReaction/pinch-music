@@ -1,6 +1,5 @@
 package music.pinch.ui
 
-import kotlin.math.max
 import kotlin.math.sqrt
 
 internal const val CascadeKeyStride = 5
@@ -44,9 +43,7 @@ internal fun PlanarPath.gpuCourse(): CascadeGpuCourse {
     return CascadeGpuCourse(keys, rails, lamps)
 }
 
-internal fun PlanarPath.writeGpuFrame(
-    timeMs: Long, out: FloatArray, hitMs: Long? = null, echoMs: Long? = null, ledTapMs: Long? = null,
-) {
+internal fun PlanarPath.writeGpuFrame(timeMs: Long, out: FloatArray, ledTapMs: Long? = null) {
     val pose = frame(timeMs)
     val active = attacks.getOrNull(pose.attackIndex)
     val next = attacks.getOrNull(pose.attackIndex + 1)
@@ -56,21 +53,12 @@ internal fun PlanarPath.writeGpuFrame(
     out[3] = pose.cameraY
     out[4] = pose.rollAngle
     out[5] = (active?.panelIndex ?: -1).toFloat()
-    // The backing produces a visible strike in preview. A player's hit sustains the key's light.
-    var pulse = 0f
-    if (active != null) {
-        val held = active.atMs == hitMs || active.atMs == echoMs
-        val decayMs = if (held) 420f else 235f
-        pulse = (1f - (timeMs - active.atMs) / decayMs).coerceIn(0f, 1f)
-        if (!held) pulse *= .86f
-        if (pose.rollingPanel != null && ledTapMs != null && timeMs - ledTapMs in 0..180L) {
-            pulse = max(pulse, 1f - (timeMs - ledTapMs) / 180f)
-        }
-    }
-    out[6] = pulse
+    // A key flashes once, at physical contact. Input on a rail only lights its own lamp.
+    out[6] = active?.let { (1f - (timeMs - it.atMs) / 235f).coerceIn(0f, 1f) } ?: 0f
     out[7] = (pose.rollingPanel ?: -1).toFloat()
     out[8] = pose.litLedIndex.toFloat()
     out[9] = (next?.panelIndex ?: -1).toFloat()
     out[10] = (next?.material ?: 0).toFloat()
-    out[11] = (active?.material ?: 0).toFloat()
+    val lamp = pose.rollingPanel?.let { panels[it].ledTimesMs.getOrNull(pose.litLedIndex) }
+    out[11] = if (lamp != null && lamp == ledTapMs) (1f - (timeMs - lamp) / 180f).coerceIn(0f, 1f) else 0f
 }

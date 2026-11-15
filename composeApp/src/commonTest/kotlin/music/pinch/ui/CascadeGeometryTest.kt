@@ -7,7 +7,7 @@ import kotlin.math.hypot
 import music.pinch.songLibrary
 
 class CascadeGeometryTest {
-    @Test fun frameTracksIndividualNotesEvenWhenTheyShareAKey() {
+    @Test fun eachPlannedContactLightsOneKeyTangentToTheMarble() {
         val chart = requireNotNull(songLibrary.single { it.id == "stereo-love" }.bundled)
         val path = PlanarPath(chart)
         val course = path.gpuCourse()
@@ -20,7 +20,7 @@ class CascadeGeometryTest {
                 assertEquals(panel.toFloat(), frame[9])
                 assertEquals(style, frame[10])
             }
-            path.writeGpuFrame(attack.atMs, frame, hitMs = attack.atMs)
+            path.writeGpuFrame(attack.atMs, frame)
             val key = panel * CascadeKeyStride
             val dx = frame[0] - course.keys[key]
             val dy = frame[1] - course.keys[key + 1]
@@ -31,9 +31,24 @@ class CascadeGeometryTest {
             assertEquals(0f, frame[2])
             assertEquals(panel.toFloat(), frame[5])
             assertEquals(1f, frame[6])
-            assertEquals(style, frame[11])
+            assertEquals(style, course.keys[key + 3])
             if (index == path.attacks.lastIndex) assertEquals(-1f, frame[9])
         }
-        assertTrue(path.attacks.zipWithNext().any { (a, b) -> a.panelIndex == b.panelIndex && a.playable != b.playable })
+        assertEquals(path.panels.indices.toList(), path.attacks.map { it.panelIndex })
+    }
+
+    @Test fun railTapOnlyBoostsTheReachedLamp() {
+        val chart = requireNotNull(songLibrary.single { it.id == "stereo-love" }.bundled)
+        val path = PlanarPath(chart)
+        val lamp = path.panels.first { it.ledTimesMs.isNotEmpty() }.ledTimesMs.first()
+        val frame = FloatArray(12)
+        path.writeGpuFrame(lamp, frame)
+        val impact = frame[6]
+        assertEquals(0f, frame[11])
+        path.writeGpuFrame(lamp, frame, ledTapMs = lamp)
+        assertEquals(impact, frame[6])
+        assertEquals(1f, frame[11])
+        path.writeGpuFrame(lamp + 185, frame, ledTapMs = lamp)
+        assertEquals(0f, frame[11])
     }
 }

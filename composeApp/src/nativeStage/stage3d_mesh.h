@@ -30,7 +30,7 @@ inline V unit(V v) {
 inline V cross(V a, V b) {
     return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
 }
-enum Surface { Enamel, Skirt, Inlay, Chrome, Iron, Bolt, Digit, Rail, Led, Glass };
+enum Surface { Enamel, Skirt, Inlay, Chrome, Iron, Bolt, Accent, Rail, Led, Glass };
 struct Vertex {
     V p, n;
     float material, detail;
@@ -118,7 +118,7 @@ inline float keyCenterX(bool shortKey, float side) {
 
 // Loft rounded rectangular contours. Bevel normals angle smoothly into the flat top.
 // The two fasteners sit inside recessed ferrules on the playing face.
-inline Mesh keyMesh(bool shortKey, float side, bool numbered) {
+inline Mesh keyMesh(bool shortKey, float side, bool accented) {
     Mesh m;
     float width = shortKey ? .46f : .70f;
     // Keep the strike near the inward lip and the long part of the key behind
@@ -126,7 +126,7 @@ inline Mesh keyMesh(bool shortKey, float side, bool numbered) {
     float cx = keyCenterX(shortKey, side);
     float frontZ = .25f, backZ = shortKey ? -.585f : -.66f;
     float length = frontZ - backZ, cz = (frontZ + backZ) * .5f;
-    float depth = numbered ? .36f : .215f;
+    float depth = accented ? .36f : .215f;
     const float corner = .115f;
     const int perCorner = 4, ring = 4 * perCorner;
     struct Level {
@@ -135,8 +135,8 @@ inline Mesh keyMesh(bool shortKey, float side, bool numbered) {
     };
     const Level levels[] = {{0, .041f, 1, Enamel},
                             {.010f, .018f, .72f, Enamel},
-                            {.030f, .003f, .28f, numbered ? Inlay : Enamel},
-                            {.041f, 0, 0, numbered ? Inlay : Enamel},
+                            {.030f, .003f, .28f, accented ? Inlay : Enamel},
+                            {.041f, 0, 0, accented ? Inlay : Enamel},
                             {.053f, 0, 0, Inlay},
                             {.065f, 0, 0, Inlay},
                             {depth - .03f, 0, 0, Skirt},
@@ -185,32 +185,13 @@ inline Mesh keyMesh(bool shortKey, float side, bool numbered) {
         rod(m, {x, depth + .09f, WallZ + .014f}, {x, depth + .09f, WallZ + .065f}, .050f, Iron, 8);
         rod(m, {x, depth + .09f, WallZ + .056f}, {x, depth + .09f, WallZ + .077f}, .033f, Bolt, 8);
     }
-    if (numbered) {
-        // A physical seven-segment insert inside the front cap of accent keys.
-        const float sy = depth * .52f, z = frontZ + .0015f, h = .112f, w = .071f, gap = .012f;
-        auto segment = [&](float x, float y, float dx, float dy) {
-            V along = unit({dx, dy, 0}), across{-along.y, along.x, 0}, mid{cx + x, sy + y, z};
-            V span{dx, dy, 0};
-            const float stroke = .0155f;
-            V a = mid - span, b = mid + span;
-            int base = static_cast<int>(m.verts.size());
-            for (V v : {a - along * stroke, a - across * stroke, b - across * stroke, b + along * stroke,
-                        b + across * stroke, a + across * stroke})
-                m.point(v, {0, 0, 1}, Digit);
-            m.quad(base + 1, base + 2, base + 4, base + 5);
-            m.tri(base, base + 1, base + 5);
-            m.tri(base + 2, base + 3, base + 4);
-        };
-        for (float y : {-h, 0.f, h})
-            segment(0, y, w - gap, 0);
-        for (float x : {-w, w})
-            for (float y : {-h * .5f, h * .5f})
-                segment(x, y, 0, h * .5f - gap);
+    if (accented) {
+        const float z = frontZ + .0015f;
         // Rounded luminous gasket wrapping the end cap.
         for (float x : {cx - width * .5f + .076f, cx + width * .5f - .076f})
-            rod(m, {x, .049f, z - .009f}, {x, depth - .037f, z - .009f}, .014f, Inlay, 6);
+            rod(m, {x, .049f, z - .009f}, {x, depth - .037f, z - .009f}, .014f, Accent, 6);
         rod(m, {cx - width * .5f + .076f, depth - .037f, z - .009f},
-            {cx + width * .5f - .076f, depth - .037f, z - .009f}, .014f, Inlay, 6);
+            {cx + width * .5f - .076f, depth - .037f, z - .009f}, .014f, Accent, 6);
     }
     return m;
 }
@@ -234,6 +215,11 @@ inline Mesh railMesh(const std::vector<V>& input, const std::vector<V>& lamps) {
     }
     tube(m, left, radius, Rail, 8);
     tube(m, right, radius, Rail, 8);
+    // Seat each runner on its cross-tie. The short shoes sit below the rolling surface.
+    auto shoes = [&](V c) {
+        for (float z : {-gauge, gauge})
+            rod(m, c + V{0, .012f, z}, c + V{0, .052f, z}, .014f, Iron, 6);
+    };
     float dist = 0;
     for (size_t i = 1; i < center.size(); ++i) {
         V delta = center[i] - center[i - 1];
@@ -245,6 +231,7 @@ inline Mesh railMesh(const std::vector<V>& input, const std::vector<V>& lamps) {
         V b = a + V{0, 0, -.32f}, c = b + V{0, -.07f, -.09f};
         V d{c.x, c.y, WallZ + .035f};
         tube(m, {a, b, c, d}, .019f, Chrome, 7);
+        shoes(center[i]);
         rod(m, {d.x, d.y, WallZ + .018f}, {d.x, d.y, WallZ + .055f}, .034f, Bolt, 9);
     }
     for (size_t i = 0; i < lamps.size(); ++i) {
@@ -261,6 +248,7 @@ inline Mesh railMesh(const std::vector<V>& input, const std::vector<V>& lamps) {
             }
         }
         // Recessed indicator collars on a short cross-tie, clear of the rolling surface.
+        shoes(c);
         rod(m, c + V{0, .053f, -.14f}, c + V{0, .053f, .169f}, .026f, Iron);
         rod(m, c + V{0, .053f, .169f}, c + V{0, .053f, .181f}, .025f, Led, 10, static_cast<float>(i));
     }

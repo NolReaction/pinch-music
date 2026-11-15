@@ -5,6 +5,7 @@ import kotlin.math.roundToInt
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import music.pinch.core.cascadeChart
 
 class SongLibraryTest {
     @Test fun everySongKeepsItsOwnTempoAndSingleFingerTargets() {
@@ -55,5 +56,19 @@ class SongLibraryTest {
         val old = decodeChart(oldJson, "Импорт")
         assertTrue(old.notes.single().playable)
         assertEquals(oldJson, encodeChart(old))
+    }
+
+    @Test fun cascadeReducesOrnamentsAndPreservesAuthoredStereoLoveTargetsAtTheirActualOnsets() {
+        val source = requireNotNull(stereoLoveSong.bundled)
+        val route = source.cascadeChart()
+        assertEquals(source.durationMs, route.durationMs)
+        assertEquals(source.bpm, route.bpm)
+        assertEquals(source.notes.filter { it.playable }, route.notes.filter { it.playable })
+        assertTrue(route.notes.size <= source.notes.size / 2)
+        assertTrue(route.notes.any { !it.playable })
+        assertTrue(route.notes.all { it in source.notes })
+        assertTrue(route.notes.zipWithNext().all { (a, b) -> b.atMs - a.atMs >= 400 })
+        assertEquals(source.notes.last(), route.notes.last())
+        assertTrue(route.cascadeChart() === route)
     }
 }

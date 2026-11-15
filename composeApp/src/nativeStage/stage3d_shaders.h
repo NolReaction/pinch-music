@@ -100,7 +100,7 @@ void main(){
                      (1.-smoothstep(.24,.83,abs(vPos.y-uBall.y)));
         col=(vec3(.022,.032,.061)+vec3(.019,.021,.040)*nl+
              env*(.105+.23*edge)+vec3(.23,.22,.27)*spec)*ao;
-        float emissive=abs(uKey.y-1.)<.25 ? (.075+.075*edge) : (.78+.21*top);
+        float emissive=.78+.21*top;
         col=mix(col,accent*(.40+.48*top+.14*nl)+env*.075,impact*emissive);
     } else if(mat<2.5) {
         col=mix(vec3(.085,.096,.128)+env*.16,accent,
@@ -118,7 +118,7 @@ void main(){
         float visited=step(vMat.y-.1,uKey.w);
         float latest=1.-step(.25,abs(uKey.w-vMat.y));
         col=mix(vec3(.11,.20,.24),vec3(.23,.84,.95),.66*visited);
-        col+=vec3(.36,.22,.34)*latest;
+        col+=(vec3(.36,.22,.34)+vec3(.44,.56,.50)*uKey.z)*latest;
     }
     gl_FragColor=vec4(col,1.);
 }

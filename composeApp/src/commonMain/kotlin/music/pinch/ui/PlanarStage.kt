@@ -7,10 +7,10 @@ import androidx.compose.ui.Modifier
 @Composable
 internal fun PlanarStage(
     path: PlanarPath, positionMs: () -> Long, modifier: Modifier, animate: Boolean,
-    hitMs: Long?, collectedEchoMs: Long?, ledTapMs: Long?,
+    ledTapMs: Long?,
 ) {
     val course = remember(path) { path.gpuCourse() }
     NativeCascadeStage(modifier, course, { frame ->
-        path.writeGpuFrame(positionMs(), frame, hitMs, collectedEchoMs, ledTapMs)
+        path.writeGpuFrame(positionMs(), frame, ledTapMs)
     }, animate)
 }

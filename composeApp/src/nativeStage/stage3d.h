@@ -16,7 +16,7 @@ void stage3d_destroy(void* stage);
 void stage3d_set_course(void* stage, const float* keys, int keyCount, const float* rails, int railPointCount,
                         const float* lamps, int lampCount);
 /* [ballX, ballY, ballZ, cameraY, rollRadians, activePanel, impactStrength,
- *  rollingPanel, lastCrossedLocalLed, nextPanel, nextStyle, activeStyle]. Missing indices are -1. */
+ *  rollingPanel, lastCrossedLocalLed, nextPanel, nextStyle, tappedLedStrength]. Missing indices are -1. */
 void stage3d_draw(void* stage, int width, int height, const float* frame);
 
 #ifdef __cplusplus
