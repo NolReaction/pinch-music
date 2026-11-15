@@ -145,8 +145,13 @@ private class CascadeRail(startX: Float, startY: Float, nextX: Float, gap: Doubl
     }
 
     private fun segment(table: DoubleArray, position: Double): Int {
-        val index = table.binarySearch(position)
-        return (if (index >= 0) index else -index - 2).coerceIn(0, Segments - 1)
+        var lower = 0
+        var upper = table.lastIndex
+        while (lower + 1 < upper) {
+            val middle = (lower + upper) / 2
+            if (position < table[middle]) upper = middle else lower = middle
+        }
+        return lower
     }
 }
 
