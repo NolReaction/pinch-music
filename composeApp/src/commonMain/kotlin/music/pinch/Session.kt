@@ -5,6 +5,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import music.pinch.core.Chart
+import music.pinch.core.Note
 import music.pinch.core.Grade
 import music.pinch.core.RhythmGame
 import music.pinch.core.TapResult
@@ -21,10 +22,11 @@ internal class Session(
         }
     }.toMap().toMutableMap()
     private val initialSong = songs.find { it.id == platform.readValue("selected.song") }
-        ?: songs.first { it.bundled != null || it.id in imports }
+        ?: songs.find { it.id == "stereo-love" && (it.bundled != null || it.id in imports) }
+        ?: songs.firstOrNull { it.bundled != null || it.id in imports }
+        ?: songs.first()
     var state by mutableStateOf(ScreenState(songs = songs, selectedSong = initialSong,
         instrument = Instrument.entries.find { it.name == platform.readValue("instrument") } ?: Instrument.Piano,
-        pace = Pace.entries.find { it.name == platform.readValue("pace") } ?: Pace.Relaxed,
         volume = platform.volume, haptics = platform.haptics))
         private set
     var media by mutableStateOf<GameMedia?>(null)
@@ -37,16 +39,18 @@ internal class Session(
     private var reactionUntil = 0L
     private var nextPreviewNote = 0
     private var recordKey = ""
+    private var lastMistakeAt: Long? = null
+    private var lastMistakeTarget: String? = null
 
     init { refreshSong() }
 
     private fun refreshSong() {
         val song = state.selectedSong
         val imported = imports[song.id]
-        val chart = (imported ?: song.bundled)?.atPace(state.pace)
-        // A new arrangement of the same song has its own record.
-        val arrangement = imported?.let { encodeChart(it).hashCode().toString() } ?: "bundled"
-        recordKey = "record.${song.id}.${state.pace.name}.$arrangement"
+        val chart = imported ?: song.bundled
+        // The old records used stretched clocks. Leave those keys intact on upgraded devices.
+        val arrangement = imported?.let { "import.${encodeChart(it).hashCode()}" } ?: "bundled"
+        recordKey = "record.v3.${song.id}.$arrangement"
         state = state.copy(chart = chart, importedIds = imports.keys.toSet(), bestScore = platform.readValue(recordKey)?.toIntOrNull(),
             availableIds = state.songs.filter { it.bundled != null || it.id in imports }.map { it.id }.toSet())
     }
@@ -63,13 +67,6 @@ internal class Session(
         if (state.scene != Scene.Menu) return
         platform.writeValue("instrument", value.name)
         state = state.copy(instrument = value)
-    }
-
-    override fun selectPace(value: Pace) {
-        if (state.scene != Scene.Menu) return
-        platform.writeValue("pace", value.name)
-        state = state.copy(pace = value)
-        refreshSong()
     }
 
     override fun restoreBundled() {
@@ -107,14 +104,17 @@ internal class Session(
         val song = state.chart ?: return
         if (state.importing) return
         close()
-        game = if (preview) null else RhythmGame(song, forgiving = state.pace == Pace.Relaxed)
+        game = if (preview) null else RhythmGame(song, forgiving = true)
         state = state.copy(scene = Scene.Loading, preview = preview, positionMs = 0, notice = null,
             countdown = null, reaction = null, error = null, newRecord = false, stats = game?.stats)
         try {
             val player = platform.newMedia(song.durationMs, state.instrument)
             media = player
             player.onInterrupted = { if (media === player) pause() }
-            player.prepare(song.notes.map { it.midi }.toSet())
+            val pitches = song.notes.mapTo(mutableSetOf()) { it.midi }
+            if (!preview) pitches.addAll(song.notes.map { wrongPitch(it.midi) })
+            player.setBackingVolume(state.volume)
+            player.prepare(pitches, state.backingAsset)
         } catch (e: Exception) {
             fail("Не удалось начать игру. " + e.message.orEmpty())
         }
@@ -161,16 +161,21 @@ internal class Session(
                 val song = state.chart ?: return
                 val now = snap.positionMs.coerceIn(0L, song.durationMs)
                 if (state.preview) {
+                    var latest: Note? = null
                     while (nextPreviewNote < song.notes.size && song.notes[nextPreviewNote].atMs <= now) {
-                        val note = song.notes[nextPreviewNote++]
-                        if (now - note.atMs <= 180) player.note(note.midi, note.velocity * state.volume)
+                        latest = song.notes[nextPreviewNote++]
+                    }
+                    if (latest != null && now - latest.atMs <= 120) {
+                        player.note(latest.midi, latest.velocity * state.volume)
                     }
                 }
                 // A small delivery margin lets a frame and a queued input of the same vsync settle.
                 val missed = game?.advance(now - 32) ?: 0
+                game?.takeMissCue(now)?.let { soundMistake(player, it, now, stray = false) }
                 val leadRemaining = song.notes.first().atMs - now
-                val count = if (!state.preview && leadRemaining > 0)
-                    ((leadRemaining + 499) / 500).toInt() else null
+                val beatMs = (60_000L / song.bpm).coerceAtLeast(1)
+                val count = if (!state.preview && leadRemaining in 1..(4 * beatMs))
+                    ((leadRemaining + beatMs - 1) / beatMs).toInt() else null
                 state = state.copy(positionMs = now, stats = game?.stats, countdown = count,
                     reaction = state.reaction.takeIf { now < reactionUntil })
                 if (missed > 0) showReaction("Пропуск", now)
@@ -208,13 +213,27 @@ internal class Session(
                 }
                 showReaction(label, snap.positionMs)
             }
-            TapResult.Stray -> showReaction("Мимо", snap.positionMs)
+            TapResult.Stray -> {
+                soundMistake(player, engine.nearestTarget(at), snap.positionMs, stray = true)
+                showReaction("Мимо", snap.positionMs)
+            }
             TapResult.Ignored -> return
         }
         state = state.copy(stats = engine.stats)
     }
 
     override fun tapNow() { media?.snapshot()?.let { tap(it.observedUptimeMs) } }
+
+    private fun soundMistake(player: GameMedia, target: Note, now: Long, stray: Boolean) {
+        // Repeated bad taps still affect score. Keep them from masking the song, including
+        // a stray tap delivered in the same beat as that target's automatic miss.
+        val previous = lastMistakeAt
+        if (previous != null && now - previous < 120 && (stray || lastMistakeTarget == target.id)) return
+        val gain = if (stray) .27f else .36f
+        player.note(wrongPitch(target.midi), gain * target.velocity * state.volume)
+        lastMistakeAt = now
+        lastMistakeTarget = target.id
+    }
 
     private fun showReaction(text: String, at: Long) {
         reactionUntil = at + 420
@@ -256,6 +275,7 @@ internal class Session(
     override fun volume(value: Float) {
         platform.volume = value.coerceIn(0f, 1f)
         state = state.copy(volume = platform.volume)
+        media?.setBackingVolume(platform.volume)
     }
 
     override fun haptics(value: Boolean) {
@@ -275,6 +295,8 @@ internal class Session(
         old?.onInterrupted = null
         old?.close()
         nextPreviewNote = 0
+        lastMistakeAt = null
+        lastMistakeTarget = null
         game = null
         waitingSince = null
         resumeAt = null
@@ -282,3 +304,7 @@ internal class Session(
         reactionUntil = 0
     }
 }
+
+
+// Lean one semitone off the expected pitch, including at the MIDI range boundary.
+private fun wrongPitch(midi: Int): Int = if (midi == 127) 126 else midi + 1

@@ -20,13 +20,19 @@ private struct AudioFailure: LocalizedError {
 
 // The shared controller and UIKit notifications access the audio session on the main actor.
 @MainActor
-private final class NativeMedia: NSObject, @preconcurrency AppleMediaSession {
+private final class NativeMedia: NSObject, @preconcurrency AppleMediaSession, @preconcurrency AVAudioPlayerDelegate {
     private let instrument: String
     private var observer: AppleInterruptListener?
     private let audioSession = AVAudioSession.sharedInstance()
     private var voices: SampleVoices?
+    private var backing: AVAudioPlayer?
+    private var backingVolume: Float = 1
+    private(set) var backingEnded = false
+    var backingPlaying: Bool { backing?.isPlaying ?? false }
+    var backingPositionMs: Int64 { Int64(((backing?.currentTime ?? 0) * 1000).rounded()) }
     private var roots = [Int32: Int32]()
     private var tokens = [NSObjectProtocol]()
+    private var wantsPlayback = false
     private var sessionWasActivated = false
     private var closed = false
     private(set) var failure: String?
@@ -40,10 +46,19 @@ private final class NativeMedia: NSObject, @preconcurrency AppleMediaSession {
 
     func includeSample(midi: Int32, root: Int32) { roots[midi] = root }
 
-    func prepare() {
+    func prepare(backingAsset: String?) {
         guard !closed, voices == nil, failure == nil else { return }
         do {
             voices = try SampleVoices(instrument: instrument, roots: roots)
+            if let asset = backingAsset {
+                guard let folder = Bundle.main.resourceURL else { throw AudioFailure("Отсутствуют ресурсы игры.") }
+                let url = folder.appendingPathComponent("media").appendingPathComponent(asset)
+                let player = try AVAudioPlayer(contentsOf: url)
+                player.delegate = self
+                player.volume = backingVolume
+                guard player.prepareToPlay() else { throw AudioFailure("Не удалось подготовить аккомпанемент.") }
+                backing = player
+            }
             if UIApplication.shared.applicationState != .active { interrupt() }
         } catch {
             failure = error.localizedDescription
@@ -51,7 +66,7 @@ private final class NativeMedia: NSObject, @preconcurrency AppleMediaSession {
     }
 
     func activate() -> Bool {
-        guard !closed, let voices = voices, failure == nil else { return false }
+        guard !closed, !backingEnded, let voices = voices, failure == nil else { return false }
         guard UIApplication.shared.applicationState == .active else {
             interrupt()
             return false
@@ -62,6 +77,10 @@ private final class NativeMedia: NSObject, @preconcurrency AppleMediaSession {
             try audioSession.setActive(true)
             sessionWasActivated = true
             try voices.start()
+            if let backing = backing, !backing.isPlaying && !backing.play() {
+                throw AudioFailure("Не удалось начать аккомпанемент.")
+            }
+            wantsPlayback = true
             return true
         } catch {
             failure = error.localizedDescription
@@ -69,7 +88,27 @@ private final class NativeMedia: NSObject, @preconcurrency AppleMediaSession {
         }
     }
 
-    func silence() { voices?.silence() }
+    func setBackingVolume(gain: Float) {
+        backingVolume = min(1, max(0, gain))
+        backing?.volume = backingVolume
+    }
+
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        guard !closed, player === backing else { return }
+        if flag { backingEnded = true }
+        else { failure = "Воспроизведение аккомпанемента прервано." }
+    }
+
+    func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        guard !closed, player === backing else { return }
+        failure = error?.localizedDescription ?? "Не удалось прочитать аккомпанемент."
+    }
+
+    func silence() {
+        wantsPlayback = false
+        backing?.pause()
+        voices?.silence()
+    }
     func note(midi: Int32, gain: Float) { voices?.play(midi, gain: gain) }
 
     func close() {
@@ -78,6 +117,9 @@ private final class NativeMedia: NSObject, @preconcurrency AppleMediaSession {
         observer = nil
         tokens.forEach { NotificationCenter.default.removeObserver($0) }
         tokens.removeAll()
+        backing?.delegate = nil
+        backing?.stop()
+        backing = nil
         voices?.shutdown()
         voices = nil
         if sessionWasActivated {
@@ -117,7 +159,8 @@ private final class NativeMedia: NSObject, @preconcurrency AppleMediaSession {
             if reason == .oldDeviceUnavailable || reason == .newDeviceAvailable || changed { media.interrupt() }
         }
         observe(.AVAudioEngineConfigurationChange) { media, notification in
-            if let changed = notification.object as? AVAudioEngine, changed === media.voices?.engine, !changed.isRunning {
+            if media.wantsPlayback, let changed = notification.object as? AVAudioEngine,
+               changed === media.voices?.engine, !changed.isRunning {
                 media.interrupt()
             }
         }

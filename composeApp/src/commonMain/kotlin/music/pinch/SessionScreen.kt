@@ -1,13 +1,13 @@
 package music.pinch
 
+import music.pinch.core.FORGIVING_WINDOW_MS
 import music.pinch.core.Chart
 import music.pinch.core.GameStats
 
 enum class Scene { Menu, Loading, Playing, Paused, Resuming, Result, Error }
 enum class Instrument(val label: String) { Piano("Фортепиано"), Mallet("Маримба"), Synth("Синтезатор") }
-enum class Pace(val label: String, val minGapMs: Long) { Relaxed("Спокойно", 740), Standard("В ритме", 450) }
 
-data class Song(val id: String, val title: String, val artist: String, val bundled: Chart? = null)
+data class Song(val id: String, val title: String, val artist: String, val bundled: Chart? = null, val backingAsset: String? = null)
 
 data class ScreenState(
     val songs: List<Song>,
@@ -16,7 +16,6 @@ data class ScreenState(
     val importedIds: Set<String> = emptySet(),
     val availableIds: Set<String> = emptySet(),
     val instrument: Instrument = Instrument.Piano,
-    val pace: Pace = Pace.Relaxed,
     val importing: Boolean = false,
     val notice: String? = null,
     val scene: Scene = Scene.Menu,
@@ -32,16 +31,16 @@ data class ScreenState(
     val volume: Float = 0.8f,
     val haptics: Boolean = false
 ) {
+    val backingAsset: String? get() = selectedSong.backingAsset.takeUnless { selectedSong.id in importedIds }
     val title: String get() = selectedSong.title
     val bpm: Int get() = chart?.bpm ?: 0
     val durationMs: Long get() = chart?.durationMs ?: 0
-    val lastHitWindowMs: Long get() = (chart?.notes?.lastOrNull()?.atMs ?: 0) + if (pace == Pace.Relaxed) 165 else 120
+    val lastHitWindowMs: Long get() = (chart?.notes?.lastOrNull()?.atMs ?: 0) + FORGIVING_WINDOW_MS
 }
 
 interface Actions {
     fun selectSong(id: String)
     fun selectInstrument(value: Instrument)
-    fun selectPace(value: Pace)
     fun restoreBundled()
     fun importAudio()
     fun dismissNotice()

@@ -19,7 +19,11 @@ interface AppleInterruptListener {
 
 interface AppleMediaSession {
     fun includeSample(midi: Int, root: Int)
-    fun prepare()
+    fun prepare(backingAsset: String?)
+    fun setBackingVolume(gain: Float)
+    val backingPositionMs: Long
+    val backingPlaying: Boolean
+    val backingEnded: Boolean
     val failure: String?
     fun activate(): Boolean
     fun silence()
@@ -53,10 +57,11 @@ private class IosPlatform(private val factory: AppleMediaFactoryProtocol) : Plat
         IosMedia(factory, durationMs, instrument)
 }
 
-private class IosMedia(factory: AppleMediaFactoryProtocol, durationMs: Long, instrument: Instrument) :
+private class IosMedia(factory: AppleMediaFactoryProtocol, private val durationMs: Long, instrument: Instrument) :
     GameMedia, AppleInterruptListener {
     private val clock = SessionClock(durationMs)
     private val session = factory.createMedia(instrument.name.lowercase(), this)
+    private var hasBacking = false
     private var ready = false
     private var closed = false
     override var onInterrupted: (() -> Unit)? = null
@@ -69,16 +74,29 @@ private class IosMedia(factory: AppleMediaFactoryProtocol, durationMs: Long, ins
         onInterrupted?.invoke()
     }
 
-    override fun prepare(pitches: Set<Int>) {
+    override fun prepare(pitches: Set<Int>, backingAsset: String?) {
         if (ready || closed) return
         for (pitch in pitches) session.includeSample(pitch, instrumentRoot(pitch))
-        session.prepare()
+        hasBacking = backingAsset != null
+        session.prepare(backingAsset)
         ready = session.failure == null
     }
 
-    override fun snapshot() = clock.snapshot(nowMs(), ready && !closed, session.failure)
+    override fun setBackingVolume(volume: Float) {
+        if (!closed) session.setBackingVolume(volume.coerceIn(0f, 1f))
+    }
+
+    override fun snapshot(): Playback {
+        val now = nowMs()
+        if (!hasBacking) return clock.snapshot(now, ready && !closed, session.failure)
+        val ended = session.backingEnded
+        val position = if (ended) durationMs else session.backingPositionMs.coerceIn(0, durationMs)
+        return Playback(ready && !closed, !closed && session.backingPlaying, ended, position, now, session.failure)
+    }
+
     override fun play() {
-        if (ready && !closed && session.activate()) clock.play(nowMs())
+        if (!ready || closed) return
+        if (session.activate() && !hasBacking) clock.play(nowMs())
     }
 
     override fun pause() {

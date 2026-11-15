@@ -35,7 +35,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import music.pinch.Actions
 import music.pinch.Instrument
-import music.pinch.Pace
 import music.pinch.Song
 import music.pinch.Scene
 import music.pinch.ScreenState
@@ -95,7 +94,6 @@ private fun Menu(state: ScreenState, actions: Actions) {
         TrackCard(state)
         ActionButton("Выбрать мелодию", onClick = { library = true }, primary = false, enabled = !state.importing)
         Choices("Инструмент", Instrument.entries, state.instrument, { it.label }, actions::selectInstrument)
-        Choices("Темп", Pace.entries, state.pace, { it.label }, actions::selectPace)
         if (state.importing) {
             Row(Modifier.fillMaxWidth().heightIn(min = 54.dp), verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -107,6 +105,7 @@ private fun Menu(state: ScreenState, actions: Actions) {
                 ActionButton("Играть", onClick = { actions.start(false) }, modifier = Modifier.weight(1.1f), icon = IconShape.Play)
                 ActionButton("Послушать", onClick = { actions.start(true) }, modifier = Modifier.weight(1f), primary = false)
             }
+            Caption("По рельсам шарик катится сам. Коснись экрана, когда он ударит по светящейся метке.")
             val imported = state.selectedSong.id in state.importedIds
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
                 TextButton(onClick = actions::importAudio) {
@@ -162,9 +161,15 @@ private fun Menu(state: ScreenState, actions: Actions) {
 private fun TrackCard(state: ScreenState) {
     val shape = RoundedCornerShape(20.dp)
     val song = state.selectedSong
+    val imported = song.id in state.importedIds
     Box(Modifier.fillMaxWidth().heightIn(min = 150.dp).clip(shape).background(Surface).border(1.dp, Line, shape)) {
         val chart = state.chart
-        val source = if (song.id in state.importedIds) "Из записи" else "Тема"
+        val source = when {
+            chart == null -> "Нужен аудиофайл"
+            imported -> "Из записи"
+            state.backingAsset != null -> "Инструментал"
+            else -> "Фрагмент"
+        }
         val previewChart = chart ?: state.songs.firstOrNull { it.bundled != null }?.bundled
         if (previewChart != null) {
             val pose = previewChart.notes[minOf(4, previewChart.notes.lastIndex)].atMs + 220L
@@ -176,13 +181,18 @@ private fun TrackCard(state: ScreenState) {
         }
         Column(Modifier.fillMaxWidth(.79f).heightIn(min = 150.dp).padding(16.dp),
             verticalArrangement = Arrangement.SpaceBetween) {
-            Text(if (chart != null) "$source · ${chart.bpm} BPM · ${clock(chart.durationMs / 1000)}" else "Нужен аудиофайл",
-                fontSize = 12.sp, color = Lilac, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+            Caption(source, Lilac)
             Spacer(Modifier.height(14.dp))
             Column {
                 Text(song.title, color = White, fontSize = 29.sp, lineHeight = 32.sp,
                     letterSpacing = (-.9).sp, fontWeight = FontWeight.Black)
                 if (song.artist.isNotBlank()) Caption(song.artist, White.copy(alpha = .82f))
+                if (chart != null) {
+                    Spacer(Modifier.height(6.dp))
+                    val bpm = if (imported) "≈ ${chart.bpm}" else chart.bpm.toString()
+                    Text("$bpm BPM  ·  ${durationClock(chart.durationMs)}",
+                        fontSize = 12.sp, color = Lilac, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                }
             }
         }
     }
@@ -211,6 +221,7 @@ private fun <T> Choices(label: String, values: List<T>, selected: T, title: (T) 
 
 @Composable
 private fun SongPicker(state: ScreenState, onDismiss: () -> Unit, select: (Song) -> Unit) {
+    val songs = remember(state.songs) { state.songs.sortedByDescending { it.backingAsset != null } }
     Dialog(onDismissRequest = onDismiss) {
         Column(Modifier.fillMaxWidth().heightIn(max = 550.dp)
             .clip(RoundedCornerShape(22.dp)).background(Surface).padding(horizontal = 14.dp, vertical = 10.dp)) {
@@ -219,9 +230,8 @@ private fun SongPicker(state: ScreenState, onDismiss: () -> Unit, select: (Song)
                 TextButton(onClick = onDismiss) { Text("Закрыть", color = Muted) }
             }
             Rule()
-            val hasUnavailable = state.songs.any { it.id !in state.availableIds }
             LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false).selectableGroup()) {
-                items(state.songs, key = { it.id }) { song ->
+                items(songs, key = { it.id }) { song ->
                     val active = song.id == state.selectedSong.id
                     val ready = song.id in state.availableIds
                     Row(Modifier.fillMaxWidth().selectable(active, role = Role.RadioButton, onClick = { select(song) })
@@ -235,7 +245,7 @@ private fun SongPicker(state: ScreenState, onDismiss: () -> Unit, select: (Song)
                         val status = when {
                             !ready -> "Импорт"
                             song.id in state.importedIds -> "Своя запись"
-                            hasUnavailable -> "В игре"
+                            song.bundled != null -> durationClock(song.bundled.durationMs)
                             else -> null
                         }
                         if (status != null) {

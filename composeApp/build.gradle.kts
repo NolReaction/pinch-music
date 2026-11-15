@@ -49,12 +49,12 @@ android {
         applicationId = "music.pinch"
         minSdk = 24
         targetSdk = 36
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.3.0"
     }
     sourceSets["main"].assets.srcDir(rootProject.file("media"))
     sourceSets["test"].resources.srcDir("src/androidUnitTest/resources")
-    androidResources.noCompress += listOf("wav", "mp4")
+    androidResources.noCompress += listOf("wav", "m4a", "mp4")
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

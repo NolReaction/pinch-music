@@ -1,11 +1,13 @@
 # Музыка
 
-Восемь коротких одноголосных переложений можно сыграть сразу после установки. Для каждого выбрана фраза, которую можно сыграть одним пальцем. Высота указана в MIDI, а длительности и паузы подобраны для прыжков шарика. Темп в игре относится к упражнению. Телефон воспроизводит заранее синтезированные ноты выбранного инструмента и транспонирует их до нужной высоты. Все игровые партии находятся в [SongLibrary.kt](../composeApp/src/commonMain/kotlin/music/pinch/SongLibrary.kt).
+Сразу после установки доступны восемь песен. У Stereo Love есть инструментальная аранжировка на 3:04, у остальных семи песен — короткие фразы для игры одним пальцем. У каждой партии свой темп. Шарик касается подсвеченной панели в момент, заданный партитурой. При попадании звучит нота выбранного инструмента.
+
+Каталог ведётся в [SongLibrary.kt](../composeApp/src/commonMain/kotlin/music/pinch/SongLibrary.kt). У Stereo Love партия игрока и сопровождение используют [общую партитуру](../tools/stereo_love/score.py). По ней можно проверить игровые панели командой `python3 tools/stereo_love/score.py --check`.
 
 | Песня | Партия для игры | Музыкальный ориентир |
 | --- | --- | --- |
 | On the Floor — Jennifer Lopez ft. Pitbull | Нисходящий мотив из «Llorando se fue», знакомый по «Lambada». Перенесён в ре минор. | [Мелодия](https://melodicnotes.com/song/jennifer-lopez-on-the-floor-4003/) |
-| Stereo Love — Edward Maya & Vika Jigulina | Начальный скачок аккордеона и возвращение мелодии к соль-диезу. | [Mark Richards, пример 14](https://mtosmt.org/issues/mto.17.23.3/mto.17.23.3.richards.html) |
+| Stereo Love — Edward Maya & Vika Jigulina | 127 BPM, 3:04. Аккордеон, бас и ударные ведут игру от вступления до коды. Игрок отбивает 159 акцентов. | [Mark Richards, пример 14](https://mtosmt.org/issues/mto.17.23.3/mto.17.23.3.richards.html) |
 | Gypsy Woman — Crystal Waters | Отдельные ступени органных аккордов, включая хроматическое движение ми – ми-бемоль – ре. | [Гармония органного риффа](https://dancenastysmusicblog.wordpress.com/2019/05/03/crystal-waters-gypsy-woman-a-transcription/) |
 | Levels — Avicii | Две нисходящие фразы синтезатора с разными окончаниями. | [Rick Snoman, Dance Music Manual, пример 1.5](https://api.pageplace.de/preview/DT0400.9783840313257_A38251302/preview-9783840313257_A38251302.pdf) |
 | Stay — The Kid LAROI & Justin Bieber | Контур вокальной фразы припева. | [Нотный ориентир](https://easyletternotes.wordpress.com/2021/09/09/stay-the-kid-laroi-justin-bieber/) |

@@ -11,6 +11,7 @@ sealed interface TapResult {
 }
 
 private const val WINDOW_MS = 120L
+internal const val FORGIVING_WINDOW_MS = 165L
 
 internal fun gradeFor(errorMs: Long): Grade? = when (errorMs) {
     in -45L..45L -> Grade.Perfect
@@ -41,13 +42,14 @@ data class GameStats(
  * until the next touch, so crossing a window during dispatch does not silence a valid note.
  */
 class RhythmGame(chart: Chart, private val forgiving: Boolean = false) {
-    private val windowMs = if (forgiving) 165L else WINDOW_MS
+    private val windowMs = if (forgiving) FORGIVING_WINDOW_MS else WINDOW_MS
     private val notes = chart.notes.toList()
     private val hit = BooleanArray(notes.size)
     private enum class Phase { Playing, Paused, Finished }
 
     private var phase = Phase.Playing
     private var committed = GameStats(notes.size)
+    private var nextMissCue = 0
     private var firstUnexpired = 0
     private var lastTouchMs = -1L
     private var latestMediaMs = 0L
@@ -114,6 +116,33 @@ class RhythmGame(chart: Chart, private val forgiving: Boolean = false) {
         return TapResult.Hit(note, grade, error)
     }
 
+    /**
+     * Emit each expired target at most once. A short dispatch grace lets on-time down events
+     * reach the main thread; after a stall, only the most recent timely cue is audible.
+     * Scoring still accounts for every intervening note.
+     */
+    internal fun takeMissCue(positionMs: Long): Note? {
+        if (phase != Phase.Playing) return null
+        val cueTime = positionMs - windowMs - 48
+        var latest: Note? = null
+        while (nextMissCue < notes.size && notes[nextMissCue].atMs < cueTime) {
+            val index = nextMissCue++
+            val note = notes[index]
+            if (!hit[index] && cueTime - note.atMs <= 80) latest = note
+        }
+        return latest
+    }
+
+    internal fun nearestTarget(positionMs: Long): Note {
+        val index = notes.binarySearchBy(positionMs) { it.atMs }
+        if (index >= 0) return notes[index]
+        val after = -(index + 1)
+        if (after == 0) return notes.first()
+        if (after == notes.size) return notes.last()
+        val before = notes[after - 1]
+        return if (positionMs - before.atMs <= notes[after].atMs - positionMs) before else notes[after]
+    }
+
     private fun expiryEnd(positionMs: Long): Int {
         var end = firstUnexpired
         while (end < notes.size && positionMs - notes[end].atMs > windowMs) end++
@@ -148,6 +177,7 @@ class RhythmGame(chart: Chart, private val forgiving: Boolean = false) {
 
     fun restart() {
         hit.fill(false)
+        nextMissCue = 0
         firstUnexpired = 0
         lastTouchMs = -1
         latestMediaMs = 0

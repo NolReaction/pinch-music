@@ -21,7 +21,9 @@ data class Playback(
 )
 
 interface GameMedia {
-    fun prepare(pitches: Set<Int>)
+    /** A bundled accompaniment begins at chart time zero, including the count-in. */
+    fun prepare(pitches: Set<Int>, backingAsset: String?)
+    fun setBackingVolume(volume: Float)
     fun snapshot(): Playback
     fun play()
     fun pause()

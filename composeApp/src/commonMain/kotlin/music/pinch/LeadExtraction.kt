@@ -46,14 +46,11 @@ internal fun extractLeadChart(samples: FloatArray, sampleRate: Int, title: Strin
         "Не удалось выделить мелодию. Выбери фрагмент, где хорошо слышен голос или ведущий инструмент."
     }
 
-    // Stretch brisk phrases slightly, then select sustained, clearly pitched attacks when close.
-    val spacings = attacks.zipWithNext { a, b -> b.timeMs - a.timeMs }.filter { it in 110..1800 }.sorted()
-    val typical = spacings.getOrNull(spacings.size / 2) ?: 650L
-    val stretch = (minimumTapGap.toDouble() / typical).coerceIn(1.0, 1.55)
+    // Thin dense passages for one-finger play while retaining the source time of each chosen attack.
     val chosen = mutableListOf(attacks.first())
     var index = 1
     while (index < attacks.size) {
-        val threshold = chosen.last().timeMs + ceil(minimumTapGap / stretch).toLong()
+        val threshold = chosen.last().timeMs + minimumTapGap
         while (index < attacks.size && attacks[index].timeMs < threshold) index++
         if (index >= attacks.size) break
         var best = attacks[index++]
@@ -66,17 +63,26 @@ internal fun extractLeadChart(samples: FloatArray, sampleRate: Int, title: Strin
         chosen += best
     }
     require(chosen.size >= 3) { "Слишком мало различимых ударов. Попробуй более длинный фрагмент." }
-    val onset = chosen.map { 2200L + ((it.timeMs - chosen.first().timeMs) * stretch).roundToLong() }
+    val onset = chosen.map { 2200L + (it.timeMs - chosen.first().timeMs) }
     val notes = chosen.mapIndexed { i, attack ->
         val next = onset.getOrNull(i + 1) ?: (onset[i] + 1000)
-        val duration = (attack.lengthMs * stretch).roundToLong().coerceIn(100, next - onset[i])
+        val duration = attack.lengthMs.coerceIn(100, next - onset[i])
         val gain = (0.68 + 0.25 * sqrt(attack.strength.coerceIn(0.0, 1.0))).toFloat()
         Note("local-${i + 1}", onset[i], attack.midi, duration, gain)
     }
-    val gaps = onset.zipWithNext { a,b -> b-a }.sorted()
-    // Report the typical playable pulse; the chart retains the source's expressive timing.
-    val tempo = (60_000.0 / gaps[gaps.size / 2]).roundToInt().coerceIn(30, 180)
-    return Chart(title, tempo, notes.last().atMs + notes.last().durationMs + 1200, notes)
+    return Chart(title, estimatePulse(attacks), notes.last().atMs + notes.last().durationMs + 1200, notes)
+}
+
+/** Use source onsets, before thinning for one finger. Pitched onsets alone cannot disambiguate
+ * two beat octaves, so imported tracks show this as an estimate. */
+private fun estimatePulse(source: List<Attack>): Int {
+    val gaps = source.zipWithNext { a, b -> b.timeMs - a.timeMs }.filter { it in 120L..2_000L }.sorted()
+    if (gaps.isEmpty()) return 120
+    val typical = (gaps[(gaps.size - 1) / 2] + gaps[gaps.size / 2]) / 2.0
+    var bpm = 60_000.0 / typical
+    while (bpm > 180) bpm /= 2
+    while (bpm < 60) bpm *= 2
+    return bpm.roundToInt()
 }
 
 private fun resample(input: FloatArray, inputRate: Int): FloatArray {

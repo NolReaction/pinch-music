@@ -5,8 +5,6 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -22,6 +20,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.input.pointer.changedToDown
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -37,6 +36,7 @@ import music.pinch.Actions
 import music.pinch.Scene
 import music.pinch.ScreenState
 import music.pinch.core.Chart
+import music.pinch.stereoLoveSectionAt
 
 @Composable
 internal fun PerformanceScreen(state: ScreenState, actions: Actions, chart: Chart?) {
@@ -83,17 +83,16 @@ internal fun PerformanceScreen(state: ScreenState, actions: Actions, chart: Char
 private fun Modifier.rhythmInput(actions: Actions): Modifier =
     semantics {
         role = Role.Button
-        onClick(label = "Сыграть ноту") { actions.tapNow(); true }
+        onClick(label = "Сыграть ноту на панели") { actions.tapNow(); true }
     }.pointerInput(actions) {
-        awaitEachGesture {
-            val first = awaitFirstDown(requireUnconsumed = true)
-            first.consume()
-            actions.tap(first.uptimeMillis)
-            // One note per gesture, even if another finger lands while the first is held.
-            do {
+        awaitPointerEventScope {
+            while (true) {
                 val event = awaitPointerEvent()
-                event.changes.forEach { if (it.pressed) it.consume() }
-            } while (event.changes.any { it.pressed })
+                // Each panel plays once per down event, including alternating fingers.
+                val down = event.changes.firstOrNull { it.changedToDown() } ?: continue
+                event.changes.forEach { if (it.changedToDown()) it.consume() }
+                actions.tap(down.uptimeMillis)
+            }
         }
     }
 
@@ -102,12 +101,19 @@ private fun SessionHeader(state: ScreenState, actions: Actions) {
     Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 6.dp).heightIn(min = 62.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Column(Modifier.weight(1f)) {
-            if (state.preview) Caption("Прослушивание", Lilac)
+            val section = if (state.selectedSong.id == "stereo-love" && state.backingAsset != null)
+                stereoLoveSectionAt(state.positionMs) else null
+            val label = when {
+                state.preview && section != null -> "Слушаем · $section"
+                state.preview -> "Прослушивание"
+                else -> section
+            }
+            if (label != null) Text(label, color = Lilac, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(state.title, color = White, fontSize = 19.sp, lineHeight = 22.sp,
                 fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
         val seconds = state.positionMs.coerceIn(0L, state.durationMs) / 1000L
-        Text("${clock(seconds)} / ${clock(state.durationMs / 1000L)}", color = Muted,
+        Text("${clock(seconds)} / ${durationClock(state.durationMs)}", color = Muted,
             fontSize = 12.sp, fontFamily = FontFamily.Monospace)
         if (state.scene == Scene.Playing || state.scene == Scene.Resuming) {
             IconButton(onClick = actions::pause, modifier = Modifier.semantics { contentDescription = "Пауза" }) {
@@ -118,6 +124,8 @@ private fun SessionHeader(state: ScreenState, actions: Actions) {
 }
 
 internal fun clock(seconds: Long): String = "${seconds / 60}:${(seconds % 60).toString().padStart(2, '0')}"
+
+internal fun durationClock(durationMs: Long): String = clock((durationMs + 500L) / 1000L)
 
 @Composable
 private fun Countdown(count: Int?, label: String) {
@@ -147,8 +155,8 @@ private fun PauseSheet(actions: Actions) {
 private fun PreviewControls(state: ScreenState, actions: Actions) {
     Row(Modifier.fillMaxWidth().heightIn(min = 78.dp).padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
-            Text("Эталонное исполнение", color = White, fontSize = 17.sp, fontWeight = FontWeight.Bold)
-            if (state.scene == Scene.Playing) Caption("Шарик играет мелодию")
+            Text("Прослушивание", color = White, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+            if (state.scene == Scene.Playing) Caption("Панели играют автоматически")
         }
         TextButton(onClick = actions::menu) { Text("В меню", color = Lilac) }
     }
@@ -190,11 +198,13 @@ private fun PlayControls(state: ScreenState) {
                 Text(when {
                     tail -> "Конец мелодии"
                     state.reaction != null -> state.reaction
-                    else -> "Нажимай при приземлении"
+                    else -> "Нажимай в момент удара"
                 }, color = accent, fontWeight = FontWeight.Bold, fontSize = 18.sp)
                 // Keep HUD height stable when a judgement replaces the hint. The world
                 // projection uses the remaining space, so a collapsing footer would shift the ball.
-                if (!tail) Caption("Касайся любой точки сцены") else Spacer(Modifier.height(20.dp))
+                if (!tail) {
+                    Caption(if (state.reaction != null && !hit) "Прозвучала фальшивая нота" else "Касайся любой точки сцены")
+                } else Spacer(Modifier.height(20.dp))
             }
         }
     }
