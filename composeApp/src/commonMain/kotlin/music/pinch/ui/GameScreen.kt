@@ -19,6 +19,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.graphics.Path
@@ -38,6 +40,7 @@ import music.pinch.Instrument
 import music.pinch.Song
 import music.pinch.Scene
 import music.pinch.ScreenState
+import music.pinch.StageMode
 import kotlin.math.roundToInt
 
 internal val Ink = Color(0xff11101a)
@@ -92,6 +95,7 @@ private fun Menu(state: ScreenState, actions: Actions) {
             Spacer(Modifier.weight(1f))
             TextButton(onClick = { settings = true }) { Text("Настройки", color = Muted) }
         }
+        StageTabs(state.stageMode, actions::selectStageMode)
         TrackCard(state)
         ActionButton("Выбрать мелодию", onClick = { library = true }, primary = false, enabled = !state.importing)
         Choices("Инструмент", Instrument.entries, state.instrument, { it.label }, actions::selectInstrument)
@@ -106,11 +110,18 @@ private fun Menu(state: ScreenState, actions: Actions) {
                 ActionButton("Играть", onClick = { actions.start(false) }, modifier = Modifier.weight(1.1f), icon = IconShape.Play)
                 ActionButton("Послушать", onClick = { actions.start(true) }, modifier = Modifier.weight(1f), primary = false)
             }
-            Caption(if (state.echoTotal > 0)
-                "Касайся любой точки сцены в такт. Золотой обод даёт очки, бирюзовые кольца — эхо."
-            else if (state.backingAsset != null)
-                "Вся мелодия звучит автоматически. Нажимай, когда шарик ударяет по планке с золотой кромкой."
-            else "Коснись экрана, когда шарик ударит по планке с золотой кромкой.")
+            val hint = when {
+                state.stageMode == StageMode.Planar && state.echoTotal > 0 ->
+                    "Золотые акценты дают очки, бирюзовые кольца — эхо. На прокате можно подыграть вспышкам LED."
+                state.stageMode == StageMode.Planar ->
+                    "Коснись экрана на золотом акценте. На длинной полке можно подыграть вспышкам LED."
+                state.echoTotal > 0 ->
+                    "Касайся любой точки сцены в такт. Золотой обод даёт очки, бирюзовые кольца — эхо."
+                state.backingAsset != null ->
+                    "Вся мелодия звучит автоматически. Нажимай, когда шарик ударяет по планке с золотой кромкой."
+                else -> "Коснись экрана, когда шарик ударит по планке с золотой кромкой."
+            }
+            Caption(hint)
             val imported = state.selectedSong.id in state.importedIds
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
                 TextButton(onClick = actions::importAudio) {
@@ -163,6 +174,44 @@ private fun Menu(state: ScreenState, actions: Actions) {
 }
 
 @Composable
+private fun StageTabs(selected: StageMode, choose: (StageMode) -> Unit) {
+    val track = RoundedCornerShape(16.dp)
+    Row(Modifier.fillMaxWidth().clip(track).background(Surface).border(1.dp, Line, track)
+        .selectableGroup().padding(3.dp), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+        for (mode in StageMode.entries) {
+            val active = selected == mode
+            val accent = if (mode == StageMode.Planar) Mint else Lilac
+            val tint = if (active) accent else Muted
+            Row(Modifier.weight(1f).clip(RoundedCornerShape(12.dp))
+                .background(if (active) accent.copy(alpha = .13f) else Color.Transparent)
+                .selectable(active, role = Role.Tab, onClick = { choose(mode) })
+                .heightIn(min = 44.dp).padding(horizontal = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                verticalAlignment = Alignment.CenterVertically) {
+                Canvas(Modifier.size(22.dp, 20.dp)) {
+                    val w = size.width
+                    val h = size.height
+                    val stroke = 1.6.dp.toPx()
+                    when (mode) {
+                        StageMode.Orbit -> {
+                            drawOval(tint, Offset(.06f*w, .29f*h), Size(.88f*w, .44f*h), style = Stroke(stroke))
+                            drawCircle(tint, .12f*h, Offset(.70f*w, .31f*h))
+                        }
+                        StageMode.Planar -> {
+                            drawLine(tint, Offset(.05f*w, .42f*h), Offset(.52f*w, .42f*h), stroke, StrokeCap.Round)
+                            drawLine(tint, Offset(.52f*w, .77f*h), Offset(.96f*w, .77f*h), stroke, StrokeCap.Round)
+                            drawCircle(tint, .11f*h, Offset(.35f*w, .22f*h))
+                        }
+                    }
+                }
+                Text(mode.label, color = tint, fontSize = 15.sp,
+                    fontWeight = if (active) FontWeight.Bold else FontWeight.Medium)
+            }
+        }
+    }
+}
+
+@Composable
 private fun TrackCard(state: ScreenState) {
     val shape = RoundedCornerShape(20.dp)
     val song = state.selectedSong
@@ -179,7 +228,7 @@ private fun TrackCard(state: ScreenState) {
         if (previewChart != null) {
             val pose = previewChart.notes[minOf(4, previewChart.notes.lastIndex)].atMs + 220L
             Box(Modifier.matchParentSize(), contentAlignment = Alignment.CenterEnd) {
-                MarbleStage(previewChart, { pose }, Modifier.fillMaxWidth(.54f).fillMaxHeight())
+                CourseView(state.stageMode, previewChart, { pose }, Modifier.fillMaxWidth(.54f).fillMaxHeight())
                 Spacer(Modifier.matchParentSize().background(Brush.horizontalGradient(0f to Surface,
                     .43f to Surface, .74f to Surface.copy(alpha = .6f), 1f to Color.Transparent)))
             }

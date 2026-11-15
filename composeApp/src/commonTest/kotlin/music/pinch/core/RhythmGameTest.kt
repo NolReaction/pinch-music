@@ -181,6 +181,29 @@ class RhythmGameTest {
     }
 
     @Test
+    fun ledTapsYieldToChartTargetsAndRepeatOnlyOncePerCrossing() {
+        val lamp = first.copy(id = "lamp", atMs = first.atMs + 150, playable = false)
+        val fill = lamp.copy(id = "fill", atMs = lamp.atMs + 10)
+        val game = RhythmGame(chart.copy(notes = listOf(first, fill, second)), forgiving = true, ledNotes = listOf(lamp))
+        assertEquals(TapResult.Automatic(fill, lamp), game.tap(lamp.atMs))
+        assertEquals(TapResult.Ignored, game.tap(lamp.atMs + 8))
+        assertEquals(0, game.stats.stray)
+        val accents = RhythmGame(chart, forgiving = true, ledNotes = listOf(lamp))
+        val both = assertIs<TapResult.Hit>(accents.tap(lamp.atMs - 25))
+        assertEquals(first, both.note)
+        assertEquals(lamp, both.led)
+        assertEquals(TapResult.Ignored, accents.tap(lamp.atMs + 4))
+        assertEquals(1, accents.stats.combo)
+        accents.restart()
+        assertEquals(null, assertIs<TapResult.Hit>(accents.tap(lamp.atMs - 26)).led)
+        val separate = lamp.copy(atMs = first.atMs + 250)
+        val isolated = RhythmGame(chart, forgiving = true, ledNotes = listOf(separate))
+        assertEquals(TapResult.Led(separate), isolated.tap(separate.atMs))
+        assertEquals(TapResult.Ignored, isolated.tap(separate.atMs + 40))
+        assertEquals(0, isolated.stats.stray)
+    }
+
+    @Test
     fun invalidChartsCannotStart() {
         val badScalars = listOf<() -> Chart>(
             { chart.copy(notes = emptyList()) }, { chart.copy(bpm = 0) }, { chart.copy(title = "") },

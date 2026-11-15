@@ -5,6 +5,7 @@ import music.pinch.core.Chart
 import music.pinch.core.GameStats
 
 enum class Scene { Menu, Loading, Playing, Paused, Resuming, Result, Error }
+enum class StageMode(val label: String) { Orbit("Орбита"), Planar("Каскад X/Y") }
 enum class Instrument(val label: String) { Piano("Фортепиано"), Mallet("Маримба"), Synth("Синтезатор") }
 
 data class Song(val id: String, val title: String, val artist: String, val bundled: Chart? = null, val backingAsset: String? = null)
@@ -32,6 +33,9 @@ data class ScreenState(
     val echoTotal: Int = 0,
     val echoesCaught: Int = 0,
     val collectedEchoMs: Long? = null,
+    val stageMode: StageMode = StageMode.Orbit,
+    val lastPanelHitMs: Long? = null,
+    val lastLedTapMs: Long? = null,
 ) {
     val backingAsset: String? get() = selectedSong.backingAsset.takeUnless { selectedSong.id in importedIds }
     val title: String get() = selectedSong.title
@@ -43,6 +47,7 @@ data class ScreenState(
 interface Actions {
     fun selectSong(id: String)
     fun selectInstrument(value: Instrument)
+    fun selectStageMode(value: StageMode)
     fun restoreBundled()
     fun importAudio()
     fun dismissNotice()

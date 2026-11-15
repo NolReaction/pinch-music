@@ -5,8 +5,10 @@ import kotlin.math.abs
 enum class Grade { Perfect, Good, Okay }
 
 sealed interface TapResult {
-    data class Hit(val note: Note, val grade: Grade, val errorMs: Long) : TapResult
-    data class Automatic(val note: Note) : TapResult
+    val led: Note? get() = null
+    data class Hit(val note: Note, val grade: Grade, val errorMs: Long, override val led: Note? = null) : TapResult
+    data class Automatic(val note: Note, override val led: Note? = null) : TapResult
+    data class Led(override val led: Note) : TapResult
     data object Stray : TapResult
     data object Ignored : TapResult
 }
@@ -14,6 +16,8 @@ sealed interface TapResult {
 private const val WINDOW_MS = 120L
 internal const val FORGIVING_WINDOW_MS = 195L
 private const val AUTOMATIC_WINDOW_MS = 55L
+private const val LED_WINDOW_MS = 65L
+private const val LED_OVERLAP_MS = 25L
 internal const val FORGIVING_AUTOMATIC_WINDOW_MS = 85L
 private const val DOUBLE_TAP_MS = 75L
 private const val MAX_MISS_CUE_FRAME_MS = 125L
@@ -46,7 +50,8 @@ data class GameStats(
  * A video frame can arrive before a slightly older touch: keep frame-only misses provisional
  * until the next touch, so crossing a window during dispatch does not silence a valid note.
  */
-class RhythmGame(chart: Chart, private val forgiving: Boolean = false) {
+class RhythmGame internal constructor(chart: Chart, private val forgiving: Boolean, private val ledNotes: List<Note>) {
+    constructor(chart: Chart, forgiving: Boolean = false) : this(chart, forgiving, emptyList())
     private val windowMs = if (forgiving) FORGIVING_WINDOW_MS else WINDOW_MS
     private val automaticWindowMs = if (forgiving) FORGIVING_AUTOMATIC_WINDOW_MS else AUTOMATIC_WINDOW_MS
     private val notes = chart.notes.filter { it.playable }
@@ -66,6 +71,7 @@ class RhythmGame(chart: Chart, private val forgiving: Boolean = false) {
     private var lastContactTapMs = -1L
     private var lastContact: Note? = null
     private var lastAutomaticMs = -1L
+    private var lastLedMs = -1L
     private var latestMediaMs = 0L
     var stats: GameStats = committed
         private set
@@ -87,7 +93,9 @@ class RhythmGame(chart: Chart, private val forgiving: Boolean = false) {
         if (phase != Phase.Playing || notes.isEmpty() || positionMs < 0 || positionMs < lastTouchMs) return TapResult.Ignored
         val passive = if (automatic.isEmpty()) null else nearest(automatic, positionMs)
         val passiveDistance = passive?.let { abs(positionMs - it.atMs) } ?: Long.MAX_VALUE
-        if (passiveDistance > automaticWindowMs &&
+        val lamp = if (ledNotes.isEmpty()) null else nearest(ledNotes, positionMs)
+            .takeIf { abs(positionMs - it.atMs) <= LED_WINDOW_MS }
+        if (lamp == null && passiveDistance > automaticWindowMs &&
             (positionMs - notes.first().atMs < -windowMs || positionMs - notes.last().atMs > windowMs)) {
             advance(positionMs)
             return TapResult.Ignored
@@ -120,7 +128,12 @@ class RhythmGame(chart: Chart, private val forgiving: Boolean = false) {
         val accentPreference = if (forgiving && passiveDistance > 30L) 24L else 0L
         val usePassive = passive != null && passiveDistance <= automaticWindowMs &&
             passiveDistance + accentPreference < nearestDistance
-        val target = if (usePassive) passive else notes.getOrNull(nearestIndex)
+        val exactLamp = lamp?.takeIf { abs(positionMs - it.atMs) <= LED_OVERLAP_MS && it.atMs != lastLedMs }
+        // A close strike can collect a lingering chart target and touch a lamp at the same time.
+        // If the optional chart key was already played, the exact lamp stands on its own.
+        val target = if (usePassive) {
+            if (passive?.atMs == lastAutomaticMs && exactLamp != null) exactLamp else passive
+        } else notes.getOrNull(nearestIndex) ?: lamp
         if (forgiving && isRepeatDown(positionMs, target)) {
             refreshFrameStats()
             return TapResult.Ignored
@@ -130,16 +143,22 @@ class RhythmGame(chart: Chart, private val forgiving: Boolean = false) {
             refreshFrameStats()
             return TapResult.Stray
         }
-        if (usePassive && target.atMs == lastAutomaticMs) {
+        if ((target === passive && target.atMs == lastAutomaticMs) || (target === lamp && target.atMs == lastLedMs)) {
             refreshFrameStats()
             return TapResult.Ignored
         }
         lastContact = target
         lastContactTapMs = positionMs
+        if (target === lamp) {
+            lastLedMs = target.atMs
+            refreshFrameStats()
+            return TapResult.Led(target)
+        }
+        if (exactLamp != null) lastLedMs = exactLamp.atMs
         if (usePassive) {
             lastAutomaticMs = target.atMs
             refreshFrameStats()
-            return TapResult.Automatic(target)
+            return TapResult.Automatic(target, exactLamp)
         }
         val error = positionMs - target.atMs
         val grade = if (forgiving) when (abs(error)) {
@@ -158,7 +177,7 @@ class RhythmGame(chart: Chart, private val forgiving: Boolean = false) {
             maxCombo = maxOf(combo, committed.maxCombo),
         )
         refreshFrameStats()
-        return TapResult.Hit(target, grade, error)
+        return TapResult.Hit(target, grade, error, exactLamp)
     }
 
     private fun isRepeatDown(positionMs: Long, target: Note?): Boolean {
@@ -257,6 +276,7 @@ class RhythmGame(chart: Chart, private val forgiving: Boolean = false) {
         lastContact = null
         lastContactTapMs = -1
         lastAutomaticMs = -1
+        lastLedMs = -1
         latestMediaMs = 0
         committed = GameStats(notes.size)
         stats = committed

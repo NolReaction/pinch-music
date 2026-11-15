@@ -11,6 +11,7 @@ import music.pinch.core.Grade
 import music.pinch.core.RhythmGame
 import music.pinch.core.TapResult
 import music.pinch.core.echoTargetTimes
+import music.pinch.ui.PlanarPath
 
 /** Session commands, native events and frame observations all run on the UI thread. */
 internal class Session(
@@ -29,6 +30,7 @@ internal class Session(
         ?: songs.first()
     var state by mutableStateOf(ScreenState(songs = songs, selectedSong = initialSong,
         instrument = Instrument.entries.find { it.name == platform.readValue("instrument") } ?: Instrument.Piano,
+        stageMode = StageMode.entries.find { it.name == platform.readValue("stage.mode") } ?: StageMode.Orbit,
         volume = platform.volume, haptics = platform.haptics))
         private set
     var media by mutableStateOf<GameMedia?>(null)
@@ -45,6 +47,8 @@ internal class Session(
     private var reactionUntil = 0L
     private var automaticNotes: List<Note> = emptyList()
     private var nextAutomaticNote = 0
+    private var ledCues: List<Note> = emptyList()
+    private var nextLedCue = 0
     private var recordKey = ""
     private var echoTargets = emptySet<Long>()
     private var lastMistakeAt: Long? = null
@@ -76,6 +80,12 @@ internal class Session(
         if (state.scene != Scene.Menu) return
         platform.writeValue("instrument", value.name)
         state = state.copy(instrument = value)
+    }
+
+    override fun selectStageMode(value: StageMode) {
+        if (state.scene != Scene.Menu || state.stageMode == value) return
+        platform.writeValue("stage.mode", value.name)
+        state = state.copy(stageMode = value)
     }
 
     override fun restoreBundled() {
@@ -113,17 +123,21 @@ internal class Session(
         val song = state.chart ?: return
         if (state.importing) return
         close()
-        game = if (preview) null else RhythmGame(song, forgiving = true)
+        if (state.stageMode == StageMode.Planar) {
+            ledCues = PlanarPath(song).ledCues
+        }
+        game = if (preview) null else RhythmGame(song, forgiving = true, ledNotes = ledCues)
         positionMs = 0
         state = state.copy(scene = Scene.Loading, preview = preview, notice = null,
             countdown = null, reaction = null, error = null, newRecord = false, stats = game?.stats,
-            echoesCaught = 0, collectedEchoMs = null)
+            echoesCaught = 0, collectedEchoMs = null, lastPanelHitMs = null, lastLedTapMs = null)
         try {
             val player = platform.newMedia(song.durationMs, state.instrument)
             media = player
             player.onInterrupted = { if (media === player) pause() }
             val pitches = mutableSetOf<Int>()
             val backing = state.backingAsset
+            for (cue in ledCues) pitches += cue.midi
             automaticNotes = when {
                 backing != null -> emptyList()
                 preview -> song.notes
@@ -186,6 +200,15 @@ internal class Session(
                 playingAnchor = snap
                 val song = state.chart ?: return
                 val now = snap.positionMs.coerceIn(0L, song.durationMs)
+                val firstLed = nextLedCue
+                while (nextLedCue < ledCues.size && ledCues[nextLedCue].atMs <= now) nextLedCue++
+                if (nextLedCue > firstLed) {
+                    // A late frame can cross several lamps. Only sound the latest fresh contact.
+                    val cue = ledCues[nextLedCue - 1]
+                    if (now - cue.atMs <= 90L && cue.atMs != state.lastLedTapMs) {
+                        player.note(cue.midi, cue.velocity * state.volume)
+                    }
+                }
                 if (nextAutomaticNote < automaticNotes.size) {
                     val first = nextAutomaticNote
                     while (nextAutomaticNote < automaticNotes.size && automaticNotes[nextAutomaticNote].atMs <= now) {
@@ -245,7 +268,13 @@ internal class Session(
         val at = snap.positionMs + (uptimeMs - snap.observedUptimeMs)
         val feedbackAt = maxOf(at, snap.positionMs)
         val engine = game ?: return
-        when (val result = engine.tap(at)) {
+        val result = engine.tap(at)
+        result.led?.let { player.note(it.midi, .42f * state.volume) }
+        val hitMs = when (result) {
+            is TapResult.Led -> {
+                if (state.haptics) platform.feedback()
+                state.lastPanelHitMs
+            }
             is TapResult.Automatic -> {
                 val note = result.note
                 val gain = note.velocity * state.volume
@@ -257,6 +286,7 @@ internal class Session(
                     player.strike(.26f * gain)
                 }
                 if (state.haptics) platform.feedback()
+                note.atMs
             }
             is TapResult.Hit -> {
                 val gain = result.note.velocity * state.volume
@@ -269,14 +299,17 @@ internal class Session(
                     Grade.Okay -> if (result.errorMs < 0) "Попал · чуть раньше" else "Попал · чуть позже"
                 }
                 showReaction(label, feedbackAt)
+                result.note.atMs
             }
             TapResult.Stray -> {
                 soundMistake(player, engine.nearestTarget(at), feedbackAt, stray = true)
                 showReaction("Мимо", feedbackAt)
+                state.lastPanelHitMs
             }
             TapResult.Ignored -> return
         }
-        state = state.copy(stats = engine.stats)
+        state = state.copy(stats = engine.stats, lastPanelHitMs = hitMs.takeIf { state.stageMode == StageMode.Planar },
+            lastLedTapMs = result.led?.atMs ?: state.lastLedTapMs)
     }
 
     override fun tapNow() { media?.let { tap(it.uptimeMs()) } }
@@ -330,7 +363,7 @@ internal class Session(
         positionMs = 0
         state = state.copy(scene = Scene.Menu, preview = false, stats = null,
             error = null, countdown = null, reaction = null, newRecord = false,
-            echoesCaught = 0, collectedEchoMs = null)
+            echoesCaught = 0, collectedEchoMs = null, lastPanelHitMs = null, lastLedTapMs = null)
     }
 
     override fun volume(value: Float) {
@@ -357,6 +390,8 @@ internal class Session(
         old?.close()
         automaticNotes = emptyList()
         nextAutomaticNote = 0
+        ledCues = emptyList()
+        nextLedCue = 0
         playingAnchor = null
         lastMistakeAt = null
         lastMistakeTarget = null

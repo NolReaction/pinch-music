@@ -22,14 +22,12 @@ import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.unit.Density
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import kotlin.math.PI
 import kotlin.math.atan2
 import kotlin.math.ceil
 import kotlin.math.cos
-import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -48,8 +46,6 @@ private const val Levels = 4
 private const val LightSteps = 12
 private const val ShadeSteps = 12
 private const val VisibleLimit = 49
-private const val AtlasColumns = 6
-private const val AtlasRows = 4
 
 private val BlackNickel = Color(0xff222332)
 private val Steel = Color(0xff68697b)
@@ -470,17 +466,7 @@ internal class MarbleScene(chart: Chart, private val marbleAtlas: ImageBitmap) {
     }
 
     private fun DrawScope.marble(camera: Camera, frame: MarbleFrame) {
-        val p = camera.project(frame.marble)
-        val unit = camera.unit(frame.marble)
-        val radius = unit*MarbleRadius
-        val turns = frame.rollAngle/(2*PI.toFloat())
-        val tile = floor((turns-floor(turns))*(AtlasRows*AtlasColumns)).toInt().coerceIn(0,AtlasRows*AtlasColumns-1)
-        val w = marbleAtlas.width/AtlasColumns
-        val h = marbleAtlas.height/AtlasRows
-        val diameter = max(1,(2f*radius).roundToInt())
-        drawImage(marbleAtlas,srcOffset=IntOffset((tile%AtlasColumns)*w,(tile/AtlasColumns)*h),
-            srcSize=IntSize(w,h),dstOffset=IntOffset((p.x-radius).roundToInt(),(p.y-radius).roundToInt()),
-            dstSize=IntSize(diameter,diameter))
+        drawStudioMarble(marbleAtlas, camera.project(frame.marble), camera.unit(frame.marble) * MarbleRadius, frame.rollAngle)
     }
 
     fun DrawScope.draw(timeMs: Long, collectedEchoMs: Long? = null) {

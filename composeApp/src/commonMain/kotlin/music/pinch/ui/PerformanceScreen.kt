@@ -34,10 +34,23 @@ import androidx.compose.ui.unit.sp
 import music.pinch.Actions
 import music.pinch.Scene
 import music.pinch.ScreenState
+import music.pinch.StageMode
+import music.pinch.core.Chart
 import music.pinch.stereoLoveSectionAt
 
 private val HeaderShade = Brush.verticalGradient(listOf(Color(0xe3141220), Color(0x00141220)))
 private val FooterShade = Brush.verticalGradient(listOf(Color(0x00141220), Color(0xdf141220)))
+
+@Composable
+internal fun CourseView(
+    mode: StageMode, chart: Chart, positionMs: () -> Long, modifier: Modifier,
+    hitMs: Long? = null, collectedEchoMs: Long? = null, ledTapMs: Long? = null,
+) {
+    when (mode) {
+        StageMode.Orbit -> MarbleStage(chart, positionMs, modifier, collectedEchoMs)
+        StageMode.Planar -> PlanarStage(chart, positionMs, modifier, hitMs, collectedEchoMs, ledTapMs)
+    }
+}
 
 @Composable
 internal fun PerformanceScreen(state: ScreenState, actions: Actions, positionMs: () -> Long) {
@@ -46,8 +59,8 @@ internal fun PerformanceScreen(state: ScreenState, actions: Actions, positionMs:
         val interactive = state.scene == Scene.Playing && !state.preview
         if (chart != null) {
             val input = if (interactive) Modifier.rhythmInput(actions) else Modifier
-            MarbleStage(chart, positionMs, Modifier.matchParentSize().then(input).graphicsLayer(),
-                collectedEchoMs = state.collectedEchoMs)
+            CourseView(state.stageMode, chart, positionMs, Modifier.matchParentSize().then(input).graphicsLayer(),
+                state.lastPanelHitMs, state.collectedEchoMs, state.lastLedTapMs)
         }
         if (state.scene == Scene.Playing) {
             SessionHeader(state, actions, positionMs)
@@ -187,6 +200,7 @@ private fun PlayControls(state: ScreenState, positionMs: () -> Long) {
         reaction != null -> reaction
         state.countdown != null -> "До первого акцента · ${state.countdown}"
         tail -> "Конец мелодии"
+        state.stageMode == StageMode.Planar -> "Коснись экрана на золотом акценте или вспышке LED"
         else -> "Коснись экрана на ударе по панели с золотым ободом"
     }
     val color = when {
