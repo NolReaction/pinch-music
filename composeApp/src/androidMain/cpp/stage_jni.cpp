@@ -33,8 +33,8 @@ extern "C" JNIEXPORT void JNICALL Java_music_pinch_ui_CascadeGL_upload(JNIEnv* e
     FloatInput k(env, keys), r(env, rails), l(env, lamps);
     if (env->ExceptionCheck())
         return;
-    stage3d_set_course(reinterpret_cast<void*>(stage), k.data, k.size / 4, r.data, r.size / 3, l.data,
-                       l.size / 3);
+    stage3d_set_course(reinterpret_cast<void*>(stage), k.data, k.size / STAGE3D_KEY_STRIDE,
+                       r.data, r.size / 3, l.data, l.size / 3);
 }
 
 extern "C" JNIEXPORT void JNICALL Java_music_pinch_ui_CascadeGL_draw(JNIEnv* env, jobject, jlong stage,

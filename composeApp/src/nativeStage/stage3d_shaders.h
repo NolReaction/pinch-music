@@ -6,6 +6,7 @@ attribute highp vec3 aPos;
 attribute mediump vec3 aNormal;
 attribute mediump vec2 aMat;
 uniform highp vec3 uOffset;
+uniform highp vec2 uTilt; // cosine and sine of the playing face's angle in X/Y
 uniform highp vec4 uLens; // projection multipliers, near, far
 uniform mediump vec4 uKey; // impact, style, preview target, last crossed LED
 varying mediump vec3 vPos;
@@ -16,12 +17,13 @@ const vec3 forward=vec3(-.279687,.487454,-.827155);
 const vec3 right=vec3(.947306,0.,-.32033);
 const vec3 up=vec3(-.156135,-.873148,-.461818);
 void main(){
-    vPos=aPos+uOffset;
+    mat2 turn=mat2(uTilt.x,uTilt.y,-uTilt.y,uTilt.x);
+    vPos=vec3(turn*aPos.xy,aPos.z)+uOffset;
     vec3 d=vPos-eye;
     float z=dot(d,forward);
     gl_Position=vec4(dot(d,right)*uLens.x,dot(d,up)*uLens.y,
         (uLens.w+uLens.z)/(uLens.w-uLens.z)*z-2.*uLens.w*uLens.z/(uLens.w-uLens.z),z);
-    vN=aNormal;
+    vN=vec3(turn*aNormal.xy,aNormal.z);
     vMat=aMat;
 }
 )GL";
@@ -129,7 +131,7 @@ attribute highp vec3 aPos;
 attribute mediump vec3 aNormal;
 attribute mediump vec2 aMat;
 uniform highp vec4 uLens;
-uniform highp vec4 uDecals[16]; // x, y, type (0 key, 1 ball), intensity
+uniform highp vec4 uDecals[16]; // x, y, type (0 key, 1 ball), face slope
 uniform mediump vec4 uWallLight;
 varying lowp vec4 vColor;
 const vec3 eye=vec3(2.80,-4.88,8.20);
@@ -151,7 +153,7 @@ void main(){
     float ball=data.z;
     vec2 p=data.xy+mix(vec2(.08,.19),vec2(.13,.23),ball);
     p.x+=aPos.x*mix(.75,.38,ball)+aPos.y*mix(.26,.04,ball);
-    p.y+=aPos.y*mix(.69,.38,ball);
+    p.y+=aPos.y*mix(.69,.38,ball)+aPos.x*.75*data.w;
     vec3 d=vec3(p,-1.347)-eye;
     float z=dot(d,forward);
     gl_Position=vec4(dot(d,right)*uLens.x,dot(d,up)*uLens.y,0.,z);

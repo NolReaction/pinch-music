@@ -41,6 +41,7 @@ internal actual fun NativeCascadeStage(
     CascadeFrameClock(display, course, frame, animate)
 }
 
+@OptIn(kotlinx.cinterop.BetaInteropApi::class)
 private fun FloatArray.bytes(): NSData = if (isEmpty()) NSData() else usePinned {
     NSData.create(bytes = it.addressOf(0), length = size.toULong() * 4uL)
 }
@@ -48,6 +49,7 @@ private fun FloatArray.bytes(): NSData = if (isEmpty()) NSData() else usePinned 
 private class AppleDisplay(val surface: AppleCascadeSurface) : CascadeDisplay {
     private var installed: CascadeGpuCourse? = null
 
+    @OptIn(kotlinx.cinterop.BetaInteropApi::class)
     override fun present(course: CascadeGpuCourse, frame: FloatArray) {
         if (installed !== course) {
             surface.setCourse(course.keys.bytes(), course.rails.bytes(), course.lamps.bytes())

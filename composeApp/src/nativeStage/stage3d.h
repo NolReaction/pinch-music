@@ -8,9 +8,11 @@ extern "C" {
  * The caller provides a framebuffer with a depth attachment. World Y points down. */
 void* stage3d_create(void);
 void stage3d_destroy(void* stage);
-/* keys: [contactX, topY, side (-1/+1), style (0 pink, 1 amber, 2 echo)].
+/* keys: [faceContactX, faceContactY, side (-1/+1), style (0 pink, 1 amber, 2 echo),
+ *        signed slope dy/dx]. The first two values locate the tangent point on the key.
  * Rails and LEDs: [panel index, x, y] in panel/travel order. (x,y,0) is the
  * centre of the marble at contact. Data is copied, counts are numbers of rows. */
+#define STAGE3D_KEY_STRIDE 5
 void stage3d_set_course(void* stage, const float* keys, int keyCount, const float* rails, int railPointCount,
                         const float* lamps, int lampCount);
 /* [ballX, ballY, ballZ, cameraY, rollRadians, activePanel, impactStrength,

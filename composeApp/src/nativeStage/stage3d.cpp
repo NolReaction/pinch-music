@@ -70,7 +70,7 @@ static GLuint compile(GLenum kind, const char* source) {
 }
 struct Program {
     GLuint id = 0;
-    GLint lens = -1, offset = -1, key = -1, ball = -1, spin = -1, wallLight = -1, decals = -1;
+    GLint lens = -1, offset = -1, tilt = -1, key = -1, ball = -1, spin = -1, wallLight = -1, decals = -1;
     ~Program() {
         if (id)
             glDeleteProgram(id);
@@ -103,6 +103,7 @@ struct Program {
         }
         lens = glGetUniformLocation(id, "uLens");
         offset = glGetUniformLocation(id, "uOffset");
+        tilt = glGetUniformLocation(id, "uTilt");
         key = glGetUniformLocation(id, "uKey");
         ball = glGetUniformLocation(id, "uBall");
         spin = glGetUniformLocation(id, "uSpin");
@@ -112,7 +113,7 @@ struct Program {
     }
 };
 struct Piece {
-    float x = 0, y = 0, side = 0, style = 0;
+    float x = 0, y = 0, side = 0, style = 0, slope = 0, tiltCos = 1, tiltSin = 0;
     std::vector<V> route, lamps;
     Buffer rail;
 };
@@ -177,10 +178,14 @@ struct Stage {
         pieces.resize(count);
         for (int i = 0; i < count; ++i) {
             Piece& p = pieces[i];
-            p.x = key[i * 4];
-            p.y = key[i * 4 + 1];
-            p.side = key[i * 4 + 2];
-            p.style = key[i * 4 + 3];
+            const float* row = key + i * STAGE3D_KEY_STRIDE;
+            p.x = row[0];
+            p.y = row[1];
+            p.side = row[2];
+            p.style = row[3];
+            p.slope = row[4];
+            p.tiltCos = 1.f / std::sqrt(1.f + p.slope * p.slope);
+            p.tiltSin = p.slope * p.tiltCos;
         }
         auto assign = [&](const float* data, int rows, bool lamp) {
             for (int i = 0; data && i < rows; ++i) {
@@ -246,17 +251,20 @@ struct Stage {
                            reinterpret_cast<void*>(backdropIndices * sizeof(uint16_t)));
             used = 0;
         };
-        auto shadow = [&](float x, float y, float ballType) {
+        auto shadow = [&](float x, float y, float ballType, float slope) {
             decals[4 * used] = x;
             decals[4 * used + 1] = y;
             decals[4 * used + 2] = ballType;
-            decals[4 * used + 3] = 1;
+            decals[4 * used + 3] = slope;
             if (++used == 16)
                 flush();
         };
-        for (auto it = lo; it != hi; ++it)
-            shadow(it->x - pan, it->y - camera, 0);
-        shadow(ball.x, ball.y, 1);
+        for (auto it = lo; it != hi; ++it) {
+            float center = keyCenterX(it->route.size() >= 2, it->side);
+            shadow(it->x - pan + center * it->tiltCos,
+                   it->y - camera + center * it->tiltSin, 0, it->slope);
+        }
+        shadow(ball.x, ball.y, 1, 0);
         flush();
         glDisable(GL_BLEND);
         glEnable(GL_DEPTH_TEST);
@@ -274,7 +282,7 @@ struct Stage {
             // hardware and a curved rail extending inwards from a guided key.
             const float extension = guided ? p.route.back().x * .5f : 0.f;
             V center{p.x - pan + extension, p.y - camera + .22f, -.32f};
-            V halfSize{.49f + std::abs(extension), .30f + (guided ? longestDrop : 0.f), 1.06f};
+            V halfSize{.76f + std::abs(extension), .56f + (guided ? longestDrop : 0.f), 1.06f};
             bool clipped = false;
             for (float sign : {-1.f, 1.f}) {
                 const V plane =
@@ -292,16 +300,20 @@ struct Stage {
             float style = impact > .05f ? f[11] : (upcoming ? f[10] : p.style);
             glUniform3f(scene.offset, p.x - pan, p.y - camera, 0);
             glUniform4f(scene.key, impact, style, upcoming ? 1.f : 0.f, i == roll ? f[8] : -2.f);
+            glUniform2f(scene.tilt, p.tiltCos, p.tiltSin);
             keys[shape].bind();
             keys[shape].draw();
             if (guided) {
                 if (!p.rail.count)
                     p.rail.upload(railMesh(p.route, p.lamps));
+                // Rails are already built in world axes from the physics samples.
+                glUniform2f(scene.tilt, 1.f, 0.f);
                 p.rail.bind();
                 p.rail.draw();
             }
         }
         glUniform3f(scene.offset, ball.x, ball.y, ball.z);
+        glUniform2f(scene.tilt, 1.f, 0.f);
         marble.bind();
         marble.draw();
         glDisable(GL_CULL_FACE);

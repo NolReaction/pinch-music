@@ -22,20 +22,27 @@ private struct AudioFailure: LocalizedError {
 
 // The shared controller and UIKit notifications access the audio session on the main actor.
 @MainActor
-private final class NativeMedia: NSObject, @preconcurrency AppleMediaSession, @preconcurrency AVAudioPlayerDelegate {
+private final class NativeMedia: NSObject, @preconcurrency AppleMediaSession, AVAudioPlayerDelegate {
     private let instrument: String
     private var observer: AppleInterruptListener?
     private let audioSession = AVAudioSession.sharedInstance()
     private var voices: SampleVoices?
     private var backing: AVAudioPlayer?
+    private var backingAsset: String?
+    private var prepared = false
+    private var savedTime: TimeInterval = 0
     private var backingVolume: Float = 1
     private(set) var backingEnded = false
-    var backingPlaying: Bool { backing?.isPlaying ?? false }
-    var backingPositionMs: Int64 { Int64(((backing?.currentTime ?? 0) * 1000).rounded()) }
+    var backingPlaying: Bool { wantsPlayback && backing?.isPlaying == true }
+    var backingPositionMs: Int64 {
+        capturePosition()
+        return Int64((savedTime * 1000).rounded())
+    }
     private var roots = [Int32: Int32]()
     private var tokens = [NSObjectProtocol]()
     private var wantsPlayback = false
-    private var sessionWasActivated = false
+    private var sessionActive = false
+    private var playbackOutputs: [String] = []
     private var closed = false
     private(set) var failure: String?
 
@@ -49,44 +56,70 @@ private final class NativeMedia: NSObject, @preconcurrency AppleMediaSession, @p
     func includeSample(midi: Int32, root: Int32) { roots[midi] = root }
 
     func prepare(backingAsset: String?) {
-        guard !closed, voices == nil, backing == nil, failure == nil else { return }
+        guard !closed, !prepared, failure == nil else { return }
+        self.backingAsset = backingAsset
         do {
-            if !roots.isEmpty {
-                voices = try SampleVoices(instrument: instrument, roots: roots, includeStrike: backingAsset != nil)
-            }
-            if let asset = backingAsset {
-                guard let folder = Bundle.main.resourceURL else { throw AudioFailure("Отсутствуют ресурсы игры.") }
-                let url = folder.appendingPathComponent("media").appendingPathComponent(asset)
-                let player = try AVAudioPlayer(contentsOf: url)
-                player.delegate = self
-                player.volume = backingVolume
-                guard player.prepareToPlay() else { throw AudioFailure("Не удалось подготовить аккомпанемент.") }
-                backing = player
-            }
+            try createPlayers()
+            prepared = true
             if UIApplication.shared.applicationState != .active { interrupt() }
         } catch {
             failure = error.localizedDescription
         }
     }
 
+    private func createPlayers() throws {
+        if voices == nil, !roots.isEmpty {
+            voices = try SampleVoices(instrument: instrument, roots: roots, includeStrike: backingAsset != nil)
+        }
+        if backing == nil, let asset = backingAsset {
+            guard let folder = Bundle.main.resourceURL else { throw AudioFailure("Отсутствуют ресурсы игры.") }
+            let url = folder.appendingPathComponent("media").appendingPathComponent(asset)
+            let player = try AVAudioPlayer(contentsOf: url)
+            player.delegate = self
+            player.volume = backingVolume
+            backing = player
+        }
+    }
+
+    private func capturePosition() {
+        guard wantsPlayback, let backing = backing else { return }
+        // A stopped or invalidated decoder may already report zero in its interruption callback.
+        savedTime = max(savedTime, backing.currentTime)
+    }
+
     func activate() -> Bool {
-        guard !closed, !backingEnded, voices != nil || backing != nil, failure == nil else { return false }
+        guard !closed, prepared, !backingEnded, failure == nil else { return false }
+        if wantsPlayback { return true }
         guard UIApplication.shared.applicationState == .active else {
             interrupt()
             return false
         }
         do {
-            if audioSession.category != .playback { try audioSession.setCategory(.playback, mode: .default) }
-            try? audioSession.setPreferredIOBufferDuration(0.005)
-            try audioSession.setActive(true)
-            sessionWasActivated = true
-            try voices?.start()
-            if let backing = backing, !backing.isPlaying && !backing.play() {
-                throw AudioFailure("Не удалось начать аккомпанемент.")
+            if audioSession.category != .playback || audioSession.mode != .default {
+                try audioSession.setCategory(.playback, mode: .default)
             }
+            // Let iOS choose the I/O buffer for the route, including during screen capture.
+            try audioSession.setActive(true)
+            sessionActive = true
+        } catch {
+            // Another app or a call can still own audio when the user first tries to resume.
+            interrupt()
+            return false
+        }
+        do {
+            try createPlayers()
+            try voices?.start()
+            if let backing = backing {
+                backing.currentTime = min(savedTime, backing.duration)
+                if savedTime > 0 { backing.volume = 0 }
+                guard backing.play() else { throw AudioFailure("Не удалось начать аккомпанемент.") }
+                if savedTime > 0 { backing.setVolume(backingVolume, fadeDuration: 0.025) }
+            }
+            playbackOutputs = audioSession.currentRoute.outputs.map(\.uid)
             wantsPlayback = true
             return true
         } catch {
+            silence()
             failure = error.localizedDescription
             return false
         }
@@ -97,27 +130,45 @@ private final class NativeMedia: NSObject, @preconcurrency AppleMediaSession, @p
         backing?.volume = backingVolume
     }
 
-    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        guard !closed, player === backing else { return }
-        if flag { backingEnded = true }
-        else { failure = "Воспроизведение аккомпанемента прервано." }
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        Task { @MainActor [weak self, weak player] in
+            guard let self = self, !self.closed, let player = player, player === self.backing else { return }
+            if flag { self.backingEnded = true }
+            else { self.failure = "Воспроизведение аккомпанемента прервано." }
+        }
     }
 
-    func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
-        guard !closed, player === backing else { return }
-        failure = error?.localizedDescription ?? "Не удалось прочитать аккомпанемент."
+    nonisolated func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        let message = error?.localizedDescription ?? "Не удалось прочитать аккомпанемент."
+        Task { @MainActor [weak self, weak player] in
+            guard let self = self, !self.closed, let player = player, player === self.backing else { return }
+            self.failure = message
+        }
     }
 
     func silence() {
+        guard wantsPlayback || sessionActive else { return }
+        capturePosition()
         wantsPlayback = false
         backing?.pause()
         voices?.silence()
+        if sessionActive {
+            sessionActive = false
+            try? audioSession.setActive(false, options: .notifyOthersOnDeactivation)
+        }
     }
+
     func note(midi: Int32, gain: Float) {
         if wantsPlayback { voices?.play(midi, gain: gain) }
     }
     func strike(gain: Float) {
         if wantsPlayback { voices?.strike(gain: gain) }
+    }
+
+    private func discardPlayers() {
+        backing?.delegate = nil
+        backing = nil
+        voices = nil
     }
 
     func close() {
@@ -126,56 +177,89 @@ private final class NativeMedia: NSObject, @preconcurrency AppleMediaSession, @p
         observer = nil
         tokens.forEach { NotificationCenter.default.removeObserver($0) }
         tokens.removeAll()
-        backing?.delegate = nil
-        backing?.stop()
-        backing = nil
-        voices?.shutdown()
-        voices = nil
-        if sessionWasActivated {
-            try? audioSession.setActive(false, options: .notifyOthersOnDeactivation)
-        }
+        silence()
+        discardPlayers()
     }
 
     private func interrupt() {
         guard !closed else { return }
         silence()
+        discardPlayers()
         observer?.interrupted()
     }
 
-    private func observe(_ name: Notification.Name, object: AnyObject? = nil,
-                         action: @escaping @MainActor (NativeMedia, Notification) -> Void) {
-        let token = NotificationCenter.default.addObserver(forName: name, object: object, queue: .main) {
-            [weak self] notification in
+    private var outputStopped: Bool {
+        !backingEnded && (voices?.engine.isRunning == false || backing?.isPlaying == false)
+    }
+
+    private func observeUIKit(_ name: Notification.Name, action: @escaping @MainActor (NativeMedia) -> Void) {
+        let token = NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) {
+            [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self = self, !self.closed else { return }
-                action(self, notification)
+                action(self)
             }
         }
         tokens.append(token)
     }
 
+    private enum AudioEvent: Sendable {
+        case interruption, routeChanged, reset
+        case engineChanged(ObjectIdentifier)
+    }
+
+    private func observeAudio(_ name: Notification.Name, object: AnyObject? = nil,
+                              event: @escaping @Sendable (Notification) -> AudioEvent?) {
+        let token = NotificationCenter.default.addObserver(forName: name, object: object, queue: nil) {
+            [weak self] notification in
+            guard let change = event(notification) else { return }
+            // Leave Core Audio's callback before interacting with or disposing of its engine.
+            DispatchQueue.main.async { [weak self] in self?.handle(change) }
+        }
+        tokens.append(token)
+    }
+
     private func observeSession() {
-        observe(UIApplication.willResignActiveNotification) { media, _ in media.interrupt() }
-        observe(AVAudioSession.interruptionNotification, object: audioSession) { media, notification in
+        observeUIKit(UIApplication.willResignActiveNotification) { media in media.interrupt() }
+        observeUIKit(UIApplication.userDidTakeScreenshotNotification) { media in
+            if media.wantsPlayback && media.outputStopped { media.interrupt() }
+        }
+        observeAudio(AVAudioSession.interruptionNotification, object: audioSession) { notification in
             let raw = (notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? NSNumber)?.uintValue
-            if raw == AVAudioSession.InterruptionType.began.rawValue { media.interrupt() }
+            return raw == AVAudioSession.InterruptionType.began.rawValue ? .interruption : nil
         }
-        observe(AVAudioSession.routeChangeNotification, object: audioSession) { media, notification in
-            guard let raw = (notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? NSNumber)?.uintValue,
-                  let reason = AVAudioSession.RouteChangeReason(rawValue: raw) else { return }
-            let previous = notification.userInfo?[AVAudioSessionRouteChangePreviousRouteKey] as? AVAudioSessionRouteDescription
-            let changed = previous.map { $0.outputs.map(\.uid) != media.audioSession.currentRoute.outputs.map(\.uid) } ?? false
-            if reason == .oldDeviceUnavailable || reason == .newDeviceAvailable || changed { media.interrupt() }
+        observeAudio(AVAudioSession.routeChangeNotification, object: audioSession) { _ in .routeChanged }
+        observeAudio(.AVAudioEngineConfigurationChange) { notification in
+            (notification.object as? AVAudioEngine).map { .engineChanged(ObjectIdentifier($0)) }
         }
-        observe(.AVAudioEngineConfigurationChange) { media, notification in
-            if media.wantsPlayback, let changed = notification.object as? AVAudioEngine,
-               changed === media.voices?.engine, !changed.isRunning {
-                media.interrupt()
+        observeAudio(AVAudioSession.mediaServicesWereResetNotification) { _ in .reset }
+    }
+
+    private func handle(_ event: AudioEvent) {
+        guard !closed else { return }
+        switch event {
+        case .interruption:
+            interrupt()
+        case .routeChanged:
+            // Compare with the route used at play(). A queued notification about an earlier
+            // route may arrive after the new graph is already playing on the correct output.
+            let outputs = audioSession.currentRoute.outputs.map(\.uid)
+            if wantsPlayback {
+                if playbackOutputs != outputs || outputStopped { interrupt() }
+            } else if playbackOutputs != outputs {
+                discardPlayers()
             }
-        }
-        observe(AVAudioSession.mediaServicesWereResetNotification) { media, _ in
-            media.failure = "Система перезапустила звук. Начните попытку заново."
-            media.silence()
+        case .engineChanged(let id):
+            if let engine = voices?.engine, id == ObjectIdentifier(engine), !engine.isRunning {
+                if wantsPlayback { interrupt() } else { discardPlayers() }
+            }
+        case .reset:
+            // These objects belong to the old media server. Use the last observed cursor
+            // and build a fresh graph only when the user chooses to continue.
+            wantsPlayback = false
+            sessionActive = false
+            discardPlayers()
+            observer?.interrupted()
         }
     }
 }
@@ -252,6 +336,7 @@ private final class SampleVoices {
         if let buffer = contact { schedule(buffer, gain: gain) }
     }
     private func schedule(_ buffer: AVAudioPCMBuffer, gain: Float) {
+        guard engine.isRunning else { return }
         let node = nodes[next]
         next = (next + 1) % nodes.count
         node.volume = min(1, max(0, gain))
@@ -260,10 +345,7 @@ private final class SampleVoices {
 
     func silence() {
         nodes.forEach { $0.stop() }
-        if engine.isRunning { engine.pause() }
-    }
-    func shutdown() {
-        silence()
         engine.stop()
+        next = 0
     }
 }

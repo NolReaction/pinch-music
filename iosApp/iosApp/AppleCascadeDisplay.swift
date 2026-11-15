@@ -27,7 +27,7 @@ private final class CascadeCanvas: GLKView {
     }
 }
 
-/// GLKView renders only when Compose submits a frame or UIKit resizes its drawable.
+/// UIKit presents the latest pose once per drawing pass, including layout and paused-frame redraws.
 @MainActor
 final class AppleCascadeDisplay: NSObject, @preconcurrency AppleCascadeSurface, @preconcurrency GLKViewDelegate {
     private let canvas: GLKView
@@ -41,6 +41,7 @@ final class AppleCascadeDisplay: NSObject, @preconcurrency AppleCascadeSurface, 
     private var needsUpload = true
     private var hasFrame = false
     private var closed = false
+    private var suspended = false
 
     override init() {
         guard let context = EAGLContext(api: .openGLES2) else {
@@ -56,6 +57,7 @@ final class AppleCascadeDisplay: NSObject, @preconcurrency AppleCascadeSurface, 
         canvas.enableSetNeedsDisplay = true
         let center = NotificationCenter.default
         center.addObserver(self, selector: #selector(suspendStage), name: UIApplication.willResignActiveNotification, object: nil)
+        center.addObserver(self, selector: #selector(releaseStage), name: UIApplication.didEnterBackgroundNotification, object: nil)
         center.addObserver(self, selector: #selector(resumeStage), name: UIApplication.didBecomeActiveNotification, object: nil)
     }
 
@@ -76,13 +78,13 @@ final class AppleCascadeDisplay: NSObject, @preconcurrency AppleCascadeSurface, 
         guard !closed, data.count == 12 * MemoryLayout<Float>.stride else { return }
         _ = frame.withUnsafeMutableBytes { dest in data.copyBytes(to: dest) }
         hasFrame = true
-        if canvas.window != nil && UIApplication.shared.applicationState == .active {
-            canvas.display()
+        if !suspended && canvas.window != nil && UIApplication.shared.applicationState == .active {
+            canvas.setNeedsDisplay()
         }
     }
 
     func glkView(_ view: GLKView, drawIn rect: CGRect) {
-        guard !closed, hasFrame, UIApplication.shared.applicationState == .active,
+        guard !closed, !suspended, hasFrame, UIApplication.shared.applicationState == .active,
               view.drawableWidth > 0, view.drawableHeight > 0 else { return }
         if stage == nil {
             stage = stage3d_create()
@@ -93,7 +95,7 @@ final class AppleCascadeDisplay: NSObject, @preconcurrency AppleCascadeSurface, 
             keys.withUnsafeBufferPointer { k in
                 rails.withUnsafeBufferPointer { r in
                     lamps.withUnsafeBufferPointer { l in
-                        stage3d_set_course(stage, k.baseAddress, Int32(k.count / 4),
+                        stage3d_set_course(stage, k.baseAddress, Int32(k.count / Int(STAGE3D_KEY_STRIDE)),
                                            r.baseAddress, Int32(r.count / 3),
                                            l.baseAddress, Int32(l.count / 3))
                     }
@@ -107,6 +109,17 @@ final class AppleCascadeDisplay: NSObject, @preconcurrency AppleCascadeSurface, 
     }
 
     @objc private func suspendStage() {
+        suspended = true
+        canvas.enableSetNeedsDisplay = false
+        // Drain submitted commands before iOS backgrounds us. A transient
+        // interruption can keep the course meshes and shaders for the next frame.
+        let previous = EAGLContext.current()
+        EAGLContext.setCurrent(canvas.context)
+        glFinish()
+        EAGLContext.setCurrent(previous)
+    }
+
+    @objc private func releaseStage() {
         let previous = EAGLContext.current()
         EAGLContext.setCurrent(canvas.context)
         if let stage {
@@ -115,11 +128,13 @@ final class AppleCascadeDisplay: NSObject, @preconcurrency AppleCascadeSurface, 
         }
         canvas.deleteDrawable()
         glFinish()
-        EAGLContext.setCurrent(previous)
+        EAGLContext.setCurrent(previous === canvas.context ? nil : previous)
     }
 
     @objc private func resumeStage() {
         if !closed {
+            suspended = false
+            canvas.enableSetNeedsDisplay = true
             canvas.setNeedsLayout()
             canvas.setNeedsDisplay()
         }
@@ -130,6 +145,8 @@ final class AppleCascadeDisplay: NSObject, @preconcurrency AppleCascadeSurface, 
         closed = true
         canvas.delegate = nil
         NotificationCenter.default.removeObserver(self)
-        if UIApplication.shared.applicationState != .background { suspendStage() }
+        // If another observer closes us during didEnterBackground, we still own
+        // the stage until our own background cleanup runs. Later it is already nil.
+        if stage != nil || UIApplication.shared.applicationState != .background { releaseStage() }
     }
 }

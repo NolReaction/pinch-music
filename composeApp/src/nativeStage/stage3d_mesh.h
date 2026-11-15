@@ -112,13 +112,20 @@ inline void ellipsoid(Mesh& m, V at, V radii, Surface surface, int sides, int ri
         }
 }
 
+inline float keyCenterX(bool shortKey, float side) {
+    return side * (shortKey ? .23f : .22f);
+}
+
 // Loft rounded rectangular contours. Bevel normals angle smoothly into the flat top.
 // The two fasteners sit inside recessed ferrules on the playing face.
 inline Mesh keyMesh(bool shortKey, float side, bool numbered) {
     Mesh m;
     float width = shortKey ? .46f : .70f;
-    float cx = shortKey ? side * width * .5f : 0;
-    float length = shortKey ? 1.17f : 1.32f;
+    // Keep the strike near the inward lip and the long part of the key behind
+    // the track. The cap then stays clear of the ball on the next row below.
+    float cx = keyCenterX(shortKey, side);
+    float frontZ = .25f, backZ = shortKey ? -.585f : -.66f;
+    float length = frontZ - backZ, cz = (frontZ + backZ) * .5f;
     float depth = numbered ? .36f : .215f;
     const float corner = .115f;
     const int perCorner = 4, ring = 4 * perCorner;
@@ -140,10 +147,10 @@ inline Mesh keyMesh(bool shortKey, float side, bool numbered) {
         float angle = (quadrant + (i % perCorner) / float(perCorner - 1)) * Pi * .5f;
         float nx = std::cos(angle), nz = std::sin(angle);
         float x = cx + (quadrant == 0 || quadrant == 3 ? 1 : -1) * (width * .5f - corner);
-        float z = (quadrant < 2 ? 1 : -1) * (length * .5f - corner);
+        float z = cz + (quadrant < 2 ? 1 : -1) * (length * .5f - corner);
         return V{x + (corner - l.inset) * nx, l.y, z + (corner - l.inset) * nz};
     };
-    int top = m.point({cx, 0, 0}, {0, -1, 0}, Enamel);
+    int top = m.point({cx, 0, cz}, {0, -1, 0}, Enamel);
     for (int i = 0; i < ring; ++i)
         m.point(contour(levels[0], i), {0, -1, 0}, Enamel);
     for (int i = 0; i < ring; ++i)
@@ -162,12 +169,12 @@ inline Mesh keyMesh(bool shortKey, float side, bool numbered) {
             m.quad(a, b, b + ring, a + ring);
         }
     }
-    int bottom = m.point({cx, depth, 0}, {0, 1, 0}, Skirt);
+    int bottom = m.point({cx, depth, cz}, {0, 1, 0}, Skirt);
     for (int i = 0; i < ring; ++i)
         m.point(contour(levels[8], i), {0, 1, 0}, Skirt);
     for (int i = 0; i < ring; ++i)
         m.tri(bottom, bottom + 1 + i, bottom + 1 + (i + 1) % ring);
-    for (float z : {-.39f, .39f}) {
+    for (float z : {backZ + .14f, frontZ - .14f}) {
         rod(m, {cx, .002f, z}, {cx, -.009f, z}, .045f, Iron, 8);
         ellipsoid(m, {cx, -.009f, z}, {.033f, .021f, .033f}, Bolt, 8, 4);
     }
@@ -180,7 +187,7 @@ inline Mesh keyMesh(bool shortKey, float side, bool numbered) {
     }
     if (numbered) {
         // A physical seven-segment insert inside the front cap of accent keys.
-        const float sy = depth * .52f, z = length * .5f + .0015f, h = .112f, w = .071f, gap = .012f;
+        const float sy = depth * .52f, z = frontZ + .0015f, h = .112f, w = .071f, gap = .012f;
         auto segment = [&](float x, float y, float dx, float dy) {
             V along = unit({dx, dy, 0}), across{-along.y, along.x, 0}, mid{cx + x, sy + y, z};
             V span{dx, dy, 0};

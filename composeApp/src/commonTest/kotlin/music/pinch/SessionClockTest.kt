@@ -70,4 +70,24 @@ class SessionClockTest {
         assertFalse(paused.playing)
         assertEquals(496L, paused.positionMs)
     }
+
+    @Test
+    fun decoderJitterDoesNotDoubleOrFreezeAFrameAndLongGapsResync() {
+        var previous = Playback(true, true, false, 42_000, 0)
+        var drawn = previous.positionMs
+        for (frame in 1..60) {
+            val uptime = frame * 16L
+            val jitter = if ((frame / 4) % 2 == 0) 8L else -8L
+            val current = previous.copy(observedUptimeMs = uptime, positionMs = 42_000 + uptime + jitter)
+            val next = current.visualPosition(previous, drawn, 184_000)
+            assertTrue(next - drawn in 12L..20L)
+            assertTrue(kotlin.math.abs(next - current.positionMs) <= 12L)
+            previous = current
+            drawn = next
+        }
+        val lateFrame = previous.copy(observedUptimeMs = 1500, positionMs = 43_500)
+        assertEquals(43_500L, lateFrame.visualPosition(previous, drawn, 184_000))
+        val stalled = lateFrame.copy(observedUptimeMs = 1516, stalled = true)
+        assertEquals(43_500L, stalled.visualPosition(lateFrame, 43_500, 184_000))
+    }
 }

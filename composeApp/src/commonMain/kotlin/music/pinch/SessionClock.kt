@@ -53,5 +53,17 @@ internal class BackingClock(private val durationMs: Long) {
     }
 }
 
+/** Ease small decoder-clock corrections over several drawn frames. Scoring and sound use the raw clock. */
+internal fun Playback.visualPosition(previous: Playback?, drawnMs: Long, durationMs: Long): Long {
+    val elapsed = previous?.let { observedUptimeMs - it.observedUptimeMs } ?: 0L
+    val predicted = drawnMs + elapsed
+    val error = positionMs - predicted
+    if (stalled || previous == null || previous.stalled || elapsed !in 1L..64L || error !in -48L..48L) {
+        return positionMs.coerceIn(drawnMs, durationMs)
+    }
+    val correction = maxOf(1L, elapsed / 4)
+    return (predicted + error.coerceIn(-correction, correction)).coerceIn(drawnMs, durationMs)
+}
+
 // Sparse octave samples cover MIDI 0…127 with no more than seven semitones of resampling.
 internal fun instrumentRoot(midi: Int): Int = (((midi + 6) / 12) * 12).coerceIn(0, 120)

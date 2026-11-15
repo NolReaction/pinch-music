@@ -16,7 +16,7 @@ internal data class PlanarAttack(
 
 /** The renderer offsets these centreline samples along the normal to make the two supporting rods. */
 internal data class PlanarPanel(
-    val left: Boolean, val topY: Float, val firstAttack: Int, val lastAttack: Int,
+    val left: Boolean, val topY: Float, val firstAttack: Int, val lastAttack: Int, val slope: Float = 0f,
     val railSamples: List<StagePoint> = emptyList(), val ledCenters: List<StagePoint> = emptyList(),
     val ledTimesMs: List<Long> = emptyList(),
 )
@@ -26,8 +26,10 @@ internal data class PlanarFrame(
     val attackIndex: Int, val rollingPanel: Int?, val litLedIndex: Int,
 )
 
-internal const val CascadeGravity = 42.0
-private const val RepeatGapMs = 170L
+internal const val CascadeGravity = 26.0
+private const val RepeatGapMs = 210L
+private const val MaxCrossingSpeed = 5.0 // world units per second
+private const val MaxLaneRadius = 1.36
 private const val RailGapMs = 610L
 private const val Segments = 32
 private const val RollingGravity = CascadeGravity * 5 / 7 // I = (2/5) m r² for a solid sphere.
@@ -37,9 +39,10 @@ private fun curve(t: Double) = t * t * (3 - 2 * t)
 
 private fun bend(t: Double) = if (t < .5) 2 * t * t else 1 - 2 * (1 - t) * (1 - t)
 
-private fun shape(groove: Boolean, lead: Int = 1) = DoubleArray(Segments + 1) { index ->
+private fun shape(groove: Boolean, lead: Int = 1, compact: Boolean = false) = DoubleArray(Segments + 1) { index ->
     val u = ((index - lead).toDouble() / (Segments - lead - 1)).coerceIn(0.0, 1.0)
     when {
+        compact -> bend(u)
         !groove -> curve(u)
         u < .55 -> 1.45 * bend(u / .55)
         else -> 1.45 - .45 * bend((u - .55) / .45)
@@ -48,6 +51,9 @@ private fun shape(groove: Boolean, lead: Int = 1) = DoubleArray(Segments + 1) { 
 private val downhill = shape(false)
 private val trough = shape(true)
 private val longApproach = shape(false, lead = 12)
+// Two parabolic halves distribute the change of tangent over the full guide.
+// This bounds curvature even on short rails between tightly spaced keys.
+private val compactRun = shape(false, compact = true)
 
 private fun travelTime(profile: DoubleArray, width: Double, height: Double, speed: Double, flightDistance: Double): Double {
     var previousSpeed = speed
@@ -82,21 +88,37 @@ private class CascadeRail(startX: Float, startY: Float, nextX: Float, gap: Doubl
     private val preferredSpeed = 1.9
     private val longRun = gap >= 1.35
     private val varyLength = variant != 1 || longRun
-    private val grooved = variant == 2 && gap >= .72 && !longRun
+    private val grooved = variant == 2 && gap >= .72 && !longRun && distance >= 1.8
+    private val compact = distance < 2.15
+    private val compactWidth = maxOf(.55, distance * .43)
     private val profile = when {
+        // Spread the slow approach over the available run before the bend.
+        // Keep enough curved track for the sphere to follow its normal.
+        compact && longRun -> {
+            val lead = ((1.0 - .55 / compactWidth) * Segments).toInt().coerceIn(1, 12)
+            shape(false, lead, compact = true)
+        }
+        compact -> compactRun
         longRun -> longApproach
         grooved -> trough
         else -> downhill
     }
     // A long rest gets a longer level approach. The ball can continue to roll visibly across the gap.
-    private val standardDrop = if (longRun || grooved) .21 else .32
-    private val width = if (varyLength) {
+    // A short guide needs a shallower bend to keep the rolling sphere in contact.
+    private val pitchScale = min(1.0, distance * distance / (2.72 * 2.72))
+    // At a horizontal lip v² must exceed g times the ball/rod contact radius
+    // or the ball would pivot around the rod end before entering free flight.
+    private val standardDrop = maxOf(.18, (if (longRun || grooved) .21 else .32) * pitchScale)
+    private val width = if (compact) {
+        // Leave flight room below a compact guide before the course turns back.
+        compactWidth
+    } else if (varyLength) {
         val broad = longRun || grooved
         val minWidth = distance * (if (broad) .62 else .44)
         val maxWidth = distance * (if (broad) .65 else .60)
         fit(minWidth, maxWidth, gap) { w -> travelTime(profile, w, standardDrop, preferredSpeed, distance - w) }
     } else distance * .56
-    private val height = if (varyLength) standardDrop else fit(.20, .43, gap) { h ->
+    private val height = if (varyLength) standardDrop else fit(maxOf(.18, .20 * pitchScale), maxOf(.20, .43 * pitchScale), gap) { h ->
         travelTime(profile, width, h, preferredSpeed, distance - width)
     }
     // The spring at the strike establishes the entry speed when the available reach or pitch is exhausted.
@@ -183,8 +205,12 @@ internal class PlanarPath(chart: Chart) {
         for ((index, first) in starts.withIndex()) {
             val last = (starts.getOrNull(index + 1) ?: notes.size) - 1
             val left = index % 2 == 0
-            val spread = 1.28f + ((notes[first].midi % 7) - 3) * .062f
-            val x = if (left) -spread else spread
+            // Both ends of a crossing must fit its time budget. Looking one gap ahead
+            // also leaves room to reverse direction on the following beat.
+            val incomingMs = if (first == 0) Long.MAX_VALUE else notes[first].atMs - notes[first - 1].atMs
+            val outgoingMs = notes.getOrNull(last + 1)?.let { it.atMs - notes[last].atMs } ?: Long.MAX_VALUE
+            val laneRadius = min(MaxLaneRadius, MaxCrossingSpeed * min(incomingMs, outgoingMs) / 2000.0)
+            val x = (if (left) -laneRadius else laneRadius).toFloat()
             keys += PlanarPanel(left, 0f, first, last)
             for (i in first..last) {
                 val n = notes[i]
@@ -204,7 +230,11 @@ internal class PlanarPath(chart: Chart) {
             val y = panel.topY - MarbleRadius
             val rail = if (gap >= RailGapMs) CascadeRail(from.x, y, to.x, seconds, from.panelIndex % 3) else null
             val sameKey = from.panelIndex == to.panelIndex
-            val drop = if (sameKey) 0.0 else rail?.landingDrop ?: .36 * CascadeGravity * seconds * seconds
+            // Reserve vertical room for the ball under the preceding same-side key,
+            // then limit the descent on longer hops. Gravity sets the launch impulse.
+            val freeFall = .5 * CascadeGravity * seconds * seconds
+            val drop = if (sameKey) 0.0 else rail?.landingDrop
+                ?: maxOf(.88, min(.68 * freeFall, 2.70 * seconds), freeFall - 2.15 * seconds)
             if (!sameKey) keys[to.panelIndex] = keys[to.panelIndex].copy(topY = (panel.topY + drop).toFloat())
             if (rail != null) {
                 val count = (rail.seconds / .17).toInt().coerceIn(2, 5)
@@ -227,6 +257,21 @@ internal class PlanarPath(chart: Chart) {
             sections += section
             spin = section.airborneAngle(seconds) % 6.2831855f
             integratedHeight[i + 1] = integratedHeight[i] + gap * (panel.topY + .5 * drop)
+        }
+        for ((index, panel) in keys.withIndex()) {
+            val outgoing = sections.getOrNull(panel.lastAttack) ?: continue
+            if (outgoing.rail != null) continue // The run-in and guide share a level tangent.
+            val previous = sections.getOrNull(panel.firstAttack - 1)
+            val arrivalTime = strikes[panel.firstAttack].atMs
+            val flightTime = if (previous == null) min(.38, arrivalTime / 1000.0) else
+                (arrivalTime - strikes[panel.firstAttack - 1].atMs) / 1000.0 - (previous.rail?.seconds ?: 0.0)
+            val arrivalVy = (previous?.launchVy ?: 0.0) + CascadeGravity * flightTime
+            // The change of velocity gives the normal of a frictionless rebound.
+            // Limit the pitch to the mechanical key's range; its spring supplies the rest.
+            val horizontalImpulse = outgoing.vx - (previous?.vx ?: 0.0)
+            val upwardImpulse = maxOf(.01, arrivalVy - outgoing.launchVy)
+            val pitch = (abs(horizontalImpulse) / upwardImpulse).coerceIn(.30, .58).toFloat()
+            keys[index] = panel.copy(slope = if (panel.left) pitch else -pitch)
         }
         endSpin = spin
         spans = sections

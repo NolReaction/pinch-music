@@ -1,6 +1,9 @@
 package music.pinch.ui
 
 import kotlin.math.max
+import kotlin.math.sqrt
+
+internal const val CascadeKeyStride = 5
 
 private val PlanarAttack.material: Int
     get() = when {
@@ -11,17 +14,22 @@ private val PlanarAttack.material: Int
 
 /** Static world coordinates. All three backends (Android, iOS and offscreen capture) use this packing. */
 internal fun PlanarPath.gpuCourse(): CascadeGpuCourse {
-    val keys = FloatArray(panels.size * 4)
+    val keys = FloatArray(panels.size * CascadeKeyStride)
     val rails = FloatArray(panels.sumOf { it.railSamples.size } * 3)
     val lamps = FloatArray(panels.sumOf { it.ledCenters.size } * 3)
     var rail = 0
     var lamp = 0
     panels.forEachIndexed { index, panel ->
         val first = attacks[panel.firstAttack]
-        keys[4 * index] = first.x
-        keys[4 * index + 1] = panel.topY
-        keys[4 * index + 2] = if (panel.left) -1f else 1f
-        keys[4 * index + 3] = first.material.toFloat()
+        val base = index * CascadeKeyStride
+        // The path stores the centre of the sphere. Its contact lies one radius
+        // away along the downward normal of the playing surface.
+        val normalY = 1f / sqrt(1f + panel.slope * panel.slope)
+        keys[base] = first.x - MarbleRadius * panel.slope * normalY
+        keys[base + 1] = panel.topY + MarbleRadius * (normalY - 1f)
+        keys[base + 2] = if (panel.left) -1f else 1f
+        keys[base + 3] = first.material.toFloat()
+        keys[base + 4] = panel.slope
         for (point in panel.railSamples) {
             rails[rail++] = index.toFloat()
             rails[rail++] = point.x

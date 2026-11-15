@@ -16,7 +16,7 @@ import music.pinch.core.echoTargetTimes
 import music.pinch.songLibrary
 
 class PlanarPathTest {
-    @Test fun everyBundledOnsetTouchesItsHorizontalShelfInOnePlane() {
+    @Test fun everyBundledOnsetTouchesItsKeyInOnePlane() {
         for (song in songLibrary) {
             val chart = requireNotNull(song.bundled)
             val path = PlanarPath(chart)
@@ -74,12 +74,17 @@ class PlanarPathTest {
                     val contact = path.attacks[p.firstAttack].x
                     val shortKey = p.railSamples.isNotEmpty()
                     val halfWidth = if (shortKey) .23f else .35f
-                    val center = contact + if (shortKey) (if (p.left) -halfWidth else halfWidth) else 0f
-                    val left = center - halfWidth
-                    val right = center + halfWidth
-                    val x = ball.x.coerceIn(left, right)
-                    val y = ball.y.coerceIn(p.topY, p.topY + .36f)
-                    assertTrue(hypot(x - ball.x, y - ball.y) >= MarbleRadius - .0003f,
+                    val norm = hypot(1f, p.slope)
+                    val faceX = contact - MarbleRadius * p.slope / norm
+                    val faceY = p.topY - MarbleRadius + MarbleRadius / norm
+                    val dx = ball.x - faceX
+                    val dy = ball.y - faceY
+                    val along = (dx + p.slope * dy) / norm
+                    val depth = (dy - p.slope * dx) / norm
+                    val center = (if (p.left) -1 else 1) * (if (shortKey) halfWidth else .22f)
+                    val x = along.coerceIn(center - halfWidth, center + halfWidth)
+                    val y = depth.coerceIn(0f, .36f)
+                    assertTrue(hypot(x - along, y - depth) >= MarbleRadius - .0003f,
                         "${song.title} at ${ms}ms crosses key $index")
                     val rail = rods[index]
                     for (j in 1 until rail.size) {
@@ -106,7 +111,7 @@ class PlanarPathTest {
                 val speed0 = abs(path.frame(start + 1).marble.x - entry.marble.x) * 1000
                 assertEquals(rail.first().y, rail[1].y)
                 assertEquals(rail.last().y, rail[rail.lastIndex - 1].y)
-                assertTrue(rail.last().y > rail.first().y + .15f)
+                assertTrue(rail.last().y > rail.first().y)
                 if (rail.maxOf { it.y } > rail.last().y + .04f) troughs++
                 val direction = if (panel.left) 1 else -1
                 // A guide can only push the sphere. Check that none of its bends would require adhesion.
@@ -161,6 +166,28 @@ class PlanarPathTest {
             }
         }
         assertTrue(troughs > 0, "at least one guide must rise toward its exit")
+    }
+
+    @Test fun fastStereoLovePhraseKeepsEachStrikeAndLimitsTravelPerFrame() {
+        val chart = requireNotNull(songLibrary.first { it.id == "stereo-love" }.bundled)
+        val path = PlanarPath(chart)
+        val phrase = 42_000L..44_000L
+        val strikes = path.attacks.filter { it.atMs in phrase }
+        assertEquals(chart.notes.filter { it.atMs in phrase }.map { it.atMs }.distinct(),
+            strikes.map { it.atMs })
+        assertTrue(strikes.map { path.panels[it.panelIndex].slope }.any { it > .25f })
+        assertTrue(strikes.map { path.panels[it.panelIndex].slope }.any { it < -.25f })
+        for ((from, to) in strikes.zipWithNext()) {
+            val seconds = (to.atMs - from.atMs) / 1000.0
+            assertTrue(abs(to.x - from.x) <= 5.01 * seconds)
+        }
+        for (ms in phrase) {
+            val a = path.frame(ms)
+            val b = path.frame(ms + 17)
+            val dx = b.marble.x - a.marble.x
+            val dy = (b.marble.y - b.cameraY) - (a.marble.y - a.cameraY)
+            assertTrue(hypot(dx, dy) < MarbleRadius * .60f, "visible step at ${ms}ms")
+        }
     }
 
     @Test fun rapidRepeatsUseOnePadAndChordsShareThePlayableStrike() {

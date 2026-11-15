@@ -200,6 +200,7 @@ internal class Session(
                 }
                 waitingSince = null
                 hasPlayed = true
+                val previousAnchor = playingAnchor
                 playingAnchor = snap
                 val song = state.chart ?: return
                 val now = snap.positionMs.coerceIn(0L, song.durationMs)
@@ -236,8 +237,7 @@ internal class Session(
                 val beatMs = (60_000L / song.bpm).coerceAtLeast(1)
                 val count = if (!state.preview && leadRemaining in 1..(4 * beatMs))
                     ((leadRemaining + beatMs - 1) / beatMs).toInt() else null
-                // A small decoder correction can hold the image until audio catches up.
-                positionMs = maxOf(positionMs, now)
+                positionMs = snap.visualPosition(previousAnchor, positionMs, song.durationMs)
                 val reaction = state.reaction.takeIf { now < reactionUntil }
                 val stats = game?.stats
                 if (stats !== state.stats || count != state.countdown || reaction != state.reaction) {
