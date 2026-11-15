@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.22.1)
+project(pinch_stage LANGUAGES CXX)
+set(STAGE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../nativeStage")
+add_library(pinch_stage SHARED stage_jni.cpp "${STAGE_DIR}/stage3d.cpp")
+target_include_directories(pinch_stage PRIVATE "${STAGE_DIR}")
+target_compile_features(pinch_stage PRIVATE cxx_std_17)
+target_link_libraries(pinch_stage PRIVATE GLESv2 log)

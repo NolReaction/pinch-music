@@ -1,6 +1,7 @@
 .gradle/
 .kotlin/
 **/build/
+.cxx/
 .idea/
 *.iml
 local.properties
@@ -18,3 +19,24 @@ xcuserdata/
 .env
 .env.*
 __pycache__/
+
+# Keep local media, previews and transfer bundles out of new commits.
+docs/preview/
+docs/screenshots/
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.gif
+*.heic
+*.mp4
+*.mov
+*.m4v
+*.webm
+*.mkv
+*.wav
+*.mp3
+*.m4a
+*.ogg
+*.flac
+*.bundle

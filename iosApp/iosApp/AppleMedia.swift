@@ -6,6 +6,8 @@ import UIKit
 final class AppleMediaFactory: NSObject, @preconcurrency AppleMediaFactoryProtocol {
     private let songImport = AppleSongImport()
 
+    func createCascade() -> AppleCascadeSurface { AppleCascadeDisplay() }
+
     func pickAudio(listener: AppleAudioImportListener) { songImport.pick(listener) }
 
     func createMedia(instrument: String, observer: AppleInterruptListener) -> AppleMediaSession {

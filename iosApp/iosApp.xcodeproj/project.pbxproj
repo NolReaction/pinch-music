@@ -6,6 +6,8 @@
     objects = {
 
 /* Begin PBXBuildFile section */
+        1A0000000000000000000006 /* AppleCascadeDisplay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000000000000000000009 /* AppleCascadeDisplay.swift */; };
+        1A0000000000000000000007 /* stage3d.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2A000000000000000000000A /* stage3d.cpp */; };
         1A0000000000000000000001 /* PinchMusicApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000000000000000000001 /* PinchMusicApp.swift */; };
         1A0000000000000000000002 /* AppleMedia.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000000000000000000002 /* AppleMedia.swift */; };
         1A0000000000000000000005 /* AppleSongImport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000000000000000000008 /* AppleSongImport.swift */; };
@@ -14,6 +16,9 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+        2A0000000000000000000009 /* AppleCascadeDisplay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleCascadeDisplay.swift; sourceTree = "<group>"; };
+        2A000000000000000000000A /* stage3d.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ../composeApp/src/nativeStage/stage3d.cpp; sourceTree = SOURCE_ROOT; };
+        2A000000000000000000000B /* StageBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = StageBridge.h; sourceTree = "<group>"; };
         2A0000000000000000000001 /* PinchMusicApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PinchMusicApp.swift; sourceTree = "<group>"; };
         2A0000000000000000000002 /* AppleMedia.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleMedia.swift; sourceTree = "<group>"; };
         2A0000000000000000000008 /* AppleSongImport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleSongImport.swift; sourceTree = "<group>"; };
@@ -40,6 +45,9 @@
                 2A0000000000000000000001 /* PinchMusicApp.swift */,
                 2A0000000000000000000002 /* AppleMedia.swift */,
                 2A0000000000000000000008 /* AppleSongImport.swift */,
+                2A0000000000000000000009 /* AppleCascadeDisplay.swift */,
+                2A000000000000000000000A /* stage3d.cpp */,
+                2A000000000000000000000B /* StageBridge.h */,
                 2A0000000000000000000004 /* Info.plist */,
                 2A0000000000000000000005 /* Config.xcconfig */,
                 2A0000000000000000000007 /* Assets.xcassets */,
@@ -94,6 +102,8 @@
                 1A0000000000000000000001 /* PinchMusicApp.swift in Sources */,
                 1A0000000000000000000002 /* AppleMedia.swift in Sources */,
                 1A0000000000000000000005 /* AppleSongImport.swift in Sources */,
+                1A0000000000000000000006 /* AppleCascadeDisplay.swift in Sources */,
+                1A0000000000000000000007 /* stage3d.cpp in Sources */,
             );
             runOnlyForDeploymentPostprocessing = 0;
         };

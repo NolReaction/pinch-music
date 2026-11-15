@@ -253,8 +253,8 @@ private class Rail(run: CourseRun) {
 
 internal class MarbleScene(chart: Chart, private val marbleAtlas: ImageBitmap) {
     private val path = MarblePath(chart)
-    private val bars = Array(path.keys.size) { i -> Bar(path.keys[i], i) }
-    private val rails = path.spans.map(::Rail)
+    private val bars = arrayOfNulls<Bar>(path.keys.size)
+    private val rails = arrayOfNulls<Rail>(path.spans.size)
     private val outline = Path()
     private val detail = Path()
     private val projectedX = FloatArray(Levels*Corners)
@@ -263,6 +263,10 @@ internal class MarbleScene(chart: Chart, private val marbleAtlas: ImageBitmap) {
     private val depths = FloatArray(VisibleLimit)
     private var roomSize = Size.Zero
     private var room: Room? = null
+
+    // Keep the inexpensive contact list for the entire song. Construct each detailed mesh
+    // the first time it enters the camera's bounds, including the offscreen padding below.
+    private fun barAt(i: Int) = bars[i] ?: Bar(path.keys[i], i).also { bars[i] = it }
 
     private fun DrawScope.halo(p: Offset, radius: Float, brush: Brush, strength: Float) {
         if (radius<1f || strength<=.01f) return
@@ -484,12 +488,12 @@ internal class MarbleScene(chart: Chart, private val marbleAtlas: ImageBitmap) {
         var count = 0
         var nextManual = -1
         for (i in start..end) {
-            val bar=bars[i]
-            val p=camera.project(bar.key.center)
-            val pad=camera.unit(bar.key.center)*1.6f
+            val key = path.keys[i]
+            val p = camera.project(key.center)
+            val pad = camera.unit(key.center)*1.6f
             if (p.x < -pad || p.x > size.width+pad || p.y < -pad || p.y > size.height+pad) continue
-            if (nextManual<0 && i>frame.anchor && bar.key.playable) nextManual=i
-            val depth=camera.depth(bar.key.center)
+            if (nextManual<0 && i>frame.anchor && key.playable) nextManual=i
+            val depth = camera.depth(key.center)
             var n=count
             while (n>0 && depths[n-1]>depth) {
                 depths[n]=depths[n-1]
@@ -501,7 +505,7 @@ internal class MarbleScene(chart: Chart, private val marbleAtlas: ImageBitmap) {
             count++
         }
         for (n in 0 until count) {
-            val bar=bars[sorted[n]]
+            val bar = barAt(sorted[n])
             barShadow(bar,camera)
             val age=timeMs-bar.key.atMs
             if (age in 0..290) {
@@ -515,12 +519,17 @@ internal class MarbleScene(chart: Chart, private val marbleAtlas: ImageBitmap) {
         translate(wallContact.x,wallContact.y) {
             scale(wallR,wallR*.88f,Offset.Zero) { drawCircle(ShadowFeather,1f,Offset.Zero) }
         }
-        for (i in max(0,start)..min(rails.lastIndex,end+1)) rail(rails[i],camera)
+        for (i in start..min(rails.lastIndex, end + 1)) {
+            val run = path.spans[i]
+            if (run.railEnd <= 0f) continue
+            val guide = rails[i] ?: Rail(run).also { rails[i] = it }
+            rail(guide, camera)
+        }
         val marbleDepth=camera.depth(frame.marble)
         var marbleDrawn=false
         for (n in 0 until count) {
             val i=sorted[n]
-            val bar=bars[i]
+            val bar = barAt(i)
             if (!marbleDrawn && depths[n]>marbleDepth+.13f && i!=frame.anchor) {
                 marble(camera,frame)
                 marbleDrawn=true

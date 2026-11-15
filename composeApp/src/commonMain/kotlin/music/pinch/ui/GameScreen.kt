@@ -59,7 +59,7 @@ private val AppColors = darkColorScheme(
 )
 
 @Composable
-fun GameScreen(state: ScreenState, actions: Actions, positionMs: () -> Long) {
+internal fun GameScreen(state: ScreenState, actions: Actions, positionMs: () -> Long, planarPath: PlanarPath?) {
     MaterialTheme(colorScheme = AppColors) {
         Box(Modifier.fillMaxSize().background(Ink), contentAlignment = Alignment.TopCenter) {
             val content = when (state.scene) {
@@ -71,7 +71,7 @@ fun GameScreen(state: ScreenState, actions: Actions, positionMs: () -> Long) {
                     Scene.Menu -> Menu(state, actions)
                     Scene.Error -> ErrorScreen(state, actions)
                     Scene.Result -> ResultScreen(state, actions)
-                    else -> PerformanceScreen(state, actions, positionMs)
+                    else -> PerformanceScreen(state, actions, positionMs, planarPath)
                 }
             }
         }
@@ -112,9 +112,9 @@ private fun Menu(state: ScreenState, actions: Actions) {
             }
             val hint = when {
                 state.stageMode == StageMode.Planar && state.echoTotal > 0 ->
-                    "Золотые акценты дают очки, бирюзовые кольца — эхо. На прокате можно подыграть вспышкам LED."
+                    "Золотые акценты дают очки, бирюзовые метки — эхо. На рельсах можно подыграть вспышкам LED."
                 state.stageMode == StageMode.Planar ->
-                    "Коснись экрана на золотом акценте. На длинной полке можно подыграть вспышкам LED."
+                    "Коснись экрана на золотом акценте. На рельсах можно подыграть вспышкам LED."
                 state.echoTotal > 0 ->
                     "Касайся любой точки сцены в такт. Золотой обод даёт очки, бирюзовые кольца — эхо."
                 state.backingAsset != null ->
@@ -224,14 +224,10 @@ private fun TrackCard(state: ScreenState) {
             state.backingAsset != null -> "Инструментал"
             else -> "Фрагмент"
         }
-        val previewChart = chart ?: state.songs.firstOrNull { it.bundled != null }?.bundled
-        if (previewChart != null) {
-            val pose = previewChart.notes[minOf(4, previewChart.notes.lastIndex)].atMs + 220L
-            Box(Modifier.matchParentSize(), contentAlignment = Alignment.CenterEnd) {
-                CourseView(state.stageMode, previewChart, { pose }, Modifier.fillMaxWidth(.54f).fillMaxHeight())
-                Spacer(Modifier.matchParentSize().background(Brush.horizontalGradient(0f to Surface,
-                    .43f to Surface, .74f to Surface.copy(alpha = .6f), 1f to Color.Transparent)))
-            }
+        Box(Modifier.matchParentSize(), contentAlignment = Alignment.CenterEnd) {
+            StageCover(state.stageMode, Modifier.fillMaxWidth(.54f).fillMaxHeight())
+            Spacer(Modifier.matchParentSize().background(Brush.horizontalGradient(0f to Surface,
+                .43f to Surface, .74f to Surface.copy(alpha = .6f), 1f to Color.Transparent)))
         }
         Column(Modifier.fillMaxWidth(.79f).heightIn(min = 150.dp).padding(16.dp),
             verticalArrangement = Arrangement.SpaceBetween) {
@@ -249,6 +245,52 @@ private fun TrackCard(state: ScreenState) {
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun StageCover(mode: StageMode, modifier: Modifier) {
+    Canvas(modifier) {
+        val w = size.width
+        val h = size.height
+        val unit = size.minDimension
+        val ball = when (mode) {
+            StageMode.Planar -> {
+                // Paired rails dip between the keys, with lights set into the path.
+                for (shift in listOf(0f, .055f)) {
+                    val rail = Path().apply {
+                        moveTo(-.05f * w, (.23f + shift) * h)
+                        cubicTo(.20f * w, (.18f + shift) * h, .41f * w, (.85f + shift) * h,
+                            .77f * w, (.62f + shift) * h)
+                        lineTo(1.05f * w, (.44f + shift) * h)
+                    }
+                    drawPath(rail, Line, style = Stroke(.034f * unit))
+                    drawPath(rail, Mint.copy(alpha = .84f), style = Stroke(.012f * unit))
+                }
+                for (point in listOf(Offset(.48f, .59f), Offset(.70f, .66f), Offset(.92f, .53f))) {
+                    drawCircle(Coral, .018f * unit, Offset(point.x * w, point.y * h))
+                }
+                Offset(.77f * w, .62f * h - .087f * unit)
+            }
+            StageMode.Orbit -> {
+                // Suspended circular pads recede towards the top of the scene.
+                for (i in 0..3) {
+                    val x = (.50f + .27f * i - .095f * i * i) * w
+                    val y = (.14f + .20f * i) * h
+                    val radius = (.065f + .037f * i) * unit
+                    drawLine(Line, Offset(x, 0f), Offset(x, y), strokeWidth = .009f * unit)
+                    val top = Offset(x - radius, y - .32f * radius)
+                    val pad = Size(2f * radius, .64f * radius)
+                    drawOval(Lilac.copy(alpha = .24f), top + Offset(0f, .23f * radius), pad)
+                    drawOval(Lilac, top, pad, style = Stroke(.013f * unit))
+                }
+                Offset(.66f * w, .54f * h - .087f * unit)
+            }
+        }
+        val radius = .087f * unit
+        val light = ball - Offset(.33f * radius, .36f * radius)
+        drawCircle(Brush.radialGradient(listOf(White, Coral, Color(0xff8d1b4e), DarkText), light, 1.5f * radius),
+            radius, ball)
     }
 }
 

@@ -12,6 +12,7 @@ internal class AndroidMedia(
     private val onClosed: (AndroidMedia) -> Unit,
 ) : GameMedia {
     private val clock = SessionClock(durationMs)
+    private val backingClock = BackingClock(durationMs)
     private val focus = AndroidAudioFocus(context, ::interrupt)
     private var voices: NoteSamples? = null
     private var samplesReady = false
@@ -80,13 +81,13 @@ internal class AndroidMedia(
     override fun snapshot(): Playback {
         val now = SystemClock.uptimeMillis()
         val player = backing ?: return clock.snapshot(now, ready && !closed, error)
-        // Android's decoder position remains on the same timeline through focus loss and resume.
-        val position = when {
-            backingEnded -> durationMs
-            backingReady && !closed -> player.currentPosition.toLong().coerceIn(0, durationMs)
-            else -> 0L
+        if (backingEnded || !ready || closed || error != null) {
+            return Playback(ready && !closed, false, backingEnded, if (backingEnded) durationMs else 0L, now, error)
         }
-        return Playback(ready && !closed, backingStarted && !backingEnded && !closed, backingEnded, position, now, error)
+        return backingClock.snapshot(now) {
+            val position = player.currentPosition.toLong().coerceIn(0L, durationMs)
+            Playback(true, backingStarted, false, position, now + (uptimeMs() - now) / 2)
+        }
     }
 
     override fun play() {
@@ -101,6 +102,7 @@ internal class AndroidMedia(
         } else if (!backingStarted && !backingEnded) {
             try {
                 player.start()
+                backingClock.reset()
                 backingStarted = true
             } catch (problem: IllegalStateException) {
                 fail("Не удалось начать аккомпанемент.")
@@ -109,6 +111,7 @@ internal class AndroidMedia(
     }
 
     override fun pause() {
+        backingClock.reset()
         clock.pause(SystemClock.uptimeMillis())
         if (backingStarted && backingReady) {
             backingStarted = false

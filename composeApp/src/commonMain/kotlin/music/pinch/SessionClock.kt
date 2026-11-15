@@ -27,26 +27,29 @@ internal class SessionClock(private val durationMs: Long) {
     }
 }
 
-/** Smooth the screen between duplicate decoder timestamps. Scores always use the native clock. */
-internal class DecoderDisplayClock {
-    private var lastSampleMs = -1L
-    private var changedAt = 0L
-    private var displayedMs = 0L
+/** Share one decoder query across several display frames. All times use touch-event uptime. */
+internal class BackingClock(private val durationMs: Long) {
+    private var sample: Playback? = null
+    private var advancing = false
 
-    fun position(mediaMs: Long, uptimeMs: Long, durationMs: Long): Long {
-        if (mediaMs != lastSampleMs) {
-            lastSampleMs = mediaMs
-            changedAt = uptimeMs
+    fun snapshot(nowMs: Long, read: () -> Playback): Playback {
+        val last = sample
+        if (last == null || nowMs - last.observedUptimeMs >= 64) {
+            val fresh = read()
+            // Observe real progress before coasting. Identical samples freeze the estimate through
+            // startup or a decoder stall. A later callback, pause or resume invalidates the anchor.
+            advancing = fresh.playing && fresh.positionMs > (last?.positionMs ?: 0L)
+            sample = fresh
+            return fresh.copy(stalled = fresh.playing && !advancing)
         }
-        // Audio may actually have stalled. Predict no more than a frame and a half at 60 Hz.
-        val between = if (mediaMs == 0L) 0L else (uptimeMs - changedAt).coerceIn(0L, 24L)
-        displayedMs = maxOf(displayedMs, mediaMs + between).coerceAtMost(durationMs)
-        return displayedMs
+        val elapsed = if (advancing) (nowMs - last.observedUptimeMs).coerceAtLeast(0L) else 0L
+        return last.copy(positionMs = (last.positionMs + elapsed).coerceAtMost(durationMs),
+            observedUptimeMs = nowMs, confirmedPositionMs = last.positionMs, stalled = last.playing && !advancing)
     }
 
     fun reset() {
-        lastSampleMs = -1L
-        displayedMs = 0L
+        sample = null
+        advancing = false
     }
 }
 

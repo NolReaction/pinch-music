@@ -29,5 +29,5 @@ fun App(platform: Platform, backHandler: @Composable (Boolean, () -> Unit) -> Un
         }
     }
     val positionMs = remember(session) { { session.positionMs } }
-    GameScreen(session.state, session, positionMs)
+    GameScreen(session.state, session, positionMs, session.planarPath)
 }

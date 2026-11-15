@@ -45,8 +45,14 @@ kotlin {
 android {
     namespace = "music.pinch"
     compileSdk = 36
+    ndkVersion = "27.0.12077973"
+    externalNativeBuild.cmake {
+        path = file("src/androidMain/cpp/CMakeLists.txt")
+        version = "3.22.1"
+    }
     defaultConfig {
         applicationId = "music.pinch"
+        externalNativeBuild.cmake.arguments += "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON"
         minSdk = 24
         targetSdk = 36
         versionCode = 4

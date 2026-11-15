@@ -1,8 +1,10 @@
 package music.pinch.ui
 
 import kotlin.math.abs
-import kotlin.math.max
+import kotlin.math.hypot
 import kotlin.math.min
+import kotlin.math.roundToLong
+import kotlin.math.sqrt
 import music.pinch.core.Chart
 import music.pinch.core.Note
 import music.pinch.core.echoTargetTimes
@@ -12,9 +14,11 @@ internal data class PlanarAttack(
     val playable: Boolean, val isEcho: Boolean,
 )
 
+/** The renderer offsets these centreline samples along the normal to make the two supporting rods. */
 internal data class PlanarPanel(
-    val left: Boolean, val outerX: Float, val tipX: Float, val topY: Float,
-    val firstAttack: Int, val lastAttack: Int, val ledXs: List<Float>, val ledTimesMs: List<Long>,
+    val left: Boolean, val topY: Float, val firstAttack: Int, val lastAttack: Int,
+    val railSamples: List<StagePoint> = emptyList(), val ledCenters: List<StagePoint> = emptyList(),
+    val ledTimesMs: List<Long> = emptyList(),
 )
 
 internal data class PlanarFrame(
@@ -22,45 +26,139 @@ internal data class PlanarFrame(
     val attackIndex: Int, val rollingPanel: Int?, val litLedIndex: Int,
 )
 
-private const val WallX = 2.5f
+internal const val CascadeGravity = 42.0
 private const val RepeatGapMs = 170L
-private const val LedGapMs = 610L
-private const val ReleaseMs = 365L
+private const val RailGapMs = 610L
+private const val Segments = 32
+private const val RollingGravity = CascadeGravity * 5 / 7 // I = (2/5) m r² for a solid sphere.
 
-/** A horizontal powered strip accelerates only near its lip. Its release speed matches the flight. */
-private class LedRoll(startX: Float, tipX: Float, endX: Float, val durationMs: Long, flightMs: Long) {
-    private val length = abs(tipX - startX)
-    private val duration = durationMs / 1000f
-    private val releaseSpeed = abs(endX - tipX) * 1000f / flightMs
-    private val blend = min(duration * .4f, .7f * length / releaseSpeed)
-    private val cruise = (length - .5f * releaseSpeed * blend) / (duration - .5f * blend)
+// The two level end sections make entry onto a key and release off the lip exactly horizontal.
+private fun curve(t: Double) = t * t * (3 - 2 * t)
 
-    fun progress(elapsedMs: Long): Float {
-        val seconds = elapsedMs.coerceIn(0, durationMs) / 1000f
-        val ramp = max(0f, seconds - (duration - blend))
-        return ((cruise * seconds + .5f * (releaseSpeed - cruise) * ramp * ramp / blend) / length).coerceIn(0f, 1f)
+private fun bend(t: Double) = if (t < .5) 2 * t * t else 1 - 2 * (1 - t) * (1 - t)
+
+private fun shape(groove: Boolean, lead: Int = 1) = DoubleArray(Segments + 1) { index ->
+    val u = ((index - lead).toDouble() / (Segments - lead - 1)).coerceIn(0.0, 1.0)
+    when {
+        !groove -> curve(u)
+        u < .55 -> 1.45 * bend(u / .55)
+        else -> 1.45 - .45 * bend((u - .55) / .45)
+    }
+}
+private val downhill = shape(false)
+private val trough = shape(true)
+private val longApproach = shape(false, lead = 12)
+
+private fun travelTime(profile: DoubleArray, width: Double, height: Double, speed: Double, flightDistance: Double): Double {
+    var previousSpeed = speed
+    var time = 0.0
+    for (i in 1..Segments) {
+        val nextSpeed = sqrt(speed * speed + 2 * RollingGravity * height * profile[i])
+        val length = hypot(width / Segments, height * (profile[i] - profile[i - 1]))
+        time += 2 * length / (previousSpeed + nextSpeed)
+        previousSpeed = nextSpeed
+    }
+    return time + flightDistance / previousSpeed
+}
+
+/** Invert a monotone travel-time function; unreachable times select the closest physical limit. */
+private inline fun fit(lo: Double, hi: Double, target: Double, timeAt: (Double) -> Double): Double {
+    val first = timeAt(lo)
+    val last = timeAt(hi)
+    if (target <= minOf(first, last)) return if (first <= last) lo else hi
+    if (target >= maxOf(first, last)) return if (first >= last) lo else hi
+    var low = lo
+    var high = hi
+    repeat(36) {
+        val mid = (low + high) * .5
+        if ((timeAt(mid) < target) == (first < last)) low = mid else high = mid
+    }
+    return (low + high) * .5
+}
+
+private class CascadeRail(startX: Float, startY: Float, nextX: Float, gap: Double, variant: Int) {
+    private val direction = if (nextX > startX) 1 else -1
+    private val distance = abs(nextX.toDouble() - startX)
+    private val preferredSpeed = 1.9
+    private val longRun = gap >= 1.35
+    private val varyLength = variant != 1 || longRun
+    private val grooved = variant == 2 && gap >= .72 && !longRun
+    private val profile = when {
+        longRun -> longApproach
+        grooved -> trough
+        else -> downhill
+    }
+    // A long rest gets a longer level approach. The ball can continue to roll visibly across the gap.
+    private val standardDrop = if (longRun || grooved) .21 else .32
+    private val width = if (varyLength) {
+        val broad = longRun || grooved
+        val minWidth = distance * (if (broad) .62 else .44)
+        val maxWidth = distance * (if (broad) .65 else .60)
+        fit(minWidth, maxWidth, gap) { w -> travelTime(profile, w, standardDrop, preferredSpeed, distance - w) }
+    } else distance * .56
+    private val height = if (varyLength) standardDrop else fit(.20, .43, gap) { h ->
+        travelTime(profile, width, h, preferredSpeed, distance - width)
+    }
+    // The spring at the strike establishes the entry speed when the available reach or pitch is exhausted.
+    private val entrySpeed = fit(min(1e-9, width / (gap * Segments * 2)), distance / gap * 2, gap) { v ->
+        travelTime(profile, width, height, v, distance - width)
+    }
+    val samples = List(Segments + 1) { i ->
+        StagePoint((startX + direction * width * i / Segments).toFloat(), (startY + height * profile[i]).toFloat(), 0f)
+    }
+    private val arc = DoubleArray(Segments + 1)
+    private val time = DoubleArray(Segments + 1)
+    private val speeds = DoubleArray(Segments + 1) { i -> sqrt(entrySpeed * entrySpeed + 2 * RollingGravity * height * profile[i]) }
+    init {
+        for (i in 1..Segments) {
+            val ds = hypot(width / Segments, height * (profile[i] - profile[i - 1]))
+            arc[i] = arc[i - 1] + ds
+            time[i] = time[i - 1] + 2 * ds / (speeds[i - 1] + speeds[i])
+        }
+    }
+    val seconds = time.last()
+    val length = arc.last()
+    val releaseVx = direction * speeds.last()
+    val landingDrop = height + .5 * CascadeGravity * (gap - seconds) * (gap - seconds)
+
+    fun timeAtDistance(s: Double): Double {
+        val i = segment(arc, s)
+        val ds = s - arc[i]
+        val acceleration = (speeds[i + 1] - speeds[i]) / (time[i + 1] - time[i])
+        val v = sqrt(speeds[i] * speeds[i] + 2 * acceleration * ds)
+        return time[i] + 2 * ds / (speeds[i] + v)
     }
 
-    fun timeAt(fraction: Float): Long {
-        var lo = 0L
-        var hi = durationMs
-        while (lo < hi) {
-            val mid = lo + (hi - lo) / 2
-            if (progress(mid) < fraction) lo = mid + 1 else hi = mid
-        }
-        return lo
+    fun distanceAt(t: Double): Double {
+        val i = segment(time, t)
+        val dt = t - time[i]
+        val acceleration = (speeds[i + 1] - speeds[i]) / (time[i + 1] - time[i])
+        return (arc[i] + dt * (speeds[i] + .5 * acceleration * dt)).coerceIn(0.0, length)
+    }
+
+    fun centerAt(s: Double): StagePoint {
+        val i = segment(arc, s)
+        val u = ((s - arc[i]) / (arc[i + 1] - arc[i])).toFloat()
+        val a = samples[i]
+        val b = samples[i + 1]
+        return StagePoint(a.x + u * (b.x - a.x), a.y + u * (b.y - a.y), 0f)
+    }
+
+    private fun segment(table: DoubleArray, position: Double): Int {
+        val index = table.binarySearch(position)
+        return (if (index >= 0) index else -index - 2).coerceIn(0, Segments - 1)
     }
 }
 
-private data class PlanarSpan(
-    val roll: LedRoll?, val initialSpin: Float,
-)
+private data class PlanarSpan(val rail: CascadeRail?, val launchVy: Double, val vx: Double, val initialSpin: Float) {
+    fun airborneAngle(elapsed: Double): Float {
+        val rolled = if (rail == null) 0.0 else if (vx < 0) -rail.length else rail.length
+        val travel = rolled + vx * (elapsed - (rail?.seconds ?: 0.0))
+        return initialSpin + (travel / MarbleRadius).toFloat()
+    }
+}
 
-/**
- * Y points down. Sphere centres stay on z = 0 and the left/right shelves have horizontal tops.
- * A gap too short for a cross-stage flight becomes a repeated bounce on the same physical shelf.
- * A long gap starts on a conductor strip; lamp geometry and sound use the very same crossing time.
- */
+/** A fixed world-space contact plane in a perspective scene. All lengths and times are solved once per chart. */
 internal class PlanarPath(chart: Chart) {
     private val durationMs = chart.durationMs
     val attacks: List<PlanarAttack>
@@ -71,33 +169,22 @@ internal class PlanarPath(chart: Chart) {
     private val integratedHeight: DoubleArray
 
     init {
-        val notes = chart.notes.groupBy { it.atMs }.values.map { chord ->
-            chord.firstOrNull { it.playable } ?: chord.first()
-        }
+        val notes = chart.notes.groupBy { it.atMs }.values.map { chord -> chord.firstOrNull { it.playable } ?: chord.first() }
         val echoes = chart.echoTargetTimes()
         val starts = mutableListOf(0)
-        for (i in 1 until notes.size) {
-            if (notes[i].atMs - notes[i - 1].atMs >= RepeatGapMs) starts += i
-        }
+        for (i in 1 until notes.size) if (notes[i].atMs - notes[i - 1].atMs >= RepeatGapMs) starts += i
         val strikes = ArrayList<PlanarAttack>(notes.size)
-        val shelves = ArrayList<PlanarPanel>(starts.size)
-        var top = 0f
-        for ((panelIndex, first) in starts.withIndex()) {
-            val last = (starts.getOrNull(panelIndex + 1) ?: notes.size) - 1
-            val inGap = if (first == 0) Long.MAX_VALUE else notes[first].atMs - notes[first - 1].atMs
-            val outGap = if (last == notes.lastIndex) Long.MAX_VALUE else notes[last + 1].atMs - notes[last].atMs
-            val left = panelIndex % 2 == 0
-            val side = if (left) -1f else 1f
-            val guided = last < notes.lastIndex && outGap >= LedGapMs
-            val distance = (.18f + .0025f * min(inGap, outGap)).coerceIn(if (guided) 1.3f else .70f, 1.65f)
-            val x = side * distance
-            val tip = if (guided) side * .46f else x - side * .12f
-            shelves += PlanarPanel(left, side * WallX, tip, top, first, last, emptyList(), emptyList())
+        val keys = ArrayList<PlanarPanel>(starts.size)
+        for ((index, first) in starts.withIndex()) {
+            val last = (starts.getOrNull(index + 1) ?: notes.size) - 1
+            val left = index % 2 == 0
+            val spread = 1.28f + ((notes[first].midi % 7) - 3) * .062f
+            val x = if (left) -spread else spread
+            keys += PlanarPanel(left, 0f, first, last)
             for (i in first..last) {
                 val n = notes[i]
-                strikes += PlanarAttack(n.atMs, panelIndex, x, n.midi, n.playable, n.atMs in echoes)
+                strikes += PlanarAttack(n.atMs, index, x, n.midi, n.playable, n.atMs in echoes)
             }
-            top += (.65f + .00165f * outGap).coerceAtMost(1.78f)
         }
         val sections = ArrayList<PlanarSpan>(notes.lastIndex)
         val cues = mutableListOf<Note>()
@@ -107,33 +194,39 @@ internal class PlanarPath(chart: Chart) {
             val from = strikes[i]
             val to = strikes[i + 1]
             val gap = to.atMs - from.atMs
-            val panel = shelves[from.panelIndex]
-            val roll = if (gap >= LedGapMs) LedRoll(from.x, panel.tipX, to.x, gap - ReleaseMs, ReleaseMs) else null
-            if (roll != null) {
-                val count = (roll.durationMs / 170).coerceIn(2, 5).toInt()
-                val lampXs = ArrayList<Float>(count)
-                val lampTimes = List(count) { lamp ->
-                    val offset = roll.timeAt((lamp + 1f) / (count + 1f))
-                    val x = from.x + (panel.tipX - from.x) * roll.progress(offset)
-                    lampXs += x
+            val seconds = gap / 1000.0
+            val panel = keys[from.panelIndex]
+            val y = panel.topY - MarbleRadius
+            val rail = if (gap >= RailGapMs) CascadeRail(from.x, y, to.x, seconds, from.panelIndex % 3) else null
+            val sameKey = from.panelIndex == to.panelIndex
+            val drop = if (sameKey) 0.0 else rail?.landingDrop ?: .36 * CascadeGravity * seconds * seconds
+            if (!sameKey) keys[to.panelIndex] = keys[to.panelIndex].copy(topY = (panel.topY + drop).toFloat())
+            if (rail != null) {
+                val count = (rail.seconds / .17).toInt().coerceIn(2, 5)
+                val lamps = ArrayList<StagePoint>(count)
+                val times = List(count) { lamp ->
+                    val s = rail.length * (lamp + 1) / (count + 1)
+                    val offset = (1000 * rail.timeAtDistance(s)).roundToLong()
+                    lamps += rail.centerAt(rail.distanceAt(offset / 1000.0))
                     val pitch = if (lamp == count - 1) to.midi else from.midi
                     val upper = if (pitch <= 115) pitch + 12 else pitch - 12
                     val time = from.atMs + offset
                     cues += Note("led-$time", time, if (lamp % 2 == 0) pitch else upper, 1, .20f, playable = false)
                     time
                 }
-                shelves[from.panelIndex] = panel.copy(ledXs = lampXs, ledTimesMs = lampTimes)
+                keys[from.panelIndex] = panel.copy(railSamples = rail.samples, ledCenters = lamps, ledTimesMs = times)
             }
-            sections += PlanarSpan(roll, spin)
-            val drop = (shelves[to.panelIndex].topY - panel.topY).toDouble()
-            integratedHeight[i + 1] = integratedHeight[i] + panel.topY.toDouble() * gap +
-                .5 * drop * (gap - (roll?.durationMs ?: 0L))
-            spin = (spin + (to.x - from.x) / MarbleRadius) % 6.2831855f
+            val vx = rail?.releaseVx ?: (to.x - from.x) / seconds
+            val vy = if (rail != null) 0.0 else drop / seconds - .5 * CascadeGravity * seconds
+            val section = PlanarSpan(rail, vy, vx, spin)
+            sections += section
+            spin = section.airborneAngle(seconds) % 6.2831855f
+            integratedHeight[i + 1] = integratedHeight[i] + gap * (panel.topY + .5 * drop)
         }
         endSpin = spin
         spans = sections
         attacks = strikes
-        panels = shelves
+        panels = keys
         ledCues = cues
     }
 
@@ -142,65 +235,50 @@ internal class PlanarPath(chart: Chart) {
         return if (found >= 0) found else -found - 2
     }
 
-    // Integrate a guide height that stays flat on a roller and descends linearly during flight.
-    // Its short moving average keeps the camera gliding when adjacent jumps have different lengths.
     private fun heightIntegral(time: Long): Double {
         val i = attackIndex(time)
         if (i < 0) return 0.0
-        val p = panels[attacks[i].panelIndex]
-        val elapsed = (time - attacks[i].atMs).toDouble()
-        val base = integratedHeight[i] + p.topY * elapsed
-        if (i == attacks.lastIndex) return base
-        val rollMs = spans[i].roll?.durationMs ?: 0L
-        val airborne = max(0.0, elapsed - rollMs)
-        val next = attacks[i + 1]
-        val drop = panels[next.panelIndex].topY - p.topY
-        return base + .5 * drop * airborne * airborne / (next.atMs - attacks[i].atMs - rollMs)
+        val from = attacks[i]
+        val top = panels[from.panelIndex].topY
+        val elapsed = (time - from.atMs).toDouble()
+        val next = attacks.getOrNull(i + 1) ?: return integratedHeight[i] + elapsed * top
+        val drop = panels[next.panelIndex].topY - top
+        return integratedHeight[i] + elapsed * (top + .5 * drop * elapsed / (next.atMs - from.atMs))
     }
 
     fun frame(timeMs: Long): PlanarFrame {
         val time = timeMs.coerceIn(0L, durationMs)
         val index = attackIndex(time)
         val cameraY = ((heightIntegral(time + 120) - heightIntegral(time - 120)) / 240).toFloat() - MarbleRadius
-        val first = attacks.first()
         if (index < 0) {
-            val u = (time.toDouble() / first.atMs).toFloat()
-            val x = first.x * u
-            return PlanarFrame(StagePoint(x, -MarbleRadius - 2.8f * (1f - u * u), 0f),
-                cameraY, (x - first.x) / MarbleRadius, -1, null, -1)
+            val first = attacks.first()
+            val duration = min(first.atMs / 1000.0, .38)
+            val t = (duration - (first.atMs - time) / 1000.0).coerceAtLeast(0.0)
+            val y = .5 * CascadeGravity * (t * t - duration * duration) - MarbleRadius
+            return PlanarFrame(StagePoint(first.x, y.toFloat(), 0f), cameraY, 0f, -1, null, -1)
         }
         val from = attacks[index]
         val panel = panels[from.panelIndex]
         val y = panel.topY - MarbleRadius
-        val elapsed = time - from.atMs
+        val t = (time - from.atMs) / 1000.0
         if (index == attacks.lastIndex) {
-            // One small final rebound settles on the last shelf while the backing rings out.
-            val u = (elapsed / 275f).coerceAtMost(1f)
-            return PlanarFrame(StagePoint(from.x, y - .64f * u * (1f - u), 0f), cameraY, endSpin, index, null, -1)
+            val air = min(t, .20)
+            val rebound = .5 * CascadeGravity * air * (air - .20)
+            return PlanarFrame(StagePoint(from.x, (y + rebound).toFloat(), 0f), cameraY, endSpin, index, null, -1)
         }
-        val next = attacks[index + 1]
         val span = spans[index]
-        val gap = next.atMs - from.atMs
-        val roll = span.roll
-        if (roll != null && elapsed <= roll.durationMs) {
-            val x = from.x + (panel.tipX - from.x) * roll.progress(elapsed)
-            val angle = span.initialSpin + (x - from.x) / MarbleRadius
+        val rail = span.rail
+        if (rail != null && t <= rail.seconds) {
+            val s = rail.distanceAt(t)
+            val angle = span.initialSpin + (if (panel.left) s else -s).toFloat() / MarbleRadius
             val lit = panel.ledTimesMs.indexOfLast { it <= time }
-            return PlanarFrame(StagePoint(x, y, 0f), cameraY, angle, index, from.panelIndex, lit)
+            return PlanarFrame(rail.centerAt(s), cameraY, angle, index, from.panelIndex, lit)
         }
-        val rolling = roll?.durationMs ?: 0L
-        val u = (elapsed - rolling).toFloat() / (gap - rolling)
-        val startX = if (roll == null) from.x else panel.tipX
-        val x = startX + (next.x - startX) * u
-        val drop = panels[next.panelIndex].topY - panel.topY
-        // Y is quadratic in flight time. A strip releases horizontally; a struck shelf kicks up.
-        val kick = when {
-            roll != null -> 0f
-            from.panelIndex == next.panelIndex -> min(.56f, 24f * (gap / 1000f) * (gap / 1000f))
-            else -> min(1.76f, .4f + .002f * gap)
-        }
-        val ballY = y + drop * u * u - kick * u * (1f - u)
-        return PlanarFrame(StagePoint(x, ballY, 0f), cameraY,
-            span.initialSpin + (x - from.x) / MarbleRadius, index, null, -1)
+        val air = t - (rail?.seconds ?: 0.0)
+        val lip = rail?.samples?.last()
+        val x = (lip?.x ?: from.x) + span.vx * air
+        val ballY = (lip?.y ?: y) + air * (span.launchVy + .5 * CascadeGravity * air)
+        return PlanarFrame(StagePoint(x.toFloat(), ballY.toFloat(), 0f), cameraY,
+            span.airborneAngle(t), index, null, -1)
     }
 }

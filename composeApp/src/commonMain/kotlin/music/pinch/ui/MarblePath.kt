@@ -52,7 +52,11 @@ internal class StageKey(
     // rivets, top face and strike point on the very same plane when it is banked.
     private val depth = normal.cross(outward).unit()
     private val length = depth.cross(normal)
-    fun point(x: Float, y: Float, z: Float) = center + length * x - normal * y + depth * z
+    fun point(x: Float, y: Float, z: Float) = StagePoint(
+        center.x + length.x * x - normal.x * y + depth.x * z,
+        center.y + length.y * x - normal.y * y + depth.y * z,
+        center.z + length.z * x - normal.z * y + depth.z * z,
+    )
 }
 
 /** Start and end are sphere centers. All trajectory coefficients are solved once from the audio interval. */

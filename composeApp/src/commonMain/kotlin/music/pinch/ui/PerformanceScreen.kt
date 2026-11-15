@@ -18,7 +18,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.changedToDown
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.Role
@@ -35,32 +34,24 @@ import music.pinch.Actions
 import music.pinch.Scene
 import music.pinch.ScreenState
 import music.pinch.StageMode
-import music.pinch.core.Chart
 import music.pinch.stereoLoveSectionAt
 
 private val HeaderShade = Brush.verticalGradient(listOf(Color(0xe3141220), Color(0x00141220)))
 private val FooterShade = Brush.verticalGradient(listOf(Color(0x00141220), Color(0xdf141220)))
 
 @Composable
-internal fun CourseView(
-    mode: StageMode, chart: Chart, positionMs: () -> Long, modifier: Modifier,
-    hitMs: Long? = null, collectedEchoMs: Long? = null, ledTapMs: Long? = null,
-) {
-    when (mode) {
-        StageMode.Orbit -> MarbleStage(chart, positionMs, modifier, collectedEchoMs)
-        StageMode.Planar -> PlanarStage(chart, positionMs, modifier, hitMs, collectedEchoMs, ledTapMs)
-    }
-}
-
-@Composable
-internal fun PerformanceScreen(state: ScreenState, actions: Actions, positionMs: () -> Long) {
+internal fun PerformanceScreen(state: ScreenState, actions: Actions, positionMs: () -> Long, planarPath: PlanarPath?) {
     Box(Modifier.fillMaxSize()) {
         val chart = state.chart
         val interactive = state.scene == Scene.Playing && !state.preview
         if (chart != null) {
-            val input = if (interactive) Modifier.rhythmInput(actions) else Modifier
-            CourseView(state.stageMode, chart, positionMs, Modifier.matchParentSize().then(input).graphicsLayer(),
-                state.lastPanelHitMs, state.collectedEchoMs, state.lastLedTapMs)
+            when (state.stageMode) {
+                StageMode.Orbit -> MarbleStage(chart, positionMs, Modifier.matchParentSize(), state.collectedEchoMs)
+                StageMode.Planar -> if (planarPath != null) PlanarStage(planarPath, positionMs,
+                    Modifier.matchParentSize(), state.scene == Scene.Playing,
+                    state.lastPanelHitMs, state.collectedEchoMs, state.lastLedTapMs)
+            }
+            if (interactive) Box(Modifier.matchParentSize().rhythmInput(actions))
         }
         if (state.scene == Scene.Playing) {
             SessionHeader(state, actions, positionMs)

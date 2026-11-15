@@ -1,0 +1,262 @@
+// Local-coordinate triangle meshes shared by the Android and iOS renderers.
+#pragma once
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <vector>
+
+namespace cascade {
+constexpr float Pi = 3.14159265f;
+constexpr float BallRadius = .23f;
+constexpr float WallZ = -1.35f;
+struct V {
+    float x, y, z;
+    V operator+(V b) const {
+        return {x + b.x, y + b.y, z + b.z};
+    }
+    V operator-(V b) const {
+        return {x - b.x, y - b.y, z - b.z};
+    }
+    V operator*(float k) const {
+        return {x * k, y * k, z * k};
+    }
+};
+inline float dot(V a, V b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+inline V unit(V v) {
+    return v * (1.f / std::sqrt(std::max(1.e-12f, dot(v, v))));
+}
+inline V cross(V a, V b) {
+    return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
+}
+enum Surface { Enamel, Skirt, Inlay, Chrome, Iron, Bolt, Digit, Rail, Led, Glass };
+struct Vertex {
+    V p, n;
+    float material, detail;
+};
+struct Mesh {
+    std::vector<Vertex> verts;
+    std::vector<uint16_t> indices;
+    uint16_t point(V p, V n, Surface s, float detail = 0) {
+        uint16_t i = static_cast<uint16_t>(verts.size());
+        verts.push_back({p, n, static_cast<float>(s), detail});
+        return i;
+    }
+    void tri(int a, int b, int c) {
+        const Vertex& v = verts[a];
+        // The presenter uses world Y down, so front faces have the reverse winding.
+        if (dot(cross(verts[b].p - v.p, verts[c].p - v.p), v.n + verts[b].n + verts[c].n) > 0)
+            std::swap(b, c);
+        indices.push_back(a);
+        indices.push_back(b);
+        indices.push_back(c);
+    }
+    void quad(int a, int b, int c, int d) {
+        tri(a, b, c);
+        tri(a, c, d);
+    }
+};
+
+// A circular cross section follows the tangent; the cap normals are independent.
+inline void tube(Mesh& m, const std::vector<V>& path, float radius, Surface surface, int sides = 8,
+                 float detail = 0) {
+    if (path.size() < 2)
+        return;
+    const int begin = static_cast<int>(m.verts.size());
+    const V axis = unit(path.back() - path.front());
+    const V guide = std::abs(axis.z) < .9f ? V{0, 0, 1} : V{0, 1, 0};
+    for (size_t j = 0; j < path.size(); ++j) {
+        V t = unit(path[std::min(j + 1, path.size() - 1)] - path[j ? j - 1 : 0]);
+        V b = unit(cross(t, guide)), c = cross(b, t);
+        for (int k = 0; k < sides; ++k) {
+            float a = k * 2.f * Pi / sides;
+            V n = b * std::cos(a) + c * std::sin(a);
+            m.point(path[j] + n * radius, n, surface, detail);
+        }
+        if (j)
+            for (int k = 0; k < sides; ++k) {
+                int v = begin + static_cast<int>(j) * sides + k,
+                    next = begin + static_cast<int>(j) * sides + (k + 1) % sides;
+                m.quad(v - sides, next - sides, next, v);
+            }
+    }
+    for (int cap = 0; cap < 2; ++cap) {
+        const size_t end = cap ? path.size() - 1 : 0;
+        V n = unit(cap ? path[end] - path[end - 1] : path[0] - path[1]);
+        int center = m.point(path[end], n, surface, detail);
+        for (int k = 0; k < sides; ++k)
+            m.point(m.verts[begin + end * sides + k].p, n, surface, detail);
+        for (int k = 0; k < sides; ++k)
+            m.tri(center, center + 1 + k, center + 1 + (k + 1) % sides);
+    }
+}
+inline void rod(Mesh& m, V a, V b, float radius, Surface surface, int sides = 8, float detail = 0) {
+    tube(m, {a, b}, radius, surface, sides, detail);
+}
+inline void ellipsoid(Mesh& m, V at, V radii, Surface surface, int sides, int rings) {
+    int base = static_cast<int>(m.verts.size());
+    for (int j = 0; j <= rings; ++j) {
+        float lat = Pi * j / rings, y = -std::cos(lat), ring = std::sin(lat);
+        for (int i = 0; i < sides; ++i) {
+            float a = i * 2.f * Pi / sides;
+            V n{ring * std::cos(a), y, ring * std::sin(a)};
+            m.point(at + V{n.x * radii.x, n.y * radii.y, n.z * radii.z},
+                    unit({n.x / radii.x, n.y / radii.y, n.z / radii.z}), surface);
+        }
+    }
+    for (int j = 0; j < rings; ++j)
+        for (int i = 0; i < sides; ++i) {
+            int a = base + j * sides + i, b = base + j * sides + (i + 1) % sides;
+            m.quad(a, b, b + sides, a + sides);
+        }
+}
+
+// Loft rounded rectangular contours. Bevel normals angle smoothly into the flat top.
+// The two fasteners sit inside recessed ferrules on the playing face.
+inline Mesh keyMesh(bool shortKey, float side, bool numbered) {
+    Mesh m;
+    float width = shortKey ? .46f : .70f;
+    float cx = shortKey ? side * width * .5f : 0;
+    float length = shortKey ? 1.17f : 1.32f;
+    float depth = numbered ? .36f : .215f;
+    const float corner = .115f;
+    const int perCorner = 4, ring = 4 * perCorner;
+    struct Level {
+        float y, inset, slope;
+        Surface surface;
+    };
+    const Level levels[] = {{0, .041f, 1, Enamel},
+                            {.010f, .018f, .72f, Enamel},
+                            {.030f, .003f, .28f, numbered ? Inlay : Enamel},
+                            {.041f, 0, 0, numbered ? Inlay : Enamel},
+                            {.053f, 0, 0, Inlay},
+                            {.065f, 0, 0, Inlay},
+                            {depth - .03f, 0, 0, Skirt},
+                            {depth - .009f, .011f, -.6f, Skirt},
+                            {depth, .035f, -1, Skirt}};
+    auto contour = [&](Level l, int i) {
+        int quadrant = i / perCorner;
+        float angle = (quadrant + (i % perCorner) / float(perCorner - 1)) * Pi * .5f;
+        float nx = std::cos(angle), nz = std::sin(angle);
+        float x = cx + (quadrant == 0 || quadrant == 3 ? 1 : -1) * (width * .5f - corner);
+        float z = (quadrant < 2 ? 1 : -1) * (length * .5f - corner);
+        return V{x + (corner - l.inset) * nx, l.y, z + (corner - l.inset) * nz};
+    };
+    int top = m.point({cx, 0, 0}, {0, -1, 0}, Enamel);
+    for (int i = 0; i < ring; ++i)
+        m.point(contour(levels[0], i), {0, -1, 0}, Enamel);
+    for (int i = 0; i < ring; ++i)
+        m.tri(top, top + 1 + i, top + 1 + (i + 1) % ring);
+    for (int j = 0; j < 8; ++j) {
+        int base = static_cast<int>(m.verts.size());
+        for (int k = 0; k < 2; ++k)
+            for (int i = 0; i < ring; ++i) {
+                Level l = levels[j + k];
+                float a = (i / perCorner + (i % perCorner) / float(perCorner - 1)) * Pi * .5f;
+                float f = std::sqrt(1 - l.slope * l.slope);
+                m.point(contour(l, i), {std::cos(a) * f, -l.slope, std::sin(a) * f}, levels[j + 1].surface);
+            }
+        for (int i = 0; i < ring; ++i) {
+            int a = base + i, b = base + (i + 1) % ring;
+            m.quad(a, b, b + ring, a + ring);
+        }
+    }
+    int bottom = m.point({cx, depth, 0}, {0, 1, 0}, Skirt);
+    for (int i = 0; i < ring; ++i)
+        m.point(contour(levels[8], i), {0, 1, 0}, Skirt);
+    for (int i = 0; i < ring; ++i)
+        m.tri(bottom, bottom + 1 + i, bottom + 1 + (i + 1) % ring);
+    for (float z : {-.39f, .39f}) {
+        rod(m, {cx, .002f, z}, {cx, -.009f, z}, .045f, Iron, 8);
+        ellipsoid(m, {cx, -.009f, z}, {.033f, .021f, .033f}, Bolt, 8, 4);
+    }
+    for (float dx : {-.105f, .105f}) {
+        float x = cx + dx;
+        rod(m, {x, depth - .012f, -.32f}, {x, depth + .09f, -.32f}, .029f, Chrome);
+        rod(m, {x, depth + .09f, -.32f}, {x, depth + .09f, WallZ + .025f}, .030f, Chrome);
+        rod(m, {x, depth + .09f, WallZ + .014f}, {x, depth + .09f, WallZ + .065f}, .050f, Iron, 8);
+        rod(m, {x, depth + .09f, WallZ + .056f}, {x, depth + .09f, WallZ + .077f}, .033f, Bolt, 8);
+    }
+    if (numbered) {
+        // A physical seven-segment insert inside the front cap of accent keys.
+        const float sy = depth * .52f, z = length * .5f + .0015f, h = .112f, w = .071f, gap = .012f;
+        auto segment = [&](float x, float y, float dx, float dy) {
+            V along = unit({dx, dy, 0}), across{-along.y, along.x, 0}, mid{cx + x, sy + y, z};
+            V span{dx, dy, 0};
+            const float stroke = .0155f;
+            V a = mid - span, b = mid + span;
+            int base = static_cast<int>(m.verts.size());
+            for (V v : {a - along * stroke, a - across * stroke, b - across * stroke, b + along * stroke,
+                        b + across * stroke, a + across * stroke})
+                m.point(v, {0, 0, 1}, Digit);
+            m.quad(base + 1, base + 2, base + 4, base + 5);
+            m.tri(base, base + 1, base + 5);
+            m.tri(base + 2, base + 3, base + 4);
+        };
+        for (float y : {-h, 0.f, h})
+            segment(0, y, w - gap, 0);
+        for (float x : {-w, w})
+            for (float y : {-h * .5f, h * .5f})
+                segment(x, y, 0, h * .5f - gap);
+        // Rounded luminous gasket wrapping the end cap.
+        for (float x : {cx - width * .5f + .076f, cx + width * .5f - .076f})
+            rod(m, {x, .049f, z - .009f}, {x, depth - .037f, z - .009f}, .014f, Inlay, 6);
+        rod(m, {cx - width * .5f + .076f, depth - .037f, z - .009f},
+            {cx + width * .5f - .076f, depth - .037f, z - .009f}, .014f, Inlay, 6);
+    }
+    return m;
+}
+
+inline Mesh railMesh(const std::vector<V>& input, const std::vector<V>& lamps) {
+    Mesh m;
+    if (input.size() < 2)
+        return m;
+    // Samples are positions of the sphere centre. The distance to each rail axis
+    // along the local normal follows from the sphere/rail radii and track gauge.
+    constexpr float gauge = .112f, radius = .022f;
+    const float offset = std::sqrt((BallRadius + radius) * (BallRadius + radius) - gauge * gauge);
+    std::vector<V> center, left, right;
+    center.reserve(input.size());
+    for (size_t i = 0; i < input.size(); ++i) {
+        V t = unit(input[std::min(i + 1, input.size() - 1)] - input[i ? i - 1 : 0]);
+        float sign = t.x < 0 ? -1.f : 1.f;
+        center.push_back(input[i] + V{-t.y * sign, t.x * sign, 0} * offset);
+        left.push_back(center.back() + V{0, 0, -gauge});
+        right.push_back(center.back() + V{0, 0, gauge});
+    }
+    tube(m, left, radius, Rail, 8);
+    tube(m, right, radius, Rail, 8);
+    float dist = 0;
+    for (size_t i = 1; i < center.size(); ++i) {
+        V delta = center[i] - center[i - 1];
+        dist += std::sqrt(dot(delta, delta));
+        if (dist < .58f && i + 1 < center.size())
+            continue;
+        dist = 0;
+        V a = center[i] + V{0, .052f, gauge + .03f};
+        V b = a + V{0, 0, -.32f}, c = b + V{0, -.07f, -.09f};
+        V d{c.x, c.y, WallZ + .035f};
+        tube(m, {a, b, c, d}, .019f, Chrome, 7);
+        rod(m, {d.x, d.y, WallZ + .018f}, {d.x, d.y, WallZ + .055f}, .034f, Bolt, 9);
+    }
+    for (size_t i = 0; i < lamps.size(); ++i) {
+        float distance = 1e20f;
+        V c = center.front();
+        for (size_t j = 1; j < input.size(); ++j) {
+            V segment = input[j] - input[j - 1], toLamp = lamps[i] - input[j - 1];
+            float u =
+                std::max(0.f, std::min(1.f, dot(toLamp, segment) / std::max(1e-12f, dot(segment, segment))));
+            V separation = toLamp - segment * u;
+            if (dot(separation, separation) < distance) {
+                distance = dot(separation, separation);
+                c = center[j - 1] + (center[j] - center[j - 1]) * u;
+            }
+        }
+        // Recessed indicator collars on a short cross-tie, clear of the rolling surface.
+        rod(m, c + V{0, .053f, -.14f}, c + V{0, .053f, .169f}, .026f, Iron);
+        rod(m, c + V{0, .053f, .169f}, c + V{0, .053f, .181f}, .025f, Led, 10, static_cast<float>(i));
+    }
+    return m;
+}
+} // namespace cascade

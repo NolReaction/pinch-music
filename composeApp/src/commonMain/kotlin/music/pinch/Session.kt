@@ -38,7 +38,6 @@ internal class Session(
     var positionMs by mutableLongStateOf(0L)
         private set
     private var playingAnchor: Playback? = null
-    private val displayClock = DecoderDisplayClock()
     private var game: RhythmGame? = null
     private var hasPlayed = false
     private var playRequestedAt = 0L
@@ -48,6 +47,8 @@ internal class Session(
     private var automaticNotes: List<Note> = emptyList()
     private var nextAutomaticNote = 0
     private var ledCues: List<Note> = emptyList()
+    var planarPath: PlanarPath? = null
+        private set
     private var nextLedCue = 0
     private var recordKey = ""
     private var echoTargets = emptySet<Long>()
@@ -124,7 +125,9 @@ internal class Session(
         if (state.importing) return
         close()
         if (state.stageMode == StageMode.Planar) {
-            ledCues = PlanarPath(song).ledCues
+            val course = PlanarPath(song)
+            planarPath = course
+            ledCues = course.ledCues
         }
         game = if (preview) null else RhythmGame(song, forgiving = true, ledNotes = ledCues)
         positionMs = 0
@@ -226,14 +229,15 @@ internal class Session(
                     }
                 }
                 // A small delivery margin lets a frame and a queued input of the same vsync settle.
-                val missed = game?.advance(now - 32) ?: 0
-                game?.takeMissCue(now)?.let { soundMistake(player, it, now, stray = false) }
+                val confirmed = snap.confirmedPositionMs ?: now
+                val missed = game?.advance(confirmed - 32) ?: 0
+                game?.takeMissCue(confirmed)?.let { soundMistake(player, it, now, stray = false) }
                 val leadRemaining = (game?.firstTargetMs ?: 0L) - now
                 val beatMs = (60_000L / song.bpm).coerceAtLeast(1)
                 val count = if (!state.preview && leadRemaining in 1..(4 * beatMs))
                     ((leadRemaining + beatMs - 1) / beatMs).toInt() else null
-                positionMs = if (state.backingAsset == null) now
-                    else displayClock.position(now, snap.observedUptimeMs, song.durationMs)
+                // A small decoder correction can hold the image until audio catches up.
+                positionMs = maxOf(positionMs, now)
                 val reaction = state.reaction.takeIf { now < reactionUntil }
                 val stats = game?.stats
                 if (stats !== state.stats || count != state.countdown || reaction != state.reaction) {
@@ -250,7 +254,6 @@ internal class Session(
         resumeAt = null
         hasPlayed = false
         playRequestedAt = snap.observedUptimeMs
-        displayClock.reset()
         game?.resume()
         state = state.copy(scene = Scene.Playing, countdown = null)
         player.play()
@@ -265,7 +268,7 @@ internal class Session(
         if (uptimeMs < playRequestedAt) return
         // Pointer timestamps and the audio anchor share an uptime origin. Touch dispatch must not
         // block on MediaPlayer/AVAudioPlayer queries merely to measure the intervening milliseconds.
-        val at = snap.positionMs + (uptimeMs - snap.observedUptimeMs)
+        val at = if (snap.stalled) snap.positionMs else snap.positionMs + (uptimeMs - snap.observedUptimeMs)
         val feedbackAt = maxOf(at, snap.positionMs)
         val engine = game ?: return
         val result = engine.tap(at)
@@ -390,6 +393,7 @@ internal class Session(
         old?.close()
         automaticNotes = emptyList()
         nextAutomaticNote = 0
+        planarPath = null
         ledCues = emptyList()
         nextLedCue = 0
         playingAnchor = null

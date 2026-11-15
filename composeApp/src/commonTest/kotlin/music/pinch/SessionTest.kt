@@ -154,7 +154,7 @@ class SessionTest {
     fun earlyLampTapCanAlsoScoreThePreviousGoldWithoutReplayingTheLamp() {
         val host = Host()
         val chart = Chart("Перекрытие", 120, 2_500, listOf(
-            Note("a", 500, 64, 400, .8f), Note("b", 1_208, 67, 400, .8f)
+            Note("a", 500, 64, 400, .8f), Note("b", 1_150, 67, 400, .8f)
         ))
         val session = Session(host, scope, listOf(song.copy(bundled = chart, backingAsset = "demo.m4a")))
         session.selectStageMode(StageMode.Planar)
@@ -594,6 +594,26 @@ class SessionTest {
         assertEquals(100_000, session.state.stats?.score)
         assertEquals(3, host.player.strikes.size)
         assertTrue(host.player.sounds.isEmpty())
+    }
+
+    @Test
+    fun estimatedDisplayFramesCannotExpireANoteAheadOfAConfirmedDecoderSample() {
+        val host = Host()
+        val session = session(host)
+        session.start(false)
+        val player = host.player
+        player.ready()
+        session.observe()
+        player.tick(2_232)
+        player.status = player.status.copy(confirmedPositionMs = 2_184)
+        session.observe()
+        assertEquals(2_232L, session.positionMs)
+        assertEquals(0, session.state.stats?.missed)
+        player.status = player.status.copy(positionMs = 2_184, confirmedPositionMs = null, stalled = true)
+        session.observe()
+        session.tap(14_000)
+        assertEquals(1, session.state.stats?.okay)
+        assertEquals(0, session.state.stats?.missed)
     }
 
     @Test

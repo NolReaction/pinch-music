@@ -2,6 +2,9 @@
 
 package music.pinch
 
+import androidx.compose.runtime.CompositionLocalProvider
+import music.pinch.ui.AppleCascadeSurface
+import music.pinch.ui.LocalCascadeFactory
 import androidx.compose.ui.window.ComposeUIViewController
 import platform.Foundation.NSProcessInfo
 import platform.Foundation.NSUserDefaults
@@ -9,6 +12,7 @@ import platform.UIKit.UISelectionFeedbackGenerator
 import platform.UIKit.UIViewController
 
 interface AppleMediaFactoryProtocol {
+    fun createCascade(): AppleCascadeSurface
     fun createMedia(instrument: String, observer: AppleInterruptListener): AppleMediaSession
     fun pickAudio(listener: AppleAudioImportListener)
 }
@@ -34,7 +38,10 @@ interface AppleMediaSession {
 
 fun MainViewController(factory: AppleMediaFactoryProtocol): UIViewController {
     val platform = IosPlatform(factory)
-    return ComposeUIViewController { App(platform) }
+    val createStage = factory::createCascade
+    return ComposeUIViewController {
+        CompositionLocalProvider(LocalCascadeFactory provides createStage) { App(platform) }
+    }
 }
 
 private class IosPlatform(private val factory: AppleMediaFactoryProtocol) : Platform {
@@ -61,6 +68,7 @@ private class IosPlatform(private val factory: AppleMediaFactoryProtocol) : Plat
 private class IosMedia(factory: AppleMediaFactoryProtocol, private val durationMs: Long, instrument: Instrument) :
     GameMedia, AppleInterruptListener {
     private val clock = SessionClock(durationMs)
+    private val backingClock = BackingClock(durationMs)
     private val session = factory.createMedia(instrument.name.lowercase(), this)
     private var hasBacking = false
     private var ready = false
@@ -89,18 +97,27 @@ private class IosMedia(factory: AppleMediaFactoryProtocol, private val durationM
 
     override fun snapshot(): Playback {
         val now = uptimeMs()
-        if (!hasBacking) return clock.snapshot(now, ready && !closed, session.failure)
+        val failure = session.failure
+        if (!hasBacking) return clock.snapshot(now, ready && !closed, failure)
         val ended = session.backingEnded
-        val position = if (ended) durationMs else session.backingPositionMs.coerceIn(0, durationMs)
-        return Playback(ready && !closed, !closed && session.backingPlaying, ended, position, now, session.failure)
+        if (ended || !ready || closed || failure != null) {
+            return Playback(ready && !closed, false, ended, if (ended) durationMs else 0L, now, failure)
+        }
+        return backingClock.snapshot(now) {
+            val playing = session.backingPlaying
+            val position = session.backingPositionMs.coerceIn(0L, durationMs)
+            Playback(true, playing, false, position, now + (uptimeMs() - now) / 2)
+        }
     }
 
     override fun play() {
         if (!ready || closed) return
+        backingClock.reset()
         if (session.activate() && !hasBacking) clock.play(uptimeMs())
     }
 
     override fun pause() {
+        backingClock.reset()
         clock.pause(uptimeMs())
         session.silence()
     }

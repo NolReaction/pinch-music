@@ -17,7 +17,10 @@ data class Playback(
     val ended: Boolean,
     val positionMs: Long,
     val observedUptimeMs: Long, // same uptime origin as Compose pointer down
-    val error: String? = null
+    val error: String? = null,
+    // The last position reported by the decoder. Expiring notes uses this watermark.
+    val confirmedPositionMs: Long? = null,
+    val stalled: Boolean = false,
 )
 
 interface GameMedia {
