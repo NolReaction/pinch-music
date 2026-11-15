@@ -28,5 +28,6 @@ fun App(platform: Platform, backHandler: @Composable (Boolean, () -> Unit) -> Un
             else -> session.menu()
         }
     }
-    GameScreen(session.state, session)
+    val positionMs = remember(session) { { session.positionMs } }
+    GameScreen(session.state, session, positionMs)
 }

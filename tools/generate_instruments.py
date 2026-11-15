@@ -47,11 +47,32 @@ def sample(timbre: str, midi: int) -> np.ndarray:
     return np.rint(result * 32767).astype("<i2")
 
 
+def contact(timbre: str) -> np.ndarray:
+    """Short unpitched contact, added by the player over the recorded performance."""
+    modes = {"piano": (960, 2310), "mallet": (1570, 3720), "synth": (1220, 2880)}
+    low, high = modes[timbre]
+    t = np.arange(round(.044 * RATE)) / RATE
+    attack = 1 - np.exp(-t / .0007)
+    noise = np.random.default_rng(127).normal(0, .35, size=t.shape)
+    wavelet = np.sin(2 * np.pi * low * t) * np.exp(-t / .004)
+    wavelet += .55 * np.sin(2 * np.pi * high * t) * np.exp(-t / .007)
+    wavelet += noise * np.exp(-t / .002)
+    waveform = wavelet * attack * np.minimum(1, (.044 - t) / .004)
+    return np.rint(waveform * (.58 * 32767 / np.max(np.abs(waveform)))).astype("<i2")
+
+
+def write_wav(path: Path, pcm: np.ndarray):
+    with wave.open(str(path), "wb") as out:
+        out.setparams((1, 2, RATE, 0, "NONE", "not compressed"))
+        out.writeframes(pcm.tobytes())
+
+
 if __name__ == "__main__":
+    feedback = DESTINATION.parent / "feedback"
+    feedback.mkdir(parents=True, exist_ok=True)
     for name in ("piano", "mallet", "synth"):
+        write_wav(feedback / f"{name}.wav", contact(name))
         directory = DESTINATION / name
         directory.mkdir(parents=True, exist_ok=True)
         for midi in range(0, 121, 12):
-            with wave.open(str(directory / f"{midi}.wav"), "wb") as out:
-                out.setparams((1, 2, RATE, 0, "NONE", "not compressed"))
-                out.writeframes(sample(name, midi).tobytes())
+            write_wav(directory / f"{midi}.wav", sample(name, midi))

@@ -2,6 +2,7 @@ package music.pinch
 
 import kotlinx.coroutines.*
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import music.pinch.core.Chart
@@ -31,13 +32,18 @@ internal class Session(
         private set
     var media by mutableStateOf<GameMedia?>(null)
         private set
+    var positionMs by mutableLongStateOf(0L)
+        private set
+    private var playingAnchor: Playback? = null
+    private val displayClock = DecoderDisplayClock()
     private var game: RhythmGame? = null
     private var hasPlayed = false
     private var playRequestedAt = 0L
     private var waitingSince: Long? = null
     private var resumeAt: Long? = null
     private var reactionUntil = 0L
-    private var nextPreviewNote = 0
+    private var automaticNotes: List<Note> = emptyList()
+    private var nextAutomaticNote = 0
     private var recordKey = ""
     private var lastMistakeAt: Long? = null
     private var lastMistakeTarget: String? = null
@@ -105,16 +111,26 @@ internal class Session(
         if (state.importing) return
         close()
         game = if (preview) null else RhythmGame(song, forgiving = true)
-        state = state.copy(scene = Scene.Loading, preview = preview, positionMs = 0, notice = null,
+        positionMs = 0
+        state = state.copy(scene = Scene.Loading, preview = preview, notice = null,
             countdown = null, reaction = null, error = null, newRecord = false, stats = game?.stats)
         try {
             val player = platform.newMedia(song.durationMs, state.instrument)
             media = player
             player.onInterrupted = { if (media === player) pause() }
-            val pitches = song.notes.mapTo(mutableSetOf()) { it.midi }
-            if (!preview) pitches.addAll(song.notes.map { wrongPitch(it.midi) })
+            val pitches = mutableSetOf<Int>()
+            val backing = state.backingAsset
+            automaticNotes = when {
+                backing != null -> emptyList()
+                preview -> song.notes
+                else -> song.notes.filterNot { it.playable }
+            }
+            for (note in song.notes) {
+                if (backing == null) pitches += note.midi
+                if (!preview && note.playable) pitches += wrongPitch(note.midi)
+            }
             player.setBackingVolume(state.volume)
-            player.prepare(pitches, state.backingAsset)
+            player.prepare(pitches, backing)
         } catch (e: Exception) {
             fail("Не удалось начать игру. " + e.message.orEmpty())
         }
@@ -140,7 +156,10 @@ internal class Session(
                     val end = resumeAt ?: (snap.observedUptimeMs + 1500).also { resumeAt = it }
                     val remaining = end - snap.observedUptimeMs
                     if (remaining <= 0) beginPlayback(player, snap)
-                    else state = state.copy(countdown = ((remaining + 499) / 500).toInt())
+                    else {
+                        val count = ((remaining + 499) / 500).toInt()
+                        if (count != state.countdown) state = state.copy(countdown = count)
+                    }
                 }
             }
             Scene.Playing -> {
@@ -149,6 +168,7 @@ internal class Session(
                     return
                 }
                 if (!snap.playing) {
+                    playingAnchor = null
                     if (hasPlayed) {
                         // Players can report a stopped clock for a frame just before their end event.
                         val since = waitingSince ?: snap.observedUptimeMs.also { waitingSince = it }
@@ -158,26 +178,39 @@ internal class Session(
                 }
                 waitingSince = null
                 hasPlayed = true
+                playingAnchor = snap
                 val song = state.chart ?: return
                 val now = snap.positionMs.coerceIn(0L, song.durationMs)
-                if (state.preview) {
-                    var latest: Note? = null
-                    while (nextPreviewNote < song.notes.size && song.notes[nextPreviewNote].atMs <= now) {
-                        latest = song.notes[nextPreviewNote++]
+                if (nextAutomaticNote < automaticNotes.size) {
+                    val first = nextAutomaticNote
+                    while (nextAutomaticNote < automaticNotes.size && automaticNotes[nextAutomaticNote].atMs <= now) {
+                        nextAutomaticNote++
                     }
-                    if (latest != null && now - latest.atMs <= 120) {
-                        player.note(latest.midi, latest.velocity * state.volume)
+                    // After a stall, play only the latest timely onset, including all voices in a chord.
+                    if (nextAutomaticNote > first) {
+                        val latest = automaticNotes[nextAutomaticNote - 1].atMs
+                        if (now - latest <= 120) {
+                            for (index in first until nextAutomaticNote) {
+                                val note = automaticNotes[index]
+                                if (note.atMs == latest) player.note(note.midi, note.velocity * state.volume)
+                            }
+                        }
                     }
                 }
                 // A small delivery margin lets a frame and a queued input of the same vsync settle.
                 val missed = game?.advance(now - 32) ?: 0
                 game?.takeMissCue(now)?.let { soundMistake(player, it, now, stray = false) }
-                val leadRemaining = song.notes.first().atMs - now
+                val leadRemaining = (game?.firstTargetMs ?: 0L) - now
                 val beatMs = (60_000L / song.bpm).coerceAtLeast(1)
                 val count = if (!state.preview && leadRemaining in 1..(4 * beatMs))
                     ((leadRemaining + beatMs - 1) / beatMs).toInt() else null
-                state = state.copy(positionMs = now, stats = game?.stats, countdown = count,
-                    reaction = state.reaction.takeIf { now < reactionUntil })
+                positionMs = if (state.backingAsset == null) now
+                    else displayClock.position(now, snap.observedUptimeMs, song.durationMs)
+                val reaction = state.reaction.takeIf { now < reactionUntil }
+                val stats = game?.stats
+                if (stats !== state.stats || count != state.countdown || reaction != state.reaction) {
+                    state = state.copy(stats = stats, countdown = count, reaction = reaction)
+                }
                 if (missed > 0) showReaction("Пропуск", now)
             }
             else -> Unit
@@ -189,47 +222,58 @@ internal class Session(
         resumeAt = null
         hasPlayed = false
         playRequestedAt = snap.observedUptimeMs
+        displayClock.reset()
         game?.resume()
         state = state.copy(scene = Scene.Playing, countdown = null)
         player.play()
+        // Anchor once as soon as the native player accepts play. Later frames track decoder drift.
+        if (state.scene == Scene.Playing) playingAnchor = player.snapshot().takeIf { it.playing }
     }
 
     override fun tap(uptimeMs: Long) {
         if (state.scene != Scene.Playing || state.preview) return
         val player = media ?: return
-        val snap = player.snapshot()
-        if (snap.error != null || !snap.playing || snap.ended || uptimeMs < playRequestedAt) return
-        // Down and snapshot use the same platform monotonic epoch. Playback rate is fixed at 1.
-        val at = snap.positionMs - (snap.observedUptimeMs - uptimeMs).coerceAtLeast(0L)
+        val snap = playingAnchor ?: return
+        if (uptimeMs < playRequestedAt) return
+        // Pointer timestamps and the audio anchor share an uptime origin. Touch dispatch must not
+        // block on MediaPlayer/AVAudioPlayer queries merely to measure the intervening milliseconds.
+        val at = snap.positionMs + (uptimeMs - snap.observedUptimeMs)
+        val feedbackAt = maxOf(at, snap.positionMs)
         val engine = game ?: return
         when (val result = engine.tap(at)) {
+            is TapResult.Automatic -> {
+                if (state.backingAsset != null) player.strike(.26f * result.note.velocity * state.volume)
+                if (state.haptics) platform.feedback()
+            }
             is TapResult.Hit -> {
-                player.note(result.note.midi, result.note.velocity * state.volume)
+                val gain = result.note.velocity * state.volume
+                if (state.backingAsset == null) player.note(result.note.midi, gain)
+                else player.strike(.46f * gain)
                 if (state.haptics) platform.feedback()
                 val label = when (result.grade) {
                     Grade.Perfect -> "Идеально"
                     Grade.Good -> "Хорошо"
                     Grade.Okay -> "Попал"
                 }
-                showReaction(label, snap.positionMs)
+                showReaction(label, feedbackAt)
             }
             TapResult.Stray -> {
-                soundMistake(player, engine.nearestTarget(at), snap.positionMs, stray = true)
-                showReaction("Мимо", snap.positionMs)
+                soundMistake(player, engine.nearestTarget(at), feedbackAt, stray = true)
+                showReaction("Мимо", feedbackAt)
             }
             TapResult.Ignored -> return
         }
         state = state.copy(stats = engine.stats)
     }
 
-    override fun tapNow() { media?.snapshot()?.let { tap(it.observedUptimeMs) } }
+    override fun tapNow() { media?.let { tap(it.uptimeMs()) } }
 
     private fun soundMistake(player: GameMedia, target: Note, now: Long, stray: Boolean) {
         // Repeated bad taps still affect score. Keep them from masking the song, including
         // a stray tap delivered in the same beat as that target's automatic miss.
         val previous = lastMistakeAt
         if (previous != null && now - previous < 120 && (stray || lastMistakeTarget == target.id)) return
-        val gain = if (stray) .27f else .36f
+        val gain = if (state.backingAsset != null) .15f else if (stray) .27f else .36f
         player.note(wrongPitch(target.midi), gain * target.velocity * state.volume)
         lastMistakeAt = now
         lastMistakeTarget = target.id
@@ -245,7 +289,8 @@ internal class Session(
         state = state.copy(scene = Scene.Paused, countdown = null, reaction = null)
         game?.pause()
         media?.pause()
-        media?.snapshot()?.let { state = state.copy(positionMs = it.positionMs) }
+        media?.snapshot()?.let { positionMs = it.positionMs }
+        playingAnchor = null
         hasPlayed = false
         resumeAt = null
         waitingSince = null
@@ -262,13 +307,15 @@ internal class Session(
         val record = previous == null || final.score > previous
         if (record) platform.writeValue(recordKey, final.score.toString())
         close()
-        state = state.copy(scene = Scene.Result, positionMs = state.durationMs, reaction = null,
+        positionMs = state.durationMs
+        state = state.copy(scene = Scene.Result, reaction = null,
             countdown = null, stats = final, bestScore = if (record) final.score else previous, newRecord = record)
     }
 
     override fun menu() {
         close()
-        state = state.copy(scene = Scene.Menu, positionMs = 0, preview = false, stats = null,
+        positionMs = 0
+        state = state.copy(scene = Scene.Menu, preview = false, stats = null,
             error = null, countdown = null, reaction = null, newRecord = false)
     }
 
@@ -294,7 +341,9 @@ internal class Session(
         media = null
         old?.onInterrupted = null
         old?.close()
-        nextPreviewNote = 0
+        automaticNotes = emptyList()
+        nextAutomaticNote = 0
+        playingAnchor = null
         lastMistakeAt = null
         lastMistakeTarget = null
         game = null

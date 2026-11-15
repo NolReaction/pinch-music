@@ -41,6 +41,9 @@ jobs:
               asset = package.getinfo("assets/backing/stereo-love.m4a")
               assert asset.compress_type == ZIP_STORED, "MediaPlayer needs an uncompressed asset"
               assert package.read(asset) == track.read_bytes(), "Packaged soundtrack differs from source"
+              for instrument in ("piano", "mallet", "synth"):
+                  strike = package.getinfo(f"assets/feedback/{instrument}.wav")
+                  assert strike.compress_type == ZIP_STORED and strike.file_size > 44
           PYTHON
       - uses: actions/upload-artifact@v4
         with:
@@ -69,4 +72,5 @@ jobs:
           test -s "$app/media/backing/stereo-love.m4a"
           for instrument in piano mallet synth; do
             test -s "$app/media/instruments/$instrument/60.wav"
+            test -s "$app/media/feedback/$instrument.wav"
           done

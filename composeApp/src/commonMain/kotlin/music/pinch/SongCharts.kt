@@ -9,6 +9,7 @@ internal fun encodeChart(chart: Chart): String = buildJsonObject {
     putJsonArray("notes") {
         chart.notes.forEach { n -> add(buildJsonArray {
             add(n.atMs); add(n.midi); add(n.durationMs); add(n.velocity)
+            if (!n.playable) add(false)
         }) }
     }
 }.toString()
@@ -19,7 +20,8 @@ internal fun decodeChart(text: String, title: String): Chart {
     require(json.getValue("version").jsonPrimitive.int == 1)
     val notes = json.getValue("notes").jsonArray.mapIndexed { i, el ->
         val n = el.jsonArray
-        Note("n$i", n[0].jsonPrimitive.long, n[1].jsonPrimitive.int, n[2].jsonPrimitive.long, n[3].jsonPrimitive.float)
+        Note("n$i", n[0].jsonPrimitive.long, n[1].jsonPrimitive.int, n[2].jsonPrimitive.long,
+            n[3].jsonPrimitive.float, playable = n.getOrNull(4)?.jsonPrimitive?.boolean ?: true)
     }
     require(notes.size in 1..1000 && notes.zipWithNext().all { (a,b) -> b.atMs > a.atMs })
     return Chart(title, json.getValue("bpm").jsonPrimitive.int, json.getValue("durationMs").jsonPrimitive.long, notes)

@@ -28,13 +28,16 @@ internal class AndroidMedia(
     override var onInterrupted: (() -> Unit)? = null
 
     override fun prepare(pitches: Set<Int>, backingAsset: String?) {
-        if (closed || voices != null || error != null) return
+        if (closed || voices != null || backing != null || samplesReady || error != null) return
         try {
             focus.observe()
             if (backingAsset != null) prepareBacking(backingAsset)
-            val samples = NoteSamples()
-            voices = samples
-            samples.load(context.assets, instrument, pitches, { samplesReady = true }, ::fail)
+            if (pitches.isEmpty()) samplesReady = true
+            else {
+                val samples = NoteSamples()
+                voices = samples
+                samples.load(context.assets, instrument, pitches, backingAsset != null, { samplesReady = true }, ::fail)
+            }
             if (!foreground()) interrupt()
         } catch (problem: Exception) {
             fail("Не удалось подготовить звук: ${problem.localizedMessage ?: "ошибка аудиосистемы"}.")
@@ -71,6 +74,8 @@ internal class AndroidMedia(
         backingVolume = volume.coerceIn(0f, 1f)
         if (backingReady && !closed) backing?.setVolume(backingVolume, backingVolume)
     }
+
+    override fun uptimeMs() = SystemClock.uptimeMillis()
 
     override fun snapshot(): Playback {
         val now = SystemClock.uptimeMillis()
@@ -126,7 +131,11 @@ internal class AndroidMedia(
     }
 
     override fun note(midi: Int, gain: Float) {
-        if (ready && !closed && error == null && snapshot().playing) voices?.play(midi, gain)
+        if ((backingStarted || clock.running) && ready && !closed && error == null) voices?.play(midi, gain)
+    }
+
+    override fun strike(gain: Float) {
+        if (backingStarted && !closed && error == null) voices?.strike(gain)
     }
 
     override fun close() {

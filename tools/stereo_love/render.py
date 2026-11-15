@@ -2,18 +2,20 @@
 
 From any directory: python3 render.py. All voices and percussion are synthesized here.
 The fixed seeds keep noise drums, string attacks, and reverb repeatable for verification.
+Use python3 render.py --verify to check the existing encoded performance without rewriting it.
 """
 
 from functools import lru_cache
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import subprocess
+import sys
 
 import numpy as np
 from scipy import signal
 from scipy.io import wavfile
 
-from score import BAR_COUNT, BPM, DURATION_MS, FORM, HARMONY, ROOT, chord_at, lead_attacks, section_at
+from score import BACKING, BAR_COUNT, BPM, DURATION_MS, FORM, HARMONY, chord_at, lead_attacks, score_tag, section_at
 
 RATE = 32_000
 BEAT = 60 / BPM
@@ -158,11 +160,10 @@ def render():
     kit = drums()
     for n in lead_attacks():
         voice = n.voice
-        # The quieter guide retains the tune on a miss. The player's selected
-        # instrument completes the articulation and foregrounds a successful hit.
-        accent = .46 if n.panel else 1.0
-        gain = {"reed": .51, "air": .48, "pluck": .39}[voice]
-        place(pitched(voice, n.midi, n.length), n.tick, gain * n.gain * accent, -.045, .28)
+        # Leave every melody attack in the native audio stream, including the player's accents.
+        # Keep the room return behind the attack so repeated sixteenths remain distinct.
+        gain = {"reed": .56, "air": .55, "pluck": .47}[voice]
+        place(pitched(voice, n.midi, n.length), n.tick, gain * n.gain, -.045, .17)
 
     for bar in range(BAR_COUNT):
         section = section_at(bar)
@@ -246,8 +247,31 @@ def render():
     mix[-fade:] *= np.linspace(1, 0, fade, dtype=np.float32)[:, None]
 
 
-if __name__ == "__main__":
-    destination = ROOT / "media/backing/stereo-love.m4a"
+def verify_backing(path):
+    """Match the lead waveform against the encoded mix at each scheduled contact."""
+    audio = subprocess.check_output([
+        "ffmpeg", "-v", "error", "-i", str(path), "-vn", "-f", "f32le",
+        "-ac", "1", "-ar", str(RATE), "-",
+    ])
+    pcm = np.frombuffer(audio, dtype="<f4")
+    contacts = lead_attacks()
+    minimum = 1.0
+    for n in contacts:
+        start = round(n.tick * TICK * RATE)
+        # Check the start of the note, excluding its release and other onsets.
+        size = round(min(.080, .9 * n.length * TICK) * RATE)
+        lead = filtered(pitched(n.voice, n.midi, n.length)[:size], 250, "high")
+        actual = filtered(pcm[start:start + size], 250, "high")
+        norm = np.linalg.norm(actual) * np.linalg.norm(lead)
+        match = float(np.dot(lead, actual) / norm) if norm else 0.0
+        if match < .5:
+            raise ValueError(f"Missing or mistimed MIDI {n.midi} at tick {n.tick} (correlation {match:.3f})")
+        minimum = min(minimum, match)
+    print(f"Matched {len(contacts)} melody onsets in decoded AAC. Minimum correlation {minimum:.3f}")
+
+
+def write_backing():
+    destination = BACKING
     destination.parent.mkdir(parents=True, exist_ok=True)
     render()
     with TemporaryDirectory() as temporary:
@@ -255,6 +279,13 @@ if __name__ == "__main__":
         wavfile.write(wave, RATE, np.rint(mix * 32767).astype(np.int16))
         subprocess.run([
             "ffmpeg", "-loglevel", "error", "-y", "-i", str(wave), "-c:a", "aac",
-            "-b:a", "80k", "-movflags", "+faststart", "-map_metadata", "-1", str(destination),
+            "-b:a", "96k", "-movflags", "+faststart", "-map_metadata", "-1",
+            "-metadata", f"comment={score_tag()}", str(destination),
         ], check=True)
     print(f"{destination.name}: {DURATION_MS} ms at {BPM} BPM, {len(lead_attacks())} melody attacks")
+
+
+if __name__ == "__main__":
+    if sys.argv[1:] != ["--verify"]:
+        write_backing()
+    verify_backing(BACKING)

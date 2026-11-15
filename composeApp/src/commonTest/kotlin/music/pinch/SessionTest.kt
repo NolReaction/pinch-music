@@ -34,6 +34,8 @@ class SessionTest {
     private class Player : GameMedia {
         var status = Playback(ready = false, playing = false, ended = false, positionMs = 0, observedUptimeMs = 10_000)
         val sounds = mutableListOf<Pair<Int, Float>>()
+        val strikes = mutableListOf<Float>()
+        var snapshots = 0
         var prepared = emptySet<Int>()
         override var onInterrupted: (() -> Unit)? = null
         var starts = 0
@@ -45,10 +47,12 @@ class SessionTest {
             backing = backingAsset
         }
         override fun setBackingVolume(volume: Float) { backingGain = volume }
-        override fun snapshot() = status
+        override fun uptimeMs() = status.observedUptimeMs
+        override fun snapshot() = status.also { snapshots++ }
         override fun play() { starts++; status = status.copy(playing = true) }
         override fun pause() { status = status.copy(playing = false) }
         override fun note(midi: Int, gain: Float) { sounds += midi to gain }
+        override fun strike(gain: Float) { strikes += gain }
         override fun close() { closes++ }
 
         fun tick(position: Long, uptime: Long = 10_000 + position) {
@@ -195,7 +199,7 @@ class SessionTest {
         player.tick(2_000, 12_900) // 200 ms of progress in 1,100 ms of uptime
         session.observe()
         assertEquals(Scene.Playing, session.state.scene)
-        assertEquals(2_000L, session.state.positionMs)
+        assertEquals(2_000L, session.positionMs)
         assertEquals(0, session.state.stats?.missed)
         session.tap(12_900)
         assertEquals(listOf(72 to .25f), player.sounds)
@@ -226,7 +230,7 @@ class SessionTest {
         player.tick(2_000, 33_750) // native clock catches up 1,300 ms in 50 ms
         session.observe()
         assertEquals(Scene.Playing, session.state.scene)
-        assertEquals(2_000L, session.state.positionMs)
+        assertEquals(2_000L, session.positionMs)
         session.tap(33_750)
         assertEquals(listOf(72 to .25f), player.sounds)
         assertEquals(1, session.state.stats?.perfect)
@@ -400,7 +404,7 @@ class SessionTest {
         val host = Host()
         val session = Session(host, scope)
         val chart = requireNotNull(session.state.chart)
-        val notes = chart.notes
+        val notes = chart.notes.filter { it.playable }
         fun run(preview: Boolean, playEveryNote: Boolean): Player {
             session.start(preview)
             val player = host.player
@@ -422,7 +426,9 @@ class SessionTest {
             return player
         }
         val perfect = run(preview = false, playEveryNote = true)
-        assertEquals(notes.map { it.midi }, perfect.sounds.map { it.first })
+        assertTrue(perfect.sounds.isEmpty())
+        assertEquals(notes.size, perfect.strikes.size)
+        assertTrue(perfect.strikes.all { it > 0f && it < host.volume })
         assertEquals(100_000, session.state.stats?.score)
         session.menu()
         val skipped = run(preview = false, playEveryNote = false)
@@ -432,8 +438,82 @@ class SessionTest {
         assertEquals(notes.map { it.midi + 1 }, skipped.sounds.map { it.first })
         session.menu()
         val preview = run(preview = true, playEveryNote = false)
-        assertEquals(notes.map { it.midi }, preview.sounds.map { it.first })
+        assertTrue(preview.sounds.isEmpty() && preview.strikes.isEmpty())
+        assertTrue(preview.prepared.isEmpty())
         assertEquals(Scene.Menu, session.state.scene)
+    }
+
+    @Test
+    fun touchesUseTheLastAudioAnchorWithoutPollingTheDecoderOrChangingFrameTime() {
+        val host = Host()
+        val session = session(host)
+        session.start(false)
+        val player = host.player
+        player.ready()
+        session.observe()
+        player.tick(2_470L, 18_000L)
+        session.observe()
+        val reads = player.snapshots
+        player.tick(2_500L, 18_030L)
+        session.tapNow()
+        session.tap(18_032L)
+        assertEquals(reads, player.snapshots)
+        assertEquals(1, session.state.stats?.perfect)
+        assertEquals(2_470L, session.positionMs)
+    }
+
+    @Test
+    fun automaticBarCanBeTappedOnceWithoutPenaltyOrDoublingItsTune() {
+        val host = Host()
+        val chart = requireNotNull(song.bundled)
+        val between = chart.notes.first().copy(id = "automatic", atMs = 2_390, playable = false)
+        val part = chart.copy(notes = listOf(chart.notes.first(), between, chart.notes.last()))
+        val session = Session(host, scope, listOf(song.copy(bundled = part, backingAsset = "full.m4a")))
+        session.start(false)
+        host.player.ready()
+        session.observe()
+        session.tap(12_000)
+        session.tap(12_390)
+        session.tap(12_394)
+        assertEquals(1, session.state.stats?.combo)
+        assertEquals(0, session.state.stats?.stray)
+        session.tap(12_500)
+        assertEquals(100_000, session.state.stats?.score)
+        assertEquals(3, host.player.strikes.size)
+        assertTrue(host.player.sounds.isEmpty())
+    }
+
+    @Test
+    fun decoderFramesDoNotInvalidateMenusAndHudBetweenJudgements() {
+        val host = Host()
+        val session = session(host)
+        session.start(true)
+        val player = host.player
+        player.ready()
+        session.observe()
+        val ui = session.state
+        for (ms in 16L..800L step 16) {
+            player.tick(ms)
+            session.observe()
+            assertTrue(ui === session.state)
+            assertEquals(ms, session.positionMs)
+        }
+    }
+
+    @Test
+    fun previewOfUnbackedChordsPlaysAllSimultaneousVoicesOnce() {
+        val host = Host()
+        val chart = requireNotNull(song.bundled)
+        val chord = song.copy(bundled = chart.copy(notes = listOf(chart.notes.first(),
+            chart.notes.first().copy(id = "harmony", midi = 79), chart.notes.last())))
+        val session = Session(host, scope, listOf(chord))
+        session.start(true)
+        host.player.ready()
+        session.observe()
+        host.player.tick(2_004)
+        session.observe()
+        session.observe()
+        assertEquals(listOf(72, 79), host.player.sounds.map { it.first })
     }
 
     @Test

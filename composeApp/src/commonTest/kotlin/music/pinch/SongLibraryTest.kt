@@ -17,8 +17,9 @@ class SongLibraryTest {
             val chart = requireNotNull(song.bundled)
             assertEquals(song.title, chart.title)
             assertEquals(bpms[song.id], chart.bpm)
-            assertTrue(chart.notes.first().atMs >= 2_000)
-            assertTrue(chart.notes.zipWithNext().all { (a, b) -> b.atMs - a.atMs >= 440 })
+            val targets = chart.notes.filter { it.playable }
+            assertTrue(targets.first().atMs >= 2_000)
+            assertTrue(targets.zipWithNext().all { (a, b) -> b.atMs - a.atMs >= 440 })
         }
     }
 
@@ -26,12 +27,16 @@ class SongLibraryTest {
         val chart = requireNotNull(stereoLoveSong.bundled)
         assertEquals("backing/stereo-love.m4a", stereoLoveSong.backingAsset)
         assertEquals(184_000L, chart.durationMs)
-        assertTrue(chart.notes.size > 140)
-        val lastPanelMs = chart.notes.last().atMs
-        assertEquals("Кода", stereoLoveSectionAt(lastPanelMs))
-        // The accompaniment plays the resolution after the player's last accent.
+        assertEquals(508, chart.notes.size)
+        assertEquals(159, chart.notes.count { it.playable })
+        assertEquals(0L, chart.notes.first().atMs)
+        assertTrue(chart.notes.zipWithNext().all { (a, b) -> b.atMs > a.atMs })
+        val lastManualMs = chart.notes.last { it.playable }.atMs
+        val resolutionMs = chart.notes.last().atMs
+        assertTrue(resolutionMs > lastManualMs)
+        assertEquals("Кода", stereoLoveSectionAt(resolutionMs))
         val twoBarsMs = 8L * 60_000 / chart.bpm
-        assertTrue(chart.durationMs - lastPanelMs in 1L..twoBarsMs)
+        assertTrue(chart.durationMs - resolutionMs in 1L..twoBarsMs)
         for (note in chart.notes) {
             val tick = note.atMs * chart.bpm / 15_000.0
             assertTrue(abs(tick - tick.roundToInt()) < 0.005, "Off-grid note at ${note.atMs} ms")
@@ -40,5 +45,15 @@ class SongLibraryTest {
         assertEquals("Аккордеон", stereoLoveSectionAt(34_016))
         assertEquals("Куплет", stereoLoveSectionAt(55_000))
         assertEquals("Кода", stereoLoveSectionAt(chart.durationMs))
+    }
+
+    @Test fun savedChartsRememberAutoContactsAndLoadEarlierSingleFingerCharts() {
+        val stereo = requireNotNull(stereoLoveSong.bundled)
+        val saved = decodeChart(encodeChart(stereo), stereo.title)
+        assertEquals(stereo.notes.map { it.atMs to it.playable }, saved.notes.map { it.atMs to it.playable })
+        val oldJson = """{"version":1,"bpm":120,"durationMs":4000,"notes":[[2000,64,150,0.8]]}"""
+        val old = decodeChart(oldJson, "Импорт")
+        assertTrue(old.notes.single().playable)
+        assertEquals(oldJson, encodeChart(old))
     }
 }

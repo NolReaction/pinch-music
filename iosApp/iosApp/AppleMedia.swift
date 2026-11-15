@@ -47,9 +47,11 @@ private final class NativeMedia: NSObject, @preconcurrency AppleMediaSession, @p
     func includeSample(midi: Int32, root: Int32) { roots[midi] = root }
 
     func prepare(backingAsset: String?) {
-        guard !closed, voices == nil, failure == nil else { return }
+        guard !closed, voices == nil, backing == nil, failure == nil else { return }
         do {
-            voices = try SampleVoices(instrument: instrument, roots: roots)
+            if !roots.isEmpty {
+                voices = try SampleVoices(instrument: instrument, roots: roots, includeStrike: backingAsset != nil)
+            }
             if let asset = backingAsset {
                 guard let folder = Bundle.main.resourceURL else { throw AudioFailure("Отсутствуют ресурсы игры.") }
                 let url = folder.appendingPathComponent("media").appendingPathComponent(asset)
@@ -66,7 +68,7 @@ private final class NativeMedia: NSObject, @preconcurrency AppleMediaSession, @p
     }
 
     func activate() -> Bool {
-        guard !closed, !backingEnded, let voices = voices, failure == nil else { return false }
+        guard !closed, !backingEnded, voices != nil || backing != nil, failure == nil else { return false }
         guard UIApplication.shared.applicationState == .active else {
             interrupt()
             return false
@@ -76,7 +78,7 @@ private final class NativeMedia: NSObject, @preconcurrency AppleMediaSession, @p
             try? audioSession.setPreferredIOBufferDuration(0.005)
             try audioSession.setActive(true)
             sessionWasActivated = true
-            try voices.start()
+            try voices?.start()
             if let backing = backing, !backing.isPlaying && !backing.play() {
                 throw AudioFailure("Не удалось начать аккомпанемент.")
             }
@@ -109,7 +111,12 @@ private final class NativeMedia: NSObject, @preconcurrency AppleMediaSession, @p
         backing?.pause()
         voices?.silence()
     }
-    func note(midi: Int32, gain: Float) { voices?.play(midi, gain: gain) }
+    func note(midi: Int32, gain: Float) {
+        if wantsPlayback { voices?.play(midi, gain: gain) }
+    }
+    func strike(gain: Float) {
+        if wantsPlayback { voices?.strike(gain: gain) }
+    }
 
     func close() {
         guard !closed else { return }
@@ -174,24 +181,16 @@ private final class NativeMedia: NSObject, @preconcurrency AppleMediaSession, @p
 private final class SampleVoices {
     let engine = AVAudioEngine()
     private var buffers = [Int32: AVAudioPCMBuffer]()
+    private var contact: AVAudioPCMBuffer?
     private var nodes = [AVAudioPlayerNode]()
     private var next = 0
 
-    init(instrument: String, roots: [Int32: Int32]) throws {
+    init(instrument: String, roots: [Int32: Int32], includeStrike: Bool) throws {
         var source = [Int32: AVAudioPCMBuffer]()
         for root in Set(roots.values) {
-            let folder = "media/instruments/\(instrument)"
-            guard let url = Bundle.main.url(forResource: String(root), withExtension: "wav", subdirectory: folder) else {
-                throw AudioFailure("Отсутствует сэмпл \(instrument) / \(root).")
-            }
-            let file = try AVAudioFile(forReading: url, commonFormat: .pcmFormatFloat32, interleaved: false)
-            guard file.length > 1, file.length <= Int64(UInt32.max), file.processingFormat.channelCount == 1,
-                  let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)) else {
-                throw AudioFailure("Недопустимый формат сэмпла \(root).")
-            }
-            try file.read(into: buffer)
-            source[root] = buffer
+            source[root] = try Self.readSample(String(root), folder: "media/instruments/\(instrument)")
         }
+        if includeStrike { contact = try Self.readSample(instrument, folder: "media/feedback") }
         // Pretranspose each required note once. The tap handler only schedules a ready PCM buffer.
         for (midi, root) in roots {
             guard let pcm = source[root] else { throw AudioFailure("Нет звука для ноты \(midi).") }
@@ -204,6 +203,19 @@ private final class SampleVoices {
             engine.connect(node, to: engine.mainMixerNode, format: format)
             nodes.append(node)
         }
+    }
+
+    private static func readSample(_ name: String, folder: String) throws -> AVAudioPCMBuffer {
+        guard let url = Bundle.main.url(forResource: name, withExtension: "wav", subdirectory: folder) else {
+            throw AudioFailure("Отсутствует сэмпл \(folder) / \(name).")
+        }
+        let file = try AVAudioFile(forReading: url, commonFormat: .pcmFormatFloat32, interleaved: false)
+        guard file.length > 1, file.length <= Int64(UInt32.max), file.processingFormat.channelCount == 1,
+              let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)) else {
+            throw AudioFailure("Недопустимый формат сэмпла \(name).")
+        }
+        try file.read(into: buffer)
+        return buffer
     }
 
     private static func transpose(_ input: AVAudioPCMBuffer, semitones: Int32) throws -> AVAudioPCMBuffer {
@@ -228,16 +240,20 @@ private final class SampleVoices {
             engine.prepare()
             try engine.start()
         }
+        for node in nodes where !node.isPlaying { node.play() }
     }
 
     func play(_ pitch: Int32, gain: Float) {
-        guard engine.isRunning, let buffer = buffers[pitch] else { return }
+        if let buffer = buffers[pitch] { schedule(buffer, gain: gain) }
+    }
+    func strike(gain: Float) {
+        if let buffer = contact { schedule(buffer, gain: gain) }
+    }
+    private func schedule(_ buffer: AVAudioPCMBuffer, gain: Float) {
         let node = nodes[next]
         next = (next + 1) % nodes.count
-        node.stop()
         node.volume = min(1, max(0, gain))
-        node.scheduleBuffer(buffer, completionHandler: nil)
-        node.play()
+        node.scheduleBuffer(buffer, at: nil, options: .interrupts, completionHandler: nil)
     }
 
     func silence() {

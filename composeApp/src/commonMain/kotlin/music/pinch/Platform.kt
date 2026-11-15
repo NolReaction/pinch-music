@@ -24,10 +24,13 @@ interface GameMedia {
     /** A bundled accompaniment begins at chart time zero, including the count-in. */
     fun prepare(pitches: Set<Int>, backingAsset: String?)
     fun setBackingVolume(volume: Float)
+    fun uptimeMs(): Long
     fun snapshot(): Playback
     fun play()
     fun pause()
     fun note(midi: Int, gain: Float)
+    /** A short, unpitched attack layered on a fully recorded melody. */
+    fun strike(gain: Float)
     fun close()
     var onInterrupted: (() -> Unit)?
 }

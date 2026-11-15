@@ -9,295 +9,450 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Canvas as BitmapCanvas
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.CanvasDrawScope
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import kotlin.math.PI
-import kotlin.math.abs
+import kotlin.math.atan2
 import kotlin.math.ceil
 import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sin
+import kotlin.math.sqrt
 import music.pinch.core.Chart
 import music.pinch.resources.Res
 import music.pinch.resources.studio_marble
 import org.jetbrains.compose.resources.imageResource
 
-private val WallLight = Color(0xffdbd3e4)
-private val WallMid = Color(0xffa0a9c6)
-private val WallBase = Color(0xff757f9e)
-private val Gunmetal = Color(0xff303948)
-private val Steel = Color(0xff78879b)
-private val Chrome = Color(0xffe0e9ef)
-private val Teal = Color(0xff6da8a7)
-private val Inlay = Color(0xffcea9ff)
-private val Flash = Color(0xffffebce)
-private const val WallZ = -1.55f
+private const val WallZ = -1.06f
+private const val WireRadius = .018f
+private const val WireSpacing = .092f
+private const val Corners = 16
+private const val Levels = 4
+private const val LightSteps = 12
+private const val ShadeSteps = 12
+private const val VisibleLimit = 49
+private const val AtlasColumns = 6
+private const val AtlasRows = 4
 
-private class StageLens(size: Size, target: StagePoint) {
-    private val origin = Offset(size.width * .5f, size.height * .40f)
-    private val aim = StagePoint(target.x * .23f, target.y - .13f, .35f)
-    private val focal = min(size.width / 6.65f, size.height / 8.1f)
+private val BlackNickel = Color(0xff222332)
+private val Steel = Color(0xff68697b)
+private val Silver = Color(0xffc3c6d1)
+private val PinLight = Color(0xfff6eadb)
+private val PinShade = Color(0xff242231)
+private val WallShadow = Color(0xff171b2c)
+private val ShadowFeather = Brush.radialGradient(listOf(
+    WallShadow.copy(alpha=.39f), WallShadow.copy(alpha=.23f), WallShadow.copy(alpha=.06f),
+    WallShadow.copy(alpha=0f)
+), Offset.Zero, 1f)
 
-    fun depth(p: StagePoint) = .222f * (p.x - aim.x) - .390f * (p.y - aim.y) + .894f * (p.z - aim.z)
-    fun scale(p: StagePoint) = focal * 18f / max(4f, 18f - depth(p))
+private class Camera(size: Size, target: StagePoint) {
+    private val ox = size.width * .50f
+    private val oy = size.height * .468f
+    private val focus = min(size.width / 4.83f, size.height / 5.95f)
+    private val x = target.x
+    private val y = target.y
+    private val z = target.z
+    fun depth(p: StagePoint) = .238f*(p.x-x) - .402f*(p.y-y) + .884f*(p.z-z)
+    fun unit(p: StagePoint) = focus * 19f / max(6f, 19f - depth(p))
     fun project(p: StagePoint): Offset {
-        val x = p.x - aim.x
-        val y = p.y - aim.y
-        val z = p.z - aim.z
-        return origin + Offset(.9705f * x - .241f * z, .094f * x + .9208f * y + .379f * z) * scale(p)
+        val dx = p.x-x
+        val dy = p.y-y
+        val dz = p.z-z
+        val u = unit(p)
+        return Offset(ox + (.966f*dx - .260f*dz)*u, oy + (.105f*dx + .916f*dy + .388f*dz)*u)
     }
 }
 
-private fun outline(points: List<Offset>, closeShape: Boolean = true): Path = Path().apply {
-    moveTo(points.first().x, points.first().y)
-    for (i in 1 until points.size) lineTo(points[i].x, points[i].y)
-    if (closeShape) close()
-}
-
-private fun circle(n: Int, point: (Float, Float) -> StagePoint) = List(n) { i ->
-    val a = (2 * PI * i / n).toFloat()
-    point(cos(a), sin(a))
-}
-
-private fun shadowOnWall(p: StagePoint): StagePoint {
-    val d = p.z - WallZ
-    return StagePoint(p.x + .22f * d, p.y + .25f * d, WallZ)
-}
-
-private class PanelMesh(val key: StageKey) {
-    private val width = when (key.panel) {
-        PanelType.Gate -> .67f
-        PanelType.Tongue -> .83f
-        PanelType.Drum -> .56f
+/** Fixed material tables keep lighting transitions cheap even on dense runs of short notes. */
+private class Finish(val tint: Color) {
+    val tops = Array(LightSteps+1) { i -> lerp(Color(0xff242535), tint, i / LightSteps.toFloat()) }
+    val bevels = Array(LightSteps+1) { i -> lerp(Color(0xff696979), lerp(tint, PinLight, .33f), i / LightSteps.toFloat()) }
+    val faces = Array(LightSteps+1) { i ->
+        lerp(Color(0xff141622), lerp(tint, Color.Black, .42f), i / LightSteps.toFloat())
     }
-    private val depth = when (key.panel) {
-        PanelType.Gate -> .30f
-        PanelType.Tongue -> .46f
-        PanelType.Drum -> .52f
-    }
-    val thickness = if (key.panel == PanelType.Drum) .23f else .115f
-    val top = circle(24) { c, s ->
-        fun shoulder(v: Float) = abs(v).pow(.63f) * if (v < 0) -1f else 1f
-        when (key.panel) {
-            PanelType.Drum -> key.point(width * c, 0f, depth * s)
-            PanelType.Tongue -> key.point(width * shoulder(c) * (1f - .15f * s), 0f, depth * s)
-            PanelType.Gate -> key.point(width * shoulder(c), 0f, depth * shoulder(s))
+    // Indexed by [light][edge normal][bevel/body/bottom]. Building these tables once
+    // also avoids repeated colour-space conversions in the polygon draw loop.
+    val sides = Array((LightSteps+1)*(ShadeSteps+1)*3) { i ->
+        val light = i / (3*(ShadeSteps+1))
+        val shade = (i / 3 % (ShadeSteps+1)) / ShadeSteps.toFloat()
+        when (i%3) {
+            0 -> lerp(faces[light], bevels[light], .32f+.64f*shade)
+            1 -> lerp(Color(0xff080c14), faces[light], shade)
+            else -> lerp(BlackNickel, faces[light], .52f*shade)
         }
     }
-    val bottom = top.map { it + StagePoint(0f, thickness, 0f) }
-    val shadow = top.map(::shadowOnWall)
-    val mounts = listOf(-width * .69f, width * .69f).map { x ->
-        val start = key.point(x, thickness * .82f, -.10f)
-        listOf(start, start + StagePoint(0f, .20f, -.15f), StagePoint(start.x, start.y + .32f, WallZ + .045f))
+    val emission = Brush.radialGradient(listOf(tint.copy(alpha=.36f), tint.copy(alpha=.16f), tint.copy(alpha=0f)), Offset.Zero, 1f)
+}
+
+private val Gold = Finish(Color(0xffffc139))
+private val Accents = arrayOf(
+    Finish(Color(0xfffa738a)), Finish(Color(0xffff8b5c)), Finish(Color(0xffbba6fa)),
+    Finish(Color(0xff78c7e7)), Finish(Color(0xffe58bb6))
+)
+
+private class Room(size: Size) {
+    // The wall has no fine detail. Bake its stationary light, fill and vignette
+    // at a bounded resolution; the live camera still projects all moving shadows.
+    private val downsample = min(1f, 420f / size.maxDimension)
+    private val width = max(1, (size.width * downsample).roundToInt())
+    private val height = max(1, (size.height * downsample).roundToInt())
+    val background = ImageBitmap(width, height).also { image ->
+        val viewport = Size(width.toFloat(), height.toFloat())
+        CanvasDrawScope().draw(Density(1f), LayoutDirection.Ltr, BitmapCanvas(image), viewport) {
+            drawRect(Brush.linearGradient(
+                listOf(Color(0xff252c42), Color(0xff454a60), Color(0xff686071), Color(0xff414656)),
+                Offset(viewport.width*.05f, 0f), Offset(viewport.width*.92f, viewport.height)
+            ))
+            drawRect(Brush.radialGradient(
+                listOf(Color(0x38627b9d), Color(0x18576d90), Color(0x00576d90)),
+                Offset(viewport.width*.09f, viewport.height*.24f), viewport.maxDimension*.68f
+            ))
+            drawRect(Brush.radialGradient(
+                listOf(Color.Transparent, Color(0x00202637), Color(0x4b11182a)),
+                Offset(viewport.width*.48f, viewport.height*.47f), viewport.maxDimension*.66f
+            ))
+        }
+        image.prepareToDraw()
     }
-    val rivets = listOf(-width * .73f, width * .73f).map { key.point(it, 0f, -.10f) }
+    val sheen = Brush.linearGradient(
+        listOf(Color(0x237d899b), Color(0x035a6277), Color(0x137a6e80), Color.Transparent),
+        Offset(0f, size.height*.26f), Offset(size.width, size.height*.49f)
+    )
 }
 
-private class RailMesh(val run: CourseRun) {
-    val stations = if (run.railEnd == 0f || run.durationMs <= 0) emptyList() else {
-        val count = ceil(run.durationMs * run.railEnd / 125f).toInt().coerceIn(2, 512)
-        (0..count).map { run.point(it * run.railEnd / count) }
+private fun shadow(p: StagePoint): StagePoint {
+    val distance = p.z - WallZ
+    return StagePoint(p.x + distance*.17f, p.y + distance*.20f, WallZ)
+}
+
+/** Four rounded contours form a continuous top chamfer, piano-black body and underside. */
+private class Bar(val key: StageKey, index: Int) {
+    val finish = if (key.playable) Gold else Accents[(index / 12 + key.midi / 5) % Accents.size]
+    private val length = key.halfLength
+    private val width = key.halfWidth
+    val thickness = min(.18f, width*1.45f)
+    private val chamfer = min(.045f, width*.30f)
+    private val ringHeight = floatArrayOf(0f, chamfer*.68f, thickness-chamfer*.7f, thickness)
+    private val ringInset = floatArrayOf(chamfer, 0f, 0f, chamfer*.65f)
+    private val sinCorner = FloatArray(Corners) { sin(cornerAngle(it)) }
+    private val cosCorner = FloatArray(Corners) { cos(cornerAngle(it)) }
+    private fun cornerAngle(i: Int) = (i/4 - 1 + (i%4)/3f) * (PI/2).toFloat()
+    val mesh = Array(Levels*Corners) { n ->
+        val level = n/Corners
+        val i = n%Corners
+        val halfX = length - ringInset[level]
+        val halfZ = width - ringInset[level]
+        val radius = min(halfZ*.40f, .075f)
+        val sx = if (i/4 == 0 || i/4 == 1) 1 else -1
+        val sz = if (i/4 == 1 || i/4 == 2) 1 else -1
+        key.point(sx*(halfX-radius) + radius*cosCorner[i], ringHeight[level],
+            sz*(halfZ-radius) + radius*sinCorner[i])
     }
+    val shading = IntArray(Corners) { i ->
+        val a = mesh[i+Corners]
+        val b = mesh[(i+1)%Corners+Corners]
+        val dx = b.x-a.x
+        val dz = b.z-a.z
+        ((.49f + (.44f*dx + .21f*dz) / max(.0001f, kotlin.math.sqrt(dx*dx+dz*dz))).coerceIn(.1f, .94f)*ShadeSteps).roundToInt()
+    }
+    val shadowLeft = shadow(key.point(-length, thickness*.55f, 0f))
+    val shadowRight = shadow(key.point(length, thickness*.55f, 0f))
+    val shadowPenumbra = .13f + (key.center.z-WallZ)*.077f
+    val pins = arrayOf(key.point(-length*.61f, -.010f, 0f), key.point(length*.61f, -.010f, 0f))
+    val mountSpacing = length*.43f
+    val stemLength = .09f + (index%4)*.025f
+    val anchors = arrayOf(key.point(-mountSpacing, thickness-.01f, 0f), key.point(mountSpacing, thickness-.01f, 0f))
+    val lower = Array(2) { n -> anchors[n] + StagePoint(0f,stemLength,-.055f) }
+    val socket = shadow(key.point(0f,thickness-.02f,0f))
+    val join = key.point(0f,thickness+stemLength,-.055f)
+    val knee = StagePoint(join.x, join.y+.035f, max(WallZ+.055f,join.z-.28f))
+    val incomingA = key.point(-length*.76f, chamfer*.7f, width)
+    val incomingB = key.point(length*.76f, chamfer*.7f, width)
+    // Wall braces belong to the rear lane. A brace across the front lane
+    // would cross the path of the descending ball on the opposite turn.
+    val wallBracket = index%5 == 1 && key.center.z <= .80f
+    val bridge = index%3 != 1 || wallBracket
 }
 
-private fun DrawScope.glow(p: Offset, radius: Float, tint: Color) {
-    drawCircle(Brush.radialGradient(listOf(tint, tint.copy(alpha = 0f)), p, radius), radius, p)
+private class Rail(run: CourseRun) {
+    val stations = if (run.railEnd<=0f || run.durationMs<=0L) emptyArray() else {
+        val samples = ceil(run.durationMs*run.railEnd/85f).toInt().coerceIn(3, 240)
+        Array(samples+1) { i -> run.point(run.railEnd*i/samples) }
+    }
+    // Twin cylindrical wires are tangent to the sphere on either side of its
+    // lowest point; their orientations follow the rail on banked curves.
+    private val height = MarbleRadius - sqrt((MarbleRadius+WireRadius)*(MarbleRadius+WireRadius) - WireSpacing*WireSpacing)
+    private val normals = Array(stations.size) { i -> run.railNormal(run.railEnd*i/stations.lastIndex) }
+    private val offset = Array(stations.size) { i ->
+        val along = stations[min(stations.lastIndex,i+1)] - stations[max(0,i-1)]
+        normals[i].cross(along).unit() * WireSpacing
+    }
+    val left = Array(stations.size) { i -> stations[i] + normals[i]*height - offset[i] }
+    val right = Array(stations.size) { i -> stations[i] + normals[i]*height + offset[i] }
 }
 
-/** Wall joinery stays in world coordinates so the eye can read the continuous descent. */
-private fun DrawScope.drawWall(lens: StageLens, target: StagePoint) {
-    drawRect(Brush.linearGradient(listOf(WallLight, WallMid, WallBase),
-        Offset(size.width * .08f, 0f), Offset(size.width * .92f, size.height)))
-    glow(Offset(size.width * .2f, size.height * .25f), size.maxDimension * .63f, Color(0x5cf6e7ef))
-    val courseLevel = floor(target.y / 5f).toInt()
-    for (level in courseLevel - 2..courseLevel + 2) {
-        val y = level * 5f
-        val a = lens.project(StagePoint(-6f, y, WallZ))
-        val b = lens.project(StagePoint(6f, y, WallZ))
-        drawLine(Color(0x1a41506c), a, b, 1f)
-        for (x in listOf(-2.84f, 2.84f)) {
-            val bolt = StagePoint(x, y + .18f, WallZ)
-            val p = lens.project(bolt)
-            val r = lens.scale(bolt) * .041f
-            drawCircle(Color(0x54515e77), r, p)
-            drawCircle(Color(0x94e4e7ed), r * .44f, p - Offset(r * .25f, r * .35f))
+internal class MarbleScene(chart: Chart, private val marbleAtlas: ImageBitmap) {
+    private val path = MarblePath(chart)
+    private val bars = Array(path.keys.size) { i -> Bar(path.keys[i], i) }
+    private val rails = path.spans.map(::Rail)
+    private val outline = Path()
+    private val projectedX = FloatArray(Levels*Corners)
+    private val projectedY = FloatArray(Levels*Corners)
+    private val sorted = IntArray(VisibleLimit)
+    private val depths = FloatArray(VisibleLimit)
+    private var roomSize = Size.Zero
+    private var room: Room? = null
+
+    private fun DrawScope.halo(p: Offset, radius: Float, brush: Brush, strength: Float) {
+        if (radius<1f || strength<=.01f) return
+        translate(p.x, p.y) {
+            scale(radius, radius*.82f, Offset.Zero) { drawCircle(brush, 1f, Offset.Zero, alpha=strength) }
         }
     }
-}
 
-private fun DrawScope.drawRail(mesh: RailMesh, lens: StageLens, targetY: Float) {
-    // A long instrumental rest can span many bars. Only project the visible part of its track.
-    val stations = mesh.stations.filter { abs(it.y - targetY) < 11f }
-    if (stations.size < 2) return
-    val unit = lens.scale(stations[stations.size / 2])
-    val width = .265f
-    fun edge(sign: Float, y: Float, z: Float) = stations.map {
-        lens.project(it + StagePoint(sign * width, y, z))
-    }
-    val left = edge(-1f, 0f, .035f)
-    val right = edge(1f, 0f, -.035f)
-    val bed = outline(left + right.asReversed())
-    val shade = stations.map { lens.project(shadowOnWall(it)) }
-    drawPath(outline(shade, false), Color(0x2449576b), style = Stroke(unit * .29f))
-    val sill = edge(1f, .072f, -.035f)
-    drawPath(outline(right + sill.asReversed()), Steel)
-    drawPath(bed, Color(0xff455261))
-    val inner = stations.map { lens.project(it + StagePoint(0f, .006f, 0f)) }
-    drawPath(outline(inner, false), if (mesh.run.type == RunType.Bank) Teal else Gunmetal, style = Stroke(unit * .115f))
-    // Brushed cross-ties visibly divide a long slope into lengths as the ball rolls past.
-    for (station in mesh.stations.indices step 4) {
-        if (station == 0 || station == mesh.stations.lastIndex) continue
-        val joint = mesh.stations[station]
-        if (abs(joint.y - targetY) >= 11f) continue
-        val a = lens.project(joint + StagePoint(-width, .018f, .035f))
-        val b = lens.project(joint + StagePoint(width, .018f, -.035f))
-        drawLine(Gunmetal, a, b, unit * .044f)
-        drawLine(Chrome.copy(alpha = .72f), a, b, unit * .012f)
-        if (station % 12 == 0) {
-            val bolt = lens.project(StagePoint(joint.x + .24f, joint.y + .19f, WallZ))
-            drawLine(Steel, bolt, b, unit * .035f)
-            drawCircle(Steel, unit * .065f, bolt)
-            drawCircle(Chrome, unit * .024f, bolt)
+    private fun DrawScope.barShadow(bar: Bar, camera: Camera) {
+        val l = camera.project(bar.shadowLeft)
+        val r = camera.project(bar.shadowRight)
+        val length = r-l
+        val center = (l+r)*.5f
+        val u = camera.unit(bar.join)
+        val blur = u*bar.shadowPenumbra
+        val major = .5f*length.getDistance() + blur
+        val minor = u*.11f + blur
+        translate(center.x, center.y) {
+            rotate(atan2(length.y,length.x)*57.29578f, Offset.Zero) {
+                scale(major,minor,Offset.Zero) { drawCircle(ShadowFeather, 1f, Offset.Zero) }
+            }
+        }
+        for (i in bar.anchors.indices) {
+            val a = camera.project(bar.anchors[i])
+            val b = camera.project(bar.lower[i])
+            drawLine(BlackNickel, a,b, u*.041f, StrokeCap.Round)
+            drawLine(Silver, a-Offset(u*.009f,0f), b-Offset(u*.009f,0f), u*.010f)
+        }
+        if (bar.bridge) {
+            val a = camera.project(bar.lower[0])
+            val b = camera.project(bar.lower[1])
+            drawLine(BlackNickel,a,b,u*.030f,StrokeCap.Round)
+            drawLine(Steel, a-Offset(0f,.008f*u), b-Offset(0f,.008f*u), u*.012f)
+        }
+        if (bar.wallBracket) {
+            val s = camera.project(bar.socket)
+            val elbow = camera.project(bar.knee)
+            val join = camera.project(bar.join)
+            drawCircle(Steel, u*.040f, s)
+            drawCircle(PinLight.copy(alpha=.52f), u*.015f, s-Offset(.009f*u,.009f*u))
+            drawLine(Steel, s,elbow, u*.023f, StrokeCap.Round)
+            drawLine(BlackNickel, elbow,join, u*.037f, StrokeCap.Round)
+            drawLine(Steel, elbow-Offset(0f,u*.009f), join-Offset(0f,u*.009f), u*.012f)
         }
     }
-    for (edge in listOf(left, right)) {
-        val path = outline(edge, false)
-        drawPath(path, Gunmetal, style = Stroke(unit * .088f))
-        drawPath(path, Steel, style = Stroke(unit * .054f))
-        drawPath(path, Chrome, style = Stroke(unit * .019f))
-    }
-    if (mesh.run.type == RunType.Drop) {
-        val last = mesh.stations.last()
-        if (abs(last.y - targetY) < 10f) {
-            drawLine(Chrome, left.last(), right.last(), unit * .054f, StrokeCap.Round)
+
+    private fun DrawScope.rail(rail: Rail, camera: Camera) {
+        if (rail.stations.isEmpty()) return
+        val u = camera.unit(rail.stations[rail.stations.size/2])
+        for (side in 0..1) {
+            val points = if (side==0) rail.left else rail.right
+            outline.reset()
+            var started = false
+            for (point in points) {
+                val p = camera.project(point)
+                if (p.y < -u*2 || p.y > size.height+u*2) {
+                    started = false
+                } else {
+                    if (started) outline.lineTo(p.x,p.y) else outline.moveTo(p.x,p.y)
+                    started = true
+                }
+            }
+            drawPath(outline, BlackNickel, style=Stroke(u*(2*WireRadius)))
+            drawPath(outline, Silver.copy(alpha=.64f), style=Stroke(u*.013f))
+        }
+        for (i in 3 until rail.stations.lastIndex step 8) {
+            val p = camera.project(rail.left[i])
+            if (p.y in 0f..size.height) drawLine(Steel,p,camera.project(rail.right[i]),u*.023f)
         }
     }
-}
 
-private fun DrawScope.drawMounts(mesh: PanelMesh, lens: StageLens) {
-    val unit = lens.scale(mesh.key.center)
-    for (rod in mesh.mounts) {
-        val socket = lens.project(rod.last())
-        val r = .078f * unit
-        drawCircle(Steel, r, socket)
-        drawCircle(Chrome, r * .56f, socket - Offset(r * .16f, r * .22f))
-        val shaft = outline(rod.map(lens::project), false)
-        drawPath(shaft, Gunmetal, style = Stroke(unit * .059f))
-        drawPath(shaft, Steel, style = Stroke(unit * .037f))
-        drawPath(shaft, Chrome.copy(alpha = .68f), style = Stroke(unit * .013f))
-    }
-}
+    private fun DrawScope.bar(bar: Bar, camera: Camera, light: Float, incoming: Float, marble: StagePoint) {
+        val unit = camera.unit(bar.key.center)
+        for (n in projectedX.indices) {
+            val point = camera.project(bar.mesh[n])
+            projectedX[n] = point.x
+            projectedY[n] = point.y
+        }
+        val step = (light * LightSteps).roundToInt().coerceIn(0, LightSteps)
+        val finish = bar.finish
+        val shadeBase = step*(ShadeSteps+1)
+        for (level in Levels-2 downTo 0) {
+            val a = level*Corners
+            val b = a+Corners
+            for (i in 0 until Corners) {
+                val j = (i+1)%Corners
+                val px = projectedX[a+i]
+                val py = projectedY[a+i]
+                val qx = projectedX[a+j]
+                val qy = projectedY[a+j]
+                val ux = projectedX[b+i]
+                val uy = projectedY[b+i]
+                if ((qx-px)*(uy-py) - (qy-py)*(ux-px) >= 0f) continue
+                outline.reset()
+                outline.moveTo(px, py)
+                outline.lineTo(qx, qy)
+                outline.lineTo(projectedX[b+j], projectedY[b+j])
+                outline.lineTo(ux, uy)
+                outline.close()
+                drawPath(outline, finish.sides[(shadeBase + bar.shading[i])*3 + level])
+            }
+        }
+        // A steeply banked key can rise above the camera. Hide its rivets when
+        // the underside is visible instead of painting the top over the sides.
+        val front = (projectedX[4]-projectedX[0])*(projectedY[12]-projectedY[0]) -
+            (projectedY[4]-projectedY[0])*(projectedX[12]-projectedX[0]) > 0f
+        val start = if (front) 0 else (Levels-1)*Corners
+        outline.reset()
+        outline.moveTo(projectedX[start], projectedY[start])
+        for (i in 1 until Corners) outline.lineTo(projectedX[start+i], projectedY[start+i])
+        outline.close()
+        if (!front) {
+            drawPath(outline, finish.faces[step])
+            return
+        }
+        drawPath(outline, finish.tops[step])
+        room?.let { drawPath(outline, it.sheen) }
 
-private fun DrawScope.drawPanel(mesh: PanelMesh, lens: StageLens, incoming: Float, strike: Float) {
-    val key = mesh.key
-    val p = lens.project(key.center)
-    val unit = lens.scale(key.center)
-    val top = mesh.top.map(lens::project)
-    val base = mesh.bottom.map(lens::project)
-    val body = when (key.panel) {
-        PanelType.Gate -> Color(0xff435e67)
-        PanelType.Tongue -> Color(0xff504d68)
-        PanelType.Drum -> Color(0xff97695d)
-    }
-    val energy = max(incoming * .60f, strike)
-    if (energy > .02f) glow(p, unit * 1.04f, Inlay.copy(alpha = .35f * energy))
-    drawPath(outline(base), Gunmetal)
-    // The filled sides share a silhouette with the top even at oblique camera angles.
-    for (i in top.indices) {
-        val j = (i + 1) % top.size
-        if (top[j].x < top[i].x) {
-            drawPath(outline(listOf(top[i], top[j], base[j], base[i])), lerp(body, Gunmetal, .45f))
+        val normal = bar.key.normal
+        val relative = marble-bar.key.center
+        val height = relative.x*normal.x + relative.y*normal.y + relative.z*normal.z
+        if (height in MarbleRadius-.012f..MarbleRadius+.48f &&
+            relative.x*relative.x+relative.y*relative.y+relative.z*relative.z < 1.1f) {
+            val foot = camera.project(marble - normal*height)
+            val gap = max(0f, height-MarbleRadius)
+            val spot = unit*(MarbleRadius*.73f + gap*.26f)
+            // The contact darkening only falls on the upper surface that receives it.
+            clipPath(outline) {
+                drawOval(WallShadow,foot-Offset(spot,spot*.32f),Size(spot*2,spot*.64f),
+                    alpha=.48f*(1-gap/.48f))
+            }
+        }
+        // A quiet brass edge identifies the next manual accent among the automatic keys.
+        if (incoming>.01f) drawLine(Gold.tint.copy(alpha=.45f+.5f*incoming),
+            camera.project(bar.incomingA), camera.project(bar.incomingB), unit*(.012f+.014f*incoming), StrokeCap.Round)
+        val radius = unit*.032f
+        for (pin in bar.pins) {
+            val p = camera.project(pin)
+            drawOval(PinShade, p-Offset(radius,.16f*radius), Size(2.1f*radius,1.2f*radius))
+            drawOval(Steel, p-Offset(radius,.68f*radius), Size(2f*radius,1.23f*radius))
+            drawOval(PinLight, p-Offset(radius*.57f,radius*.71f), Size(radius*.93f,radius*.43f))
         }
     }
-    val face = outline(top)
-    drawPath(face, Brush.linearGradient(listOf(lerp(body, Inlay, energy * .73f), lerp(Gunmetal, body, .74f)),
-        p - Offset(unit * .6f, unit * .2f), p + Offset(unit * .6f, unit * .2f)))
-    drawPath(face, lerp(Steel, Flash, energy), style = Stroke(unit * .025f))
-    if (energy > .02f) {
-        val a = lens.project(key.point(-.29f, mesh.thickness * .58f, .30f))
-        val b = lens.project(key.point(.29f, mesh.thickness * .58f, .30f))
-        drawLine(lerp(Inlay, Flash, strike).copy(alpha = .30f + energy * .70f), a, b, unit * .025f, StrokeCap.Round)
+
+    private fun DrawScope.marble(camera: Camera, frame: MarbleFrame) {
+        val p = camera.project(frame.marble)
+        val unit = camera.unit(frame.marble)
+        val radius = unit*MarbleRadius
+        val turns = frame.rollAngle/(2*PI.toFloat())
+        val tile = floor((turns-floor(turns))*(AtlasRows*AtlasColumns)).toInt().coerceIn(0,AtlasRows*AtlasColumns-1)
+        val w = marbleAtlas.width/AtlasColumns
+        val h = marbleAtlas.height/AtlasRows
+        val diameter = max(1,(2f*radius).roundToInt())
+        drawImage(marbleAtlas,srcOffset=IntOffset((tile%AtlasColumns)*w,(tile/AtlasColumns)*h),
+            srcSize=IntSize(w,h),dstOffset=IntOffset((p.x-radius).roundToInt(),(p.y-radius).roundToInt()),
+            dstSize=IntSize(diameter,diameter))
     }
-    for (rivet in mesh.rivets) {
-        val r = lens.project(rivet)
-        drawOval(Gunmetal, r - Offset(.046f, .021f) * unit, Size(unit * .092f, unit * .042f))
-        drawLine(Chrome, r - Offset(unit * .023f, unit * .006f), r + Offset(unit * .014f, 0f), unit * .011f)
-    }
-    // The fixed bullseye marks a playable contact. Cool, parallel rails carry the marble automatically.
-    fun ring(radius: Float) = outline(circle(24) { c, s -> key.point(c * radius, -.007f, s * radius) }.map(lens::project))
-    val bullseye = ring(.205f)
-    drawPath(bullseye, Gunmetal)
-    drawPath(bullseye, lerp(Inlay.copy(alpha = .76f), Flash, energy), style = Stroke(unit * .032f))
-    drawPath(ring(.073f), lerp(Inlay, Flash, energy))
-    if (incoming > 0f) {
-        drawPath(ring(.22f + (1f - incoming) * .26f), Inlay.copy(alpha = .45f + incoming * .5f),
-            style = Stroke(unit * .025f))
-    }
-    if (strike > 0f) {
-        drawPath(ring(.22f + (1f - strike) * .35f), Flash.copy(alpha = strike), style = Stroke(unit * .039f))
+
+    fun DrawScope.draw(timeMs: Long) {
+        if (size.minDimension<1f) return
+        if (roomSize!=size) {
+            roomSize=size
+            room=Room(size)
+        }
+        val settings = room ?: return
+        drawImage(settings.background, dstSize=IntSize(size.width.roundToInt(),size.height.roundToInt()))
+        val frame = path.frame(timeMs)
+        val camera = Camera(size,frame.target)
+        val start = max(0,frame.anchor-VisibleLimit/2)
+        val end = min(bars.lastIndex,frame.anchor+VisibleLimit/2)
+        var count = 0
+        var nextManual = -1
+        for (i in start..end) {
+            val bar=bars[i]
+            val p=camera.project(bar.key.center)
+            val pad=camera.unit(bar.key.center)*1.6f
+            if (p.x < -pad || p.x > size.width+pad || p.y < -pad || p.y > size.height+pad) continue
+            if (nextManual<0 && i>frame.anchor && bar.key.playable) nextManual=i
+            val depth=camera.depth(bar.key.center)
+            var n=count
+            while (n>0 && depths[n-1]>depth) {
+                depths[n]=depths[n-1]
+                sorted[n]=sorted[n-1]
+                n--
+            }
+            depths[n]=depth
+            sorted[n]=i
+            count++
+        }
+        for (n in 0 until count) {
+            val bar=bars[sorted[n]]
+            barShadow(bar,camera)
+            val age=timeMs-bar.key.atMs
+            if (age in 0..290) {
+                val t=1f-age/290f
+                halo(camera.project(shadow(bar.key.center)), camera.unit(bar.key.center)*1.74f,
+                    bar.finish.emission,t*t)
+            }
+        }
+        val wallContact = camera.project(shadow(frame.marble))
+        val wallR = camera.unit(frame.marble)*MarbleRadius*1.58f
+        translate(wallContact.x,wallContact.y) {
+            scale(wallR,wallR*.88f,Offset.Zero) { drawCircle(ShadowFeather,1f,Offset.Zero) }
+        }
+        for (i in max(0,start)..min(rails.lastIndex,end+1)) rail(rails[i],camera)
+        val marbleDepth=camera.depth(frame.marble)
+        var marbleDrawn=false
+        for (n in 0 until count) {
+            val i=sorted[n]
+            val bar=bars[i]
+            if (!marbleDrawn && depths[n]>marbleDepth+.13f && i!=frame.anchor) {
+                marble(camera,frame)
+                marbleDrawn=true
+            }
+            val age=timeMs-bar.key.atMs
+            val light=if (age in 0..270) {
+                val phase=1f-age/270f
+                phase*phase
+            } else 0f
+            val incoming=if (i==nextManual && age in -650..-1) (1f+age/650f) else 0f
+            bar(bar,camera,light,incoming,frame.marble)
+        }
+        if (!marbleDrawn) marble(camera,frame)
     }
 }
 
 @Composable
+fun MarbleStage(chart: Chart, positionMs: () -> Long, modifier: Modifier = Modifier) {
+    val atlas = imageResource(Res.drawable.studio_marble)
+    val scene = remember(chart, atlas) { MarbleScene(chart,atlas) }
+    Canvas(modifier.clipToBounds()) { with(scene) { draw(positionMs()) } }
+}
+
+@Composable
 fun MarbleStage(chart: Chart, positionMs: Long, modifier: Modifier = Modifier) {
-    val path = remember(chart) { MarblePath(chart) }
-    val panels = remember(path) { path.keys.map(::PanelMesh) }
-    val rails = remember(path) { path.spans.map(::RailMesh) }
-    val marble = imageResource(Res.drawable.studio_marble)
-    Canvas(modifier.clipToBounds()) {
-        if (size.minDimension <= 1f) return@Canvas
-        val frame = path.frame(positionMs)
-        val lens = StageLens(size, frame.target)
-        drawWall(lens, frame.target)
-        val horizon = (frame.anchor - 13).coerceAtLeast(0)..(frame.anchor + 16).coerceAtMost(panels.lastIndex)
-        val visible = horizon.filter {
-            val sy = lens.project(panels[it].key.center).y
-            sy > -size.height * .14f && sy < size.height * 1.14f
-        }
-        for (i in visible) {
-            val mesh = panels[i]
-            val shade = outline(mesh.shadow.map(lens::project))
-            val unit = lens.scale(mesh.key.center)
-            drawPath(shade, Color(0x17435167), style = Stroke(unit * .12f))
-            drawPath(shade, Color(0x26435167))
-            drawMounts(mesh, lens)
-        }
-        val radius = lens.scale(frame.marble) * MarbleRadius
-        glow(lens.project(shadowOnWall(frame.marble)), radius * 1.38f, Color(0x60515a73))
-        val currentSpan = frame.anchor + 1
-        val railRange = (currentSpan - 14).coerceAtLeast(0)..(currentSpan + 16).coerceAtMost(rails.lastIndex)
-        for (i in railRange.reversed()) drawRail(rails[i], lens, frame.target.y)
-        for (i in visible.sortedBy { lens.depth(panels[it].key.center) }) {
-            val mesh = panels[i]
-            val elapsed = positionMs - mesh.key.atMs
-            val strike = if (elapsed in 0..260L) 1f - elapsed / 260f else 0f
-            val incoming = if (frame.next == i) .20f + .80f * (1f + elapsed / 920f).coerceIn(0f, 1f) else 0f
-            drawPanel(mesh, lens, incoming, strike)
-        }
-        val center = lens.project(frame.marble)
-        // On a rail the contact shadow is tight. It opens out across a drop or a rebound.
-        val foot = lens.project(frame.marble + StagePoint(0f, MarbleRadius + frame.lift, 0f))
-        val shadowWidth = radius * (.64f + min(frame.lift, .6f) * .5f)
-        drawOval(Gunmetal.copy(alpha = .29f / (1f + 4f * frame.lift)),
-            foot - Offset(shadowWidth, shadowWidth * .23f), Size(2 * shadowWidth, shadowWidth * .46f))
-        val diameter = max(1, (2f * radius).roundToInt())
-        drawImage(marble, dstOffset = IntOffset((center.x-radius).roundToInt(), (center.y-radius).roundToInt()),
-            dstSize = IntSize(diameter, diameter))
-        // A small brass registration mark rolls with the shell while the environment reflection stays fixed.
-        val front = cos(frame.rollAngle)
-        if (front > 0f) {
-            val mark = center + Offset(sin(frame.rollAngle) * radius * .79f, radius * .27f)
-            drawOval(Flash.copy(alpha = .9f), mark - Offset(radius * .07f * front, radius * .055f),
-                Size(radius * .14f * front, radius * .11f))
-        }
-    }
+    MarbleStage(chart,{ positionMs },modifier)
 }

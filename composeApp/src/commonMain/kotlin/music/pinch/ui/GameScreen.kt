@@ -56,18 +56,19 @@ private val AppColors = darkColorScheme(
 )
 
 @Composable
-fun GameScreen(state: ScreenState, actions: Actions) {
+fun GameScreen(state: ScreenState, actions: Actions, positionMs: () -> Long) {
     MaterialTheme(colorScheme = AppColors) {
-        Box(
-            Modifier.fillMaxSize().background(Ink).safeDrawingPadding(),
-            contentAlignment = Alignment.TopCenter
-        ) {
-            Box(Modifier.widthIn(max = 560.dp).fillMaxSize()) {
+        Box(Modifier.fillMaxSize().background(Ink), contentAlignment = Alignment.TopCenter) {
+            val content = when (state.scene) {
+                Scene.Menu, Scene.Error, Scene.Result -> Modifier.safeDrawingPadding().widthIn(max = 560.dp)
+                else -> Modifier
+            }
+            Box(content.fillMaxSize()) {
                 when (state.scene) {
                     Scene.Menu -> Menu(state, actions)
                     Scene.Error -> ErrorScreen(state, actions)
                     Scene.Result -> ResultScreen(state, actions)
-                    else -> PerformanceScreen(state, actions, state.chart)
+                    else -> PerformanceScreen(state, actions, positionMs)
                 }
             }
         }
@@ -105,7 +106,9 @@ private fun Menu(state: ScreenState, actions: Actions) {
                 ActionButton("Играть", onClick = { actions.start(false) }, modifier = Modifier.weight(1.1f), icon = IconShape.Play)
                 ActionButton("Послушать", onClick = { actions.start(true) }, modifier = Modifier.weight(1f), primary = false)
             }
-            Caption("По рельсам шарик катится сам. Коснись экрана, когда он ударит по светящейся метке.")
+            Caption(if (state.backingAsset != null)
+                "Вся мелодия звучит автоматически. Нажимай, когда шарик ударяет по планке с золотой кромкой."
+            else "Коснись экрана, когда шарик ударит по планке с золотой кромкой.")
             val imported = state.selectedSong.id in state.importedIds
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
                 TextButton(onClick = actions::importAudio) {
@@ -174,7 +177,7 @@ private fun TrackCard(state: ScreenState) {
         if (previewChart != null) {
             val pose = previewChart.notes[minOf(4, previewChart.notes.lastIndex)].atMs + 220L
             Box(Modifier.matchParentSize(), contentAlignment = Alignment.CenterEnd) {
-                MarbleStage(previewChart, pose, Modifier.fillMaxWidth(.54f).fillMaxHeight())
+                MarbleStage(previewChart, { pose }, Modifier.fillMaxWidth(.54f).fillMaxHeight())
                 Spacer(Modifier.matchParentSize().background(Brush.horizontalGradient(0f to Surface,
                     .43f to Surface, .74f to Surface.copy(alpha = .6f), 1f to Color.Transparent)))
             }

@@ -6,6 +6,7 @@ data class Note(
     val midi: Int,
     val durationMs: Long,
     val velocity: Float,
+    val playable: Boolean = true,
 )
 
 data class Chart(
@@ -16,7 +17,7 @@ data class Chart(
 ) {
     init {
         require(title.isNotBlank() && bpm > 0 && durationMs > 0) { "Некорректное описание мелодии" }
-        require(notes.isNotEmpty()) { "В мелодии нет нот" }
+        require(notes.any { it.playable }) { "В мелодии нет игровых нот" }
 
         val ids = mutableSetOf<String>()
         var previousOnset = -1L

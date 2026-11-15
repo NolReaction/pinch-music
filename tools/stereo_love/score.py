@@ -4,7 +4,9 @@ Run from any directory with python3 score.py [--check] to update or verify Stere
 A measure has 16 ticks. Phrases describe onset, MIDI pitch and sounding length in ticks.
 """
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from hashlib import sha256
+import json
 from pathlib import Path
 import sys
 
@@ -12,6 +14,7 @@ BPM = 127
 DURATION_MS = 184_000
 ROOT = Path(__file__).resolve().parents[2]
 GRID = ROOT / "composeApp/src/commonMain/kotlin/music/pinch/StereoLove.kt"
+BACKING = ROOT / "media/backing/stereo-love.m4a"
 
 
 @dataclass(frozen=True)
@@ -161,17 +164,22 @@ def lead_attacks():
     return notes
 
 
+def score_tag():
+    """Embed the exact lead performance and tempo signature in the rendered M4A."""
+    score = [BPM, DURATION_MS, [asdict(n) for n in lead_attacks()]]
+    serialized = json.dumps(score, sort_keys=True, separators=(",", ":")).encode()
+    return "pinch-lead-sha256=" + sha256(serialized).hexdigest()
+
+
 def kotlin_source():
     attacks = lead_attacks()
     section_rows = "\n".join(
         f'    {s.bar * 16} to "{s.label}",' for s in FORM
     )
-    bars = []
-    for bar in range(BAR_COUNT):
-        hits = [n for n in attacks if n.panel and n.tick // 16 == bar]
-        if hits:
-            entries = ", ".join(f"Panel({n.tick}, {n.midi})" for n in hits)
-            bars.append(f"    {entries},")
+    rows = []
+    for n in attacks:
+        manual = ", playable = true" if n.panel else ""
+        rows.append(f"    strike({n.tick}, {n.midi}, {float(n.length)}, {n.gain:.2f}f{manual}),")
     return f'''// Generated from tools/stereo_love/score.py. Both the backing and the panels use these ticks.
 package music.pinch
 
@@ -182,7 +190,8 @@ import music.pinch.core.Note
 private const val stereoBpm = {BPM}
 private fun millisAtTick(tick: Int) = (tick * 15_000.0 / stereoBpm).roundToLong()
 
-private data class Panel(val tick: Int, val midi: Int)
+private fun strike(tick: Int, midi: Int, length: Double, gain: Float, playable: Boolean = false) =
+    Note("stereo-$tick", millisAtTick(tick), midi, (length * 15_000.0 / stereoBpm).roundToLong(), gain, playable)
 
 private val stereoSections = listOf(
 {section_rows}
@@ -191,8 +200,8 @@ private val stereoSections = listOf(
 internal fun stereoLoveSectionAt(positionMs: Long): String =
     stereoSections.lastOrNull {{ millisAtTick(it.first) <= positionMs }}?.second ?: stereoSections.first().second
 
-private val stereoPanels = listOf(
-{chr(10).join(bars)}
+private val stereoMelody = listOf(
+{chr(10).join(rows)}
 )
 
 internal val stereoLoveSong = Song(
@@ -203,9 +212,7 @@ internal val stereoLoveSong = Song(
         "Stereo Love",
         stereoBpm,
         {DURATION_MS:_}L,
-        stereoPanels.mapIndexed {{ index, panel ->
-            Note("stereo-$index", millisAtTick(panel.tick), panel.midi, 250, 0.88f)
-        }},
+        stereoMelody,
     ),
     backingAsset = "backing/stereo-love.m4a",
 )
@@ -217,5 +224,7 @@ if __name__ == "__main__":
     if "--check" in sys.argv:
         if GRID.read_text() != generated:
             raise SystemExit("StereoLove.kt and score.py disagree, regenerate the chart.")
+        if score_tag().encode() not in BACKING.read_bytes():
+            raise SystemExit("The backing does not match this score. Run render.py.")
     else:
         GRID.write_text(generated)

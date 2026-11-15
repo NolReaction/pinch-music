@@ -20,7 +20,6 @@ data class ScreenState(
     val notice: String? = null,
     val scene: Scene = Scene.Menu,
     val preview: Boolean = false,
-    val positionMs: Long = 0,
     val stats: GameStats? = null,
     val reaction: String? = null,
     val reactionId: Int = 0,
@@ -35,7 +34,7 @@ data class ScreenState(
     val title: String get() = selectedSong.title
     val bpm: Int get() = chart?.bpm ?: 0
     val durationMs: Long get() = chart?.durationMs ?: 0
-    val lastHitWindowMs: Long get() = (chart?.notes?.lastOrNull()?.atMs ?: 0) + FORGIVING_WINDOW_MS
+    val lastHitWindowMs: Long get() = (chart?.notes?.lastOrNull { it.playable }?.atMs ?: 0) + FORGIVING_WINDOW_MS
 }
 
 interface Actions {

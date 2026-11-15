@@ -95,6 +95,30 @@ class RhythmGameTest {
     }
 
     @Test
+    fun optionalContactsHaveATightWindowAndNeverStealANearerManualAccent() {
+        val intro = first.copy(id = "intro", atMs = 1_400, playable = false)
+        val inner = first.copy(id = "inner", atMs = 2_100, playable = false)
+        val accent = second.copy(atMs = 2_200)
+        val tail = first.copy(id = "tail", atMs = 2_800, playable = false)
+        val mixed = chart.copy(notes = listOf(intro, first, inner, accent, tail))
+        val game = RhythmGame(mixed, forgiving = true)
+        assertEquals(TapResult.Ignored, game.tap(1_344))
+        assertEquals(TapResult.Automatic(intro), game.tap(1_345))
+        assertEquals(TapResult.Ignored, game.tap(1_408))
+        assertEquals(first, assertIs<TapResult.Hit>(game.tap(1_975)).note)
+        assertEquals(TapResult.Automatic(inner), game.tap(2_124))
+        assertEquals(TapResult.Ignored, game.tap(2_126))
+        assertEquals(1, game.stats.combo)
+        assertEquals(accent, assertIs<TapResult.Hit>(game.tap(2_157)).note)
+        assertEquals(TapResult.Automatic(tail), game.tap(2_855))
+        assertEquals(TapResult.Ignored, game.tap(2_856))
+        assertEquals(GameStats(2, perfect = 2, combo = 2, maxCombo = 2), game.finish())
+        game.restart()
+        assertEquals(first, assertIs<TapResult.Hit>(game.tap(2_050)).note)
+        assertEquals(accent, assertIs<TapResult.Hit>(game.tap(2_150)).note)
+    }
+
+    @Test
     fun invalidChartsCannotStart() {
         val badScalars = listOf<() -> Chart>(
             { chart.copy(notes = emptyList()) }, { chart.copy(bpm = 0) }, { chart.copy(title = "") },

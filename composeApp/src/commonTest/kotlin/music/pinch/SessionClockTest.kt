@@ -32,4 +32,20 @@ class SessionClockTest {
             assertTrue(midi - root in -6..7)
         }
     }
+
+    @Test
+    fun displayCoastsOnlyBetweenRepeatedSamplesAndFreezesAtThePredictionLimit() {
+        val clock = DecoderDisplayClock()
+        assertEquals(0L, clock.position(0, 15, 1_000))
+        assertEquals(0L, clock.position(0, 1_000, 1_000))
+        assertEquals(210L, clock.position(210, 1_100, 1_000))
+        assertEquals(226L, clock.position(210, 1_116, 1_000))
+        assertEquals(234L, clock.position(210, 5_100, 1_000))
+        assertEquals(234L, clock.position(222, 5_116, 1_000))
+        assertEquals(240L, clock.position(240, 5_132, 1_000))
+        assertEquals(990L, clock.position(990, 6_000, 1_000))
+        assertEquals(1_000L, clock.position(990, 6_016, 1_000))
+        clock.reset()
+        assertEquals(100L, clock.position(100, 9_000, 1_000))
+    }
 }

@@ -6,12 +6,14 @@ enum class Grade { Perfect, Good, Okay }
 
 sealed interface TapResult {
     data class Hit(val note: Note, val grade: Grade, val errorMs: Long) : TapResult
+    data class Automatic(val note: Note) : TapResult
     data object Stray : TapResult
     data object Ignored : TapResult
 }
 
 private const val WINDOW_MS = 120L
 internal const val FORGIVING_WINDOW_MS = 165L
+private const val AUTOMATIC_WINDOW_MS = 55L
 
 internal fun gradeFor(errorMs: Long): Grade? = when (errorMs) {
     in -45L..45L -> Grade.Perfect
@@ -31,7 +33,7 @@ data class GameStats(
     val maxCombo: Int = 0,
 ) {
     private val qualityTenths get() = 10L * perfect + 7L * good + 4L * okay
-    private val denominator get() = noteCount.toLong() + stray
+    private val denominator get() = (noteCount.toLong() + stray).coerceAtLeast(1)
     val accuracy: Double get() = qualityTenths / (10.0 * denominator)
     val score: Int get() = ((10_000L * qualityTenths + denominator / 2) / denominator).toInt()
 }
@@ -43,7 +45,9 @@ data class GameStats(
  */
 class RhythmGame(chart: Chart, private val forgiving: Boolean = false) {
     private val windowMs = if (forgiving) FORGIVING_WINDOW_MS else WINDOW_MS
-    private val notes = chart.notes.toList()
+    private val notes = chart.notes.filter { it.playable }
+    private val automatic = chart.notes.filterNot { it.playable }.distinctBy { it.atMs }
+    internal val firstTargetMs = notes.firstOrNull()?.atMs
     private val hit = BooleanArray(notes.size)
     private enum class Phase { Playing, Paused, Finished }
 
@@ -51,29 +55,42 @@ class RhythmGame(chart: Chart, private val forgiving: Boolean = false) {
     private var committed = GameStats(notes.size)
     private var nextMissCue = 0
     private var firstUnexpired = 0
+    private var frameEnd = 0
+    private var provisionalMisses = 0
     private var lastTouchMs = -1L
+    private var lastAutomaticMs = -1L
     private var latestMediaMs = 0L
     var stats: GameStats = committed
         private set
 
     fun advance(positionMs: Long): Int {
         if (phase != Phase.Playing || positionMs <= latestMediaMs) return 0
-        val oldMissed = stats.missed
         latestMediaMs = positionMs
-        refreshFrameStats()
-        return stats.missed - oldMissed
+        val end = expiryEnd(positionMs, frameEnd)
+        val misses = countUnhit(frameEnd, end)
+        frameEnd = end
+        if (misses > 0) {
+            provisionalMisses += misses
+            refreshFrameStats()
+        }
+        return misses
     }
 
     fun tap(positionMs: Long): TapResult {
-        if (phase != Phase.Playing || positionMs < 0 || positionMs < lastTouchMs) return TapResult.Ignored
-        if (positionMs - notes.first().atMs < -windowMs || positionMs - notes.last().atMs > windowMs) {
+        if (phase != Phase.Playing || notes.isEmpty() || positionMs < 0 || positionMs < lastTouchMs) return TapResult.Ignored
+        val passive = if (automatic.isEmpty()) null else nearest(automatic, positionMs)
+        val passiveDistance = passive?.let { abs(positionMs - it.atMs) } ?: Long.MAX_VALUE
+        if (passiveDistance > AUTOMATIC_WINDOW_MS &&
+            (positionMs - notes.first().atMs < -windowMs || positionMs - notes.last().atMs > windowMs)) {
             advance(positionMs)
             return TapResult.Ignored
         }
         lastTouchMs = positionMs
-        latestMediaMs = maxOf(positionMs, latestMediaMs)
-        val end = expiryEnd(positionMs)
-        committed = withMissesThrough(end)
+        advance(positionMs)
+        val end = expiryEnd(positionMs, firstUnexpired)
+        val expired = countUnhit(firstUnexpired, end)
+        provisionalMisses -= expired
+        committed = committed.withMisses(expired)
         firstUnexpired = end
 
         var nearestIndex = -1
@@ -91,6 +108,14 @@ class RhythmGame(chart: Chart, private val forgiving: Boolean = false) {
                 nearestDistance = distance
             }
         }
+        // A voluntary tap on an automatic bar must not consume the wider window of a nearby
+        // gold accent. On a tie, prefer the still-unplayed accent. One tick per contact.
+        if (passive != null && passiveDistance <= AUTOMATIC_WINDOW_MS && passiveDistance < nearestDistance) {
+            refreshFrameStats()
+            if (passive.atMs == lastAutomaticMs) return TapResult.Ignored
+            lastAutomaticMs = passive.atMs
+            return TapResult.Automatic(passive)
+        }
         if (nearestIndex < 0) {
             committed = committed.copy(stray = committed.stray + 1, combo = 0)
             refreshFrameStats()
@@ -104,6 +129,7 @@ class RhythmGame(chart: Chart, private val forgiving: Boolean = false) {
             else -> Grade.Okay
         } else requireNotNull(gradeFor(error))
         hit[nearestIndex] = true
+        if (nearestIndex < frameEnd) provisionalMisses--
         val combo = committed.combo + 1
         committed = committed.copy(
             perfect = committed.perfect + if (grade == Grade.Perfect) 1 else 0,
@@ -133,30 +159,35 @@ class RhythmGame(chart: Chart, private val forgiving: Boolean = false) {
         return latest
     }
 
-    internal fun nearestTarget(positionMs: Long): Note {
-        val index = notes.binarySearchBy(positionMs) { it.atMs }
-        if (index >= 0) return notes[index]
+    internal fun nearestTarget(positionMs: Long) = nearest(notes, positionMs)
+
+    private fun nearest(candidates: List<Note>, positionMs: Long): Note {
+        val index = candidates.binarySearchBy(positionMs) { it.atMs }
+        if (index >= 0) return candidates[index]
         val after = -(index + 1)
-        if (after == 0) return notes.first()
-        if (after == notes.size) return notes.last()
-        val before = notes[after - 1]
-        return if (positionMs - before.atMs <= notes[after].atMs - positionMs) before else notes[after]
+        if (after == 0) return candidates.first()
+        if (after == candidates.size) return candidates.last()
+        val before = candidates[after - 1]
+        return if (positionMs - before.atMs <= candidates[after].atMs - positionMs) before else candidates[after]
     }
 
-    private fun expiryEnd(positionMs: Long): Int {
-        var end = firstUnexpired
+    private fun expiryEnd(positionMs: Long, from: Int): Int {
+        var end = from
         while (end < notes.size && positionMs - notes[end].atMs > windowMs) end++
         return end
     }
 
-    private fun withMissesThrough(end: Int): GameStats {
+    private fun countUnhit(from: Int, end: Int): Int {
         var missed = 0
-        for (index in firstUnexpired until end) if (!hit[index]) missed++
-        return if (missed == 0) committed else committed.copy(missed = committed.missed + missed, combo = 0)
+        for (index in from until end) if (!hit[index]) missed++
+        return missed
     }
 
+    private fun GameStats.withMisses(count: Int) =
+        if (count == 0) this else copy(missed = missed + count, combo = 0)
+
     private fun refreshFrameStats() {
-        stats = withMissesThrough(expiryEnd(latestMediaMs))
+        stats = committed.withMisses(provisionalMisses)
     }
 
     fun pause() {
@@ -169,7 +200,7 @@ class RhythmGame(chart: Chart, private val forgiving: Boolean = false) {
 
     fun finish(): GameStats {
         if (phase != Phase.Finished) {
-            stats = withMissesThrough(notes.size)
+            stats = committed.withMisses(countUnhit(firstUnexpired, notes.size))
             phase = Phase.Finished
         }
         return stats
@@ -179,7 +210,10 @@ class RhythmGame(chart: Chart, private val forgiving: Boolean = false) {
         hit.fill(false)
         nextMissCue = 0
         firstUnexpired = 0
+        frameEnd = 0
+        provisionalMisses = 0
         lastTouchMs = -1
+        lastAutomaticMs = -1
         latestMediaMs = 0
         committed = GameStats(notes.size)
         stats = committed

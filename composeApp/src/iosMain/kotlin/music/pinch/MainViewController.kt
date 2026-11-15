@@ -28,6 +28,7 @@ interface AppleMediaSession {
     fun activate(): Boolean
     fun silence()
     fun note(midi: Int, gain: Float)
+    fun strike(gain: Float)
     fun close()
 }
 
@@ -66,7 +67,7 @@ private class IosMedia(factory: AppleMediaFactoryProtocol, private val durationM
     private var closed = false
     override var onInterrupted: (() -> Unit)? = null
 
-    private fun nowMs() = (NSProcessInfo.processInfo.systemUptime * 1_000).toLong()
+    override fun uptimeMs() = (NSProcessInfo.processInfo.systemUptime * 1_000).toLong()
 
     override fun interrupted() {
         if (closed) return
@@ -87,7 +88,7 @@ private class IosMedia(factory: AppleMediaFactoryProtocol, private val durationM
     }
 
     override fun snapshot(): Playback {
-        val now = nowMs()
+        val now = uptimeMs()
         if (!hasBacking) return clock.snapshot(now, ready && !closed, session.failure)
         val ended = session.backingEnded
         val position = if (ended) durationMs else session.backingPositionMs.coerceIn(0, durationMs)
@@ -96,16 +97,20 @@ private class IosMedia(factory: AppleMediaFactoryProtocol, private val durationM
 
     override fun play() {
         if (!ready || closed) return
-        if (session.activate() && !hasBacking) clock.play(nowMs())
+        if (session.activate() && !hasBacking) clock.play(uptimeMs())
     }
 
     override fun pause() {
-        clock.pause(nowMs())
+        clock.pause(uptimeMs())
         session.silence()
     }
 
     override fun note(midi: Int, gain: Float) {
-        if (ready && !closed && snapshot().playing) session.note(midi, gain)
+        if (ready && !closed) session.note(midi, gain)
+    }
+
+    override fun strike(gain: Float) {
+        if (ready && !closed) session.strike(gain)
     }
 
     override fun close() {
