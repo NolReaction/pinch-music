@@ -10,6 +10,7 @@ import music.pinch.core.Note
 import music.pinch.core.Grade
 import music.pinch.core.RhythmGame
 import music.pinch.core.TapResult
+import music.pinch.core.echoTargetTimes
 
 /** Session commands, native events and frame observations all run on the UI thread. */
 internal class Session(
@@ -45,6 +46,7 @@ internal class Session(
     private var automaticNotes: List<Note> = emptyList()
     private var nextAutomaticNote = 0
     private var recordKey = ""
+    private var echoTargets = emptySet<Long>()
     private var lastMistakeAt: Long? = null
     private var lastMistakeTarget: String? = null
 
@@ -54,10 +56,11 @@ internal class Session(
         val song = state.selectedSong
         val imported = imports[song.id]
         val chart = imported ?: song.bundled
+        echoTargets = chart?.echoTargetTimes().orEmpty()
         // The old records used stretched clocks. Leave those keys intact on upgraded devices.
         val arrangement = imported?.let { "import.${encodeChart(it).hashCode()}" } ?: "bundled"
         recordKey = "record.v3.${song.id}.$arrangement"
-        state = state.copy(chart = chart, importedIds = imports.keys.toSet(), bestScore = platform.readValue(recordKey)?.toIntOrNull(),
+        state = state.copy(chart = chart, echoTotal = echoTargets.size, importedIds = imports.keys.toSet(), bestScore = platform.readValue(recordKey)?.toIntOrNull(),
             availableIds = state.songs.filter { it.bundled != null || it.id in imports }.map { it.id }.toSet())
     }
 
@@ -113,7 +116,8 @@ internal class Session(
         game = if (preview) null else RhythmGame(song, forgiving = true)
         positionMs = 0
         state = state.copy(scene = Scene.Loading, preview = preview, notice = null,
-            countdown = null, reaction = null, error = null, newRecord = false, stats = game?.stats)
+            countdown = null, reaction = null, error = null, newRecord = false, stats = game?.stats,
+            echoesCaught = 0, collectedEchoMs = null)
         try {
             val player = platform.newMedia(song.durationMs, state.instrument)
             media = player
@@ -128,6 +132,7 @@ internal class Session(
             for (note in song.notes) {
                 if (backing == null) pitches += note.midi
                 if (!preview && note.playable) pitches += wrongPitch(note.midi)
+                if (!preview && note.atMs in echoTargets) pitches += echoPitch(note.midi)
             }
             player.setBackingVolume(state.volume)
             player.prepare(pitches, backing)
@@ -242,7 +247,15 @@ internal class Session(
         val engine = game ?: return
         when (val result = engine.tap(at)) {
             is TapResult.Automatic -> {
-                if (state.backingAsset != null) player.strike(.26f * result.note.velocity * state.volume)
+                val note = result.note
+                val gain = note.velocity * state.volume
+                if (note.atMs in echoTargets) {
+                    player.note(echoPitch(note.midi), .22f * gain)
+                    state = state.copy(echoesCaught = state.echoesCaught + 1, collectedEchoMs = note.atMs)
+                    showReaction("Эхо +1", feedbackAt)
+                } else if (state.backingAsset != null) {
+                    player.strike(.26f * gain)
+                }
                 if (state.haptics) platform.feedback()
             }
             is TapResult.Hit -> {
@@ -253,7 +266,7 @@ internal class Session(
                 val label = when (result.grade) {
                     Grade.Perfect -> "Идеально"
                     Grade.Good -> "Хорошо"
-                    Grade.Okay -> "Попал"
+                    Grade.Okay -> if (result.errorMs < 0) "Попал · чуть раньше" else "Попал · чуть позже"
                 }
                 showReaction(label, feedbackAt)
             }
@@ -316,7 +329,8 @@ internal class Session(
         close()
         positionMs = 0
         state = state.copy(scene = Scene.Menu, preview = false, stats = null,
-            error = null, countdown = null, reaction = null, newRecord = false)
+            error = null, countdown = null, reaction = null, newRecord = false,
+            echoesCaught = 0, collectedEchoMs = null)
     }
 
     override fun volume(value: Float) {
@@ -357,3 +371,5 @@ internal class Session(
 
 // Lean one semitone off the expected pitch, including at the MIDI range boundary.
 private fun wrongPitch(midi: Int): Int = if (midi == 127) 126 else midi + 1
+
+private fun echoPitch(midi: Int) = if (midi <= 115) midi + 12 else midi - 12

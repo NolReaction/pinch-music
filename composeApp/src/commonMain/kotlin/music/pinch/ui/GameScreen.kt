@@ -106,7 +106,9 @@ private fun Menu(state: ScreenState, actions: Actions) {
                 ActionButton("Играть", onClick = { actions.start(false) }, modifier = Modifier.weight(1.1f), icon = IconShape.Play)
                 ActionButton("Послушать", onClick = { actions.start(true) }, modifier = Modifier.weight(1f), primary = false)
             }
-            Caption(if (state.backingAsset != null)
+            Caption(if (state.echoTotal > 0)
+                "Касайся любой точки сцены в такт. Золотой обод даёт очки, бирюзовые кольца — эхо."
+            else if (state.backingAsset != null)
                 "Вся мелодия звучит автоматически. Нажимай, когда шарик ударяет по планке с золотой кромкой."
             else "Коснись экрана, когда шарик ударит по планке с золотой кромкой.")
             val imported = state.selectedSong.id in state.importedIds
@@ -299,6 +301,7 @@ private fun ResultScreen(state: ScreenState, actions: Actions) {
             ResultRow("Лишние нажатия", stats.stray.toString())
             Rule()
             ResultRow("Лучшее комбо", "×${stats.maxCombo}", Lilac)
+            if (state.echoTotal > 0) ResultRow("Собрано эхо", "${state.echoesCaught} из ${state.echoTotal}", Mint)
         }
         ActionButton("Ещё раз", actions::restart, icon = IconShape.Play)
         ActionButton("В меню", actions::menu, primary = false)

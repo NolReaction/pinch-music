@@ -28,7 +28,10 @@ data class ScreenState(
     val bestScore: Int? = null,
     val newRecord: Boolean = false,
     val volume: Float = 0.8f,
-    val haptics: Boolean = false
+    val haptics: Boolean = false,
+    val echoTotal: Int = 0,
+    val echoesCaught: Int = 0,
+    val collectedEchoMs: Long? = null,
 ) {
     val backingAsset: String? get() = selectedSong.backingAsset.takeUnless { selectedSong.id in importedIds }
     val title: String get() = selectedSong.title

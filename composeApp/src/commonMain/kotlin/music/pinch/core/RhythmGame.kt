@@ -12,8 +12,11 @@ sealed interface TapResult {
 }
 
 private const val WINDOW_MS = 120L
-internal const val FORGIVING_WINDOW_MS = 165L
+internal const val FORGIVING_WINDOW_MS = 195L
 private const val AUTOMATIC_WINDOW_MS = 55L
+internal const val FORGIVING_AUTOMATIC_WINDOW_MS = 85L
+private const val DOUBLE_TAP_MS = 75L
+private const val MAX_MISS_CUE_FRAME_MS = 125L
 
 internal fun gradeFor(errorMs: Long): Grade? = when (errorMs) {
     in -45L..45L -> Grade.Perfect
@@ -45,6 +48,7 @@ data class GameStats(
  */
 class RhythmGame(chart: Chart, private val forgiving: Boolean = false) {
     private val windowMs = if (forgiving) FORGIVING_WINDOW_MS else WINDOW_MS
+    private val automaticWindowMs = if (forgiving) FORGIVING_AUTOMATIC_WINDOW_MS else AUTOMATIC_WINDOW_MS
     private val notes = chart.notes.filter { it.playable }
     private val automatic = chart.notes.filterNot { it.playable }.distinctBy { it.atMs }
     internal val firstTargetMs = notes.firstOrNull()?.atMs
@@ -54,10 +58,13 @@ class RhythmGame(chart: Chart, private val forgiving: Boolean = false) {
     private var phase = Phase.Playing
     private var committed = GameStats(notes.size)
     private var nextMissCue = 0
+    private var previousCueTime = -1L
     private var firstUnexpired = 0
     private var frameEnd = 0
     private var provisionalMisses = 0
     private var lastTouchMs = -1L
+    private var lastContactTapMs = -1L
+    private var lastContact: Note? = null
     private var lastAutomaticMs = -1L
     private var latestMediaMs = 0L
     var stats: GameStats = committed
@@ -80,7 +87,7 @@ class RhythmGame(chart: Chart, private val forgiving: Boolean = false) {
         if (phase != Phase.Playing || notes.isEmpty() || positionMs < 0 || positionMs < lastTouchMs) return TapResult.Ignored
         val passive = if (automatic.isEmpty()) null else nearest(automatic, positionMs)
         val passiveDistance = passive?.let { abs(positionMs - it.atMs) } ?: Long.MAX_VALUE
-        if (passiveDistance > AUTOMATIC_WINDOW_MS &&
+        if (passiveDistance > automaticWindowMs &&
             (positionMs - notes.first().atMs < -windowMs || positionMs - notes.last().atMs > windowMs)) {
             advance(positionMs)
             return TapResult.Ignored
@@ -108,24 +115,36 @@ class RhythmGame(chart: Chart, private val forgiving: Boolean = false) {
                 nearestDistance = distance
             }
         }
-        // A voluntary tap on an automatic bar must not consume the wider window of a nearby
-        // gold accent. On a tie, prefer the still-unplayed accent. One tick per contact.
-        if (passive != null && passiveDistance <= AUTOMATIC_WINDOW_MS && passiveDistance < nearestDistance) {
+        // Clearly struck passive contacts keep their own timing. Near the midpoint, give
+        // the pending accent a small advantage so a slightly early/late tap still scores.
+        val accentPreference = if (forgiving && passiveDistance > 30L) 24L else 0L
+        val usePassive = passive != null && passiveDistance <= automaticWindowMs &&
+            passiveDistance + accentPreference < nearestDistance
+        val target = if (usePassive) passive else notes.getOrNull(nearestIndex)
+        if (forgiving && isRepeatDown(positionMs, target)) {
             refreshFrameStats()
-            if (passive.atMs == lastAutomaticMs) return TapResult.Ignored
-            lastAutomaticMs = passive.atMs
-            return TapResult.Automatic(passive)
+            return TapResult.Ignored
         }
-        if (nearestIndex < 0) {
+        if (target == null) {
             committed = committed.copy(stray = committed.stray + 1, combo = 0)
             refreshFrameStats()
             return TapResult.Stray
         }
-        val note = notes[nearestIndex]
-        val error = positionMs - note.atMs
+        if (usePassive && target.atMs == lastAutomaticMs) {
+            refreshFrameStats()
+            return TapResult.Ignored
+        }
+        lastContact = target
+        lastContactTapMs = positionMs
+        if (usePassive) {
+            lastAutomaticMs = target.atMs
+            refreshFrameStats()
+            return TapResult.Automatic(target)
+        }
+        val error = positionMs - target.atMs
         val grade = if (forgiving) when (abs(error)) {
-            in 0..65 -> Grade.Perfect
-            in 66..110 -> Grade.Good
+            in 0..80 -> Grade.Perfect
+            in 81..135 -> Grade.Good
             else -> Grade.Okay
         } else requireNotNull(gradeFor(error))
         hit[nearestIndex] = true
@@ -139,7 +158,19 @@ class RhythmGame(chart: Chart, private val forgiving: Boolean = false) {
             maxCombo = maxOf(combo, committed.maxCombo),
         )
         refreshFrameStats()
-        return TapResult.Hit(note, grade, error)
+        return TapResult.Hit(target, grade, error)
+    }
+
+    private fun isRepeatDown(positionMs: Long, target: Note?): Boolean {
+        val previous = lastContact ?: return false
+        val elapsed = positionMs - lastContactTapMs
+        if (elapsed > DOUBLE_TAP_MS) return false
+        if (target == null) return true
+        // Simultaneous playable voices may be played separately. During a fast run,
+        // allow a down closer to the next contact, with one frame of dispatch slack.
+        if (target.atMs == previous.atMs) return !target.playable
+        val distance = abs(target.atMs - positionMs)
+        return distance > 0 && distance >= minOf(elapsed + 16, abs(previous.atMs - positionMs))
     }
 
     /**
@@ -150,11 +181,20 @@ class RhythmGame(chart: Chart, private val forgiving: Boolean = false) {
     internal fun takeMissCue(positionMs: Long): Note? {
         if (phase != Phase.Playing) return null
         val cueTime = positionMs - windowMs - 48
+        // Wait for one more observation before sounding a miss. A delayed frame often runs
+        // just ahead of its queued touch; the first observation still updates the visible stats.
+        val confirmedThrough = minOf(cueTime, previousCueTime)
+        previousCueTime = cueTime
+        // Judge freshness at the first observation, then allow the confirming frame its
+        // own interval. At 10 fps these can each take 100 ms even during steady playback.
+        val confirmationTimely = cueTime - confirmedThrough <= MAX_MISS_CUE_FRAME_MS
         var latest: Note? = null
-        while (nextMissCue < notes.size && notes[nextMissCue].atMs < cueTime) {
+        while (nextMissCue < notes.size && notes[nextMissCue].atMs < confirmedThrough) {
             val index = nextMissCue++
             val note = notes[index]
-            if (!hit[index] && cueTime - note.atMs <= 80) latest = note
+            if (!hit[index] && confirmationTimely && confirmedThrough - note.atMs <= MAX_MISS_CUE_FRAME_MS) {
+                latest = note
+            }
         }
         return latest
     }
@@ -209,10 +249,13 @@ class RhythmGame(chart: Chart, private val forgiving: Boolean = false) {
     fun restart() {
         hit.fill(false)
         nextMissCue = 0
+        previousCueTime = -1
         firstUnexpired = 0
         frameEnd = 0
         provisionalMisses = 0
         lastTouchMs = -1
+        lastContact = null
+        lastContactTapMs = -1
         lastAutomaticMs = -1
         latestMediaMs = 0
         committed = GameStats(notes.size)

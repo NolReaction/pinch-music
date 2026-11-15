@@ -81,11 +81,11 @@ private class Camera(size: Size, target: StagePoint) {
 }
 
 /** Fixed material tables keep lighting transitions cheap even on dense runs of short notes. */
-private class Finish(val tint: Color) {
-    val tops = Array(LightSteps+1) { i -> lerp(Color(0xff242535), tint, i / LightSteps.toFloat()) }
-    val bevels = Array(LightSteps+1) { i -> lerp(Color(0xff696979), lerp(tint, PinLight, .33f), i / LightSteps.toFloat()) }
+private class Finish(rest: Color, val tint: Color) {
+    val tops = Array(LightSteps+1) { i -> lerp(rest, tint, i / LightSteps.toFloat()) }
+    val bevels = Array(LightSteps+1) { i -> lerp(lerp(rest, PinLight, .31f), lerp(tint, PinLight, .33f), i / LightSteps.toFloat()) }
     val faces = Array(LightSteps+1) { i ->
-        lerp(Color(0xff141622), lerp(tint, Color.Black, .42f), i / LightSteps.toFloat())
+        lerp(lerp(rest, BlackNickel, .53f), lerp(tint, Color.Black, .42f), i / LightSteps.toFloat())
     }
     // Indexed by [light][edge normal][bevel/body/bottom]. Building these tables once
     // also avoids repeated colour-space conversions in the polygon draw loop.
@@ -101,10 +101,16 @@ private class Finish(val tint: Color) {
     val emission = Brush.radialGradient(listOf(tint.copy(alpha=.36f), tint.copy(alpha=.16f), tint.copy(alpha=0f)), Offset.Zero, 1f)
 }
 
-private val Gold = Finish(Color(0xffffc139))
-private val Accents = arrayOf(
-    Finish(Color(0xfffa738a)), Finish(Color(0xffff8b5c)), Finish(Color(0xffbba6fa)),
-    Finish(Color(0xff78c7e7)), Finish(Color(0xffe58bb6))
+private val Maple = Finish(Color(0xff90644f), Color(0xffffbd84))
+private val DrumShell = Finish(Color(0xffad7967), Color(0xffffa28e))
+private val BrushedSteel = Finish(Color(0xff536a83), Color(0xffa8ddfd))
+private val DrumSkin = Array(LightSteps+1) { i ->
+    lerp(Color(0xff777381), Color(0xffffe6d0), i / LightSteps.toFloat())
+}
+private val Brass = Color(0xffffcc62)
+private val Echo = Color(0xff60eddf)
+private val EchoGlow = Brush.radialGradient(
+    listOf(Echo.copy(alpha=.7f), Echo.copy(alpha=.20f), Echo.copy(alpha=0f)), Offset.Zero, 1f
 )
 
 private class Room(size: Size) {
@@ -142,29 +148,67 @@ private fun shadow(p: StagePoint): StagePoint {
     return StagePoint(p.x + distance*.17f, p.y + distance*.20f, WallZ)
 }
 
-/** Four rounded contours form a continuous top chamfer, piano-black body and underside. */
+// The fork is one machined piece. Its two free ends start beyond the strike point.
+private val ForkProfile = arrayOf(
+    Offset(.92f,-1f), Offset(1f,-.85f), Offset(1f,-.55f), Offset(.92f,-.43f),
+    Offset(.22f,-.43f), Offset(.14f,-.29f), Offset(.14f,.29f), Offset(.22f,.43f),
+    Offset(.92f,.43f), Offset(1f,.55f), Offset(1f,.85f), Offset(.92f,1f),
+    Offset(-.18f,.85f), Offset(-1f,.46f), Offset(-1f,-.46f), Offset(-.18f,-.85f)
+)
+private val Circle = Array(Corners) { i ->
+    val angle = (i.toFloat()/Corners - .125f)*2f*PI.toFloat()
+    Offset(cos(angle), sin(angle))
+}
+
 private class Bar(val key: StageKey, index: Int) {
-    val finish = if (key.playable) Gold else Accents[(index / 12 + key.midi / 5) % Accents.size]
+    val finish = when (key.shape) {
+        PanelShape.WoodBar -> Maple
+        PanelShape.Drum -> DrumShell
+        PanelShape.Fork -> BrushedSteel
+    }
     private val length = key.halfLength
     private val width = key.halfWidth
-    val thickness = min(.18f, width*1.45f)
-    private val chamfer = min(.045f, width*.30f)
+    val thickness = when (key.shape) {
+        PanelShape.WoodBar -> .105f
+        PanelShape.Drum -> .16f
+        PanelShape.Fork -> .085f
+    }
+    private val chamfer = min(.030f, width*.22f)
     private val ringHeight = floatArrayOf(0f, chamfer*.68f, thickness-chamfer*.7f, thickness)
     private val ringInset = floatArrayOf(chamfer, 0f, 0f, chamfer*.65f)
-    private val sinCorner = FloatArray(Corners) { sin(cornerAngle(it)) }
-    private val cosCorner = FloatArray(Corners) { cos(cornerAngle(it)) }
-    private fun cornerAngle(i: Int) = (i/4 - 1 + (i%4)/3f) * (PI/2).toFloat()
+
+    private fun contour(i: Int, halfX: Float, halfZ: Float): Offset {
+        return when (key.shape) {
+            PanelShape.Fork -> Offset(ForkProfile[i].x*halfX, ForkProfile[i].y*halfZ)
+            PanelShape.Drum -> Offset(Circle[i].x*halfX, Circle[i].y*halfZ)
+            PanelShape.WoodBar -> {
+                val angle = (i/4 - 1 + (i%4)/3f) * (PI/2).toFloat()
+                val radius = min(halfZ*.45f, .065f)
+                val sx = if (i < 8) 1 else -1
+                val sz = if (i in 4..11) 1 else -1
+                Offset(sx*(halfX-radius) + radius*cos(angle), sz*(halfZ-radius) + radius*sin(angle))
+            }
+        }
+    }
     val mesh = Array(Levels*Corners) { n ->
         val level = n/Corners
-        val i = n%Corners
-        val halfX = length - ringInset[level]
-        val halfZ = width - ringInset[level]
-        val radius = min(halfZ*.40f, .075f)
-        val sx = if (i/4 == 0 || i/4 == 1) 1 else -1
-        val sz = if (i/4 == 1 || i/4 == 2) 1 else -1
-        key.point(sx*(halfX-radius) + radius*cosCorner[i], ringHeight[level],
-            sz*(halfZ-radius) + radius*sinCorner[i])
+        val v = contour(n%Corners, length-ringInset[level], width-ringInset[level])
+        key.point(v.x, ringHeight[level], v.y)
     }
+
+    private fun ring(rx: Float, rz: Float) = Array(Corners) { i ->
+        key.point(rx * Circle[i].x, 0f, rz * Circle[i].y)
+    }
+    val skin = if (key.shape == PanelShape.Drum) ring(length*.79f, width*.79f) else emptyArray()
+    // Two inlaid turquoise circles fit inside the solid part of all three surfaces.
+    val echoRings = if (key.isEcho) listOf(.080f, .045f).map { radius ->
+        Array(Corners) { i -> key.point(-length*.21f + radius*Circle[i].x, 0f, radius*Circle[i].y) }
+    } else emptyList()
+    val woodGrain = if (key.shape == PanelShape.WoodBar) arrayOf(
+        key.point(-length*.83f, 0f, width*.37f), key.point(length*.81f, 0f, width*.28f),
+        key.point(-length*.79f, 0f, -width*.45f), key.point(length*.82f, 0f, -width*.50f)
+    ) else emptyArray()
+    val depthAxis = key.point(0f,0f,1f) - key.center
     val shading = IntArray(Corners) { i ->
         val a = mesh[i+Corners]
         val b = mesh[(i+1)%Corners+Corners]
@@ -175,16 +219,19 @@ private class Bar(val key: StageKey, index: Int) {
     val shadowLeft = shadow(key.point(-length, thickness*.55f, 0f))
     val shadowRight = shadow(key.point(length, thickness*.55f, 0f))
     val shadowPenumbra = .13f + (key.center.z-WallZ)*.077f
-    val pins = arrayOf(key.point(-length*.61f, -.010f, 0f), key.point(length*.61f, -.010f, 0f))
-    val mountSpacing = length*.43f
+    val pins = when (key.shape) {
+        PanelShape.Fork -> arrayOf(key.point(-length*.72f, 0f, 0f))
+        PanelShape.Drum -> emptyArray()
+        PanelShape.WoodBar -> arrayOf(key.point(-length*.64f, 0f, 0f), key.point(length*.64f, 0f, 0f))
+    }
+    private val mountSpacing = length * if (key.shape == PanelShape.Fork) .19f else .43f
+    private val mountX = if (key.shape == PanelShape.Fork) -length*.27f else 0f
     val stemLength = .09f + (index%4)*.025f
-    val anchors = arrayOf(key.point(-mountSpacing, thickness-.01f, 0f), key.point(mountSpacing, thickness-.01f, 0f))
+    val anchors = arrayOf(key.point(mountX-mountSpacing, thickness-.01f, 0f), key.point(mountX+mountSpacing, thickness-.01f, 0f))
     val lower = Array(2) { n -> anchors[n] + StagePoint(0f,stemLength,-.055f) }
     val socket = shadow(key.point(0f,thickness-.02f,0f))
-    val join = key.point(0f,thickness+stemLength,-.055f)
+    val join = key.point(mountX,thickness+stemLength,-.055f)
     val knee = StagePoint(join.x, join.y+.035f, max(WallZ+.055f,join.z-.28f))
-    val incomingA = key.point(-length*.76f, chamfer*.7f, width)
-    val incomingB = key.point(length*.76f, chamfer*.7f, width)
     // Wall braces belong to the rear lane. A brace across the front lane
     // would cross the path of the descending ball on the opposite turn.
     val wallBracket = index%5 == 1 && key.center.z <= .80f
@@ -213,6 +260,7 @@ internal class MarbleScene(chart: Chart, private val marbleAtlas: ImageBitmap) {
     private val bars = Array(path.keys.size) { i -> Bar(path.keys[i], i) }
     private val rails = path.spans.map(::Rail)
     private val outline = Path()
+    private val detail = Path()
     private val projectedX = FloatArray(Levels*Corners)
     private val projectedY = FloatArray(Levels*Corners)
     private val sorted = IntArray(VisibleLimit)
@@ -290,10 +338,35 @@ internal class MarbleScene(chart: Chart, private val marbleAtlas: ImageBitmap) {
         }
     }
 
-    private fun DrawScope.bar(bar: Bar, camera: Camera, light: Float, incoming: Float, marble: StagePoint) {
+    private fun detailLoop(points: Array<StagePoint>, camera: Camera) {
+        detail.reset()
+        for (i in points.indices) {
+            val p = camera.project(points[i])
+            if (i == 0) detail.moveTo(p.x,p.y) else detail.lineTo(p.x,p.y)
+        }
+        detail.close()
+    }
+
+    private fun DrawScope.bar(
+        bar: Bar, camera: Camera, age: Long, light: Float, incoming: Float,
+        caught: Float, marble: StagePoint,
+    ) {
         val unit = camera.unit(bar.key.center)
+        // The fork flexes at its far tips. Its solid heel, the actual contact
+        // point and the mounting hardware remain fixed on the rail plane.
+        val flex = if (bar.key.shape == PanelShape.Fork && age in 1..360) {
+            val remaining = 1f-age/360f
+            (1f-cos(age*.056f))*.016f*remaining*remaining
+        } else 0f
+        val tipMotion = if (flex > 0f) bar.depthAxis*flex else null
         for (n in projectedX.indices) {
-            val point = camera.project(bar.mesh[n])
+            val vertex = bar.mesh[n]
+            val p = if (tipMotion == null) vertex else when (n%Corners) {
+                in 0..3 -> vertex + tipMotion
+                in 8..11 -> vertex - tipMotion
+                else -> vertex
+            }
+            val point = camera.project(p)
             projectedX[n] = point.x
             projectedY[n] = point.y
         }
@@ -319,12 +392,19 @@ internal class MarbleScene(chart: Chart, private val marbleAtlas: ImageBitmap) {
                 outline.lineTo(ux, uy)
                 outline.close()
                 drawPath(outline, finish.sides[(shadeBase + bar.shading[i])*3 + level])
+                if (bar.key.shape == PanelShape.Drum && level == 1 && i%2 == 0) {
+                    // Tension rods tie the hoop to the shell. Only fit them to
+                    // the visible side so none can show through the membrane.
+                    val top = Offset((px+qx)*.5f, (py+qy)*.5f)
+                    val bottom = Offset((ux+projectedX[b+j])*.5f, (uy+projectedY[b+j])*.5f)
+                    drawLine(Silver, top, bottom, unit*.012f, StrokeCap.Round, alpha=.78f)
+                }
             }
         }
         // A steeply banked key can rise above the camera. Hide its rivets when
         // the underside is visible instead of painting the top over the sides.
-        val front = (projectedX[4]-projectedX[0])*(projectedY[12]-projectedY[0]) -
-            (projectedY[4]-projectedY[0])*(projectedX[12]-projectedX[0]) > 0f
+        val front = (projectedX[10]-projectedX[0])*(projectedY[14]-projectedY[0]) -
+            (projectedY[10]-projectedY[0])*(projectedX[14]-projectedX[0]) > 0f
         val start = if (front) 0 else (Levels-1)*Corners
         outline.reset()
         outline.moveTo(projectedX[start], projectedY[start])
@@ -336,6 +416,23 @@ internal class MarbleScene(chart: Chart, private val marbleAtlas: ImageBitmap) {
         }
         drawPath(outline, finish.tops[step])
         room?.let { drawPath(outline, it.sheen) }
+        if (bar.skin.isNotEmpty()) {
+            detailLoop(bar.skin, camera)
+            drawPath(detail, DrumSkin[step])
+            if (age in 1..260) {
+                val progress = age/260f
+                val center = camera.project(bar.key.center)
+                scale(.10f+.88f*progress, center) {
+                    drawPath(detail, PinLight, alpha=.78f*(1f-progress), style=Stroke(unit*.023f))
+                }
+            }
+        }
+        if (bar.woodGrain.isNotEmpty()) {
+            for (i in bar.woodGrain.indices step 2) {
+                drawLine(PinShade, camera.project(bar.woodGrain[i]), camera.project(bar.woodGrain[i+1]),
+                    unit*.014f, StrokeCap.Round, alpha=.32f)
+            }
+        }
 
         val normal = bar.key.normal
         val relative = marble-bar.key.center
@@ -351,9 +448,18 @@ internal class MarbleScene(chart: Chart, private val marbleAtlas: ImageBitmap) {
                     alpha=.48f*(1-gap/.48f))
             }
         }
-        // A quiet brass edge identifies the next manual accent among the automatic keys.
-        if (incoming>.01f) drawLine(Gold.tint.copy(alpha=.45f+.5f*incoming),
-            camera.project(bar.incomingA), camera.project(bar.incomingB), unit*(.012f+.014f*incoming), StrokeCap.Round)
+        // Every scored instrument has the same brass rim. An approaching
+        // accent brightens it; the optional echo keeps its separate twin rings.
+        if (bar.key.playable) {
+            drawPath(outline, Brass, alpha=.72f+.28f*incoming, style=Stroke(unit*(.017f+.018f*incoming)))
+        }
+        for (ring in bar.echoRings) {
+            detailLoop(ring, camera)
+            drawPath(detail, Echo, alpha=.84f+.16f*caught, style=Stroke(unit*(.017f+.018f*caught)))
+        }
+        if (caught > 0f) {
+            drawPath(outline, Echo, alpha=caught*.72f, style=Stroke(unit*.038f))
+        }
         val radius = unit*.032f
         for (pin in bar.pins) {
             val p = camera.project(pin)
@@ -377,7 +483,7 @@ internal class MarbleScene(chart: Chart, private val marbleAtlas: ImageBitmap) {
             dstSize=IntSize(diameter,diameter))
     }
 
-    fun DrawScope.draw(timeMs: Long) {
+    fun DrawScope.draw(timeMs: Long, collectedEchoMs: Long? = null) {
         if (size.minDimension<1f) return
         if (roomSize!=size) {
             roomSize=size
@@ -439,20 +545,30 @@ internal class MarbleScene(chart: Chart, private val marbleAtlas: ImageBitmap) {
                 phase*phase
             } else 0f
             val incoming=if (i==nextManual && age in -650..-1) (1f+age/650f) else 0f
-            bar(bar,camera,light,incoming,frame.marble)
+            // The collection can arrive a little before or after the marble.
+            val caught = if (bar.key.isEcho && bar.key.atMs == collectedEchoMs && age in -250..520)
+                1f-age.coerceAtLeast(0L)/520f else 0f
+            if (caught > 0f) {
+                halo(camera.project(bar.key.center),camera.unit(bar.key.center)*.65f,EchoGlow,caught*caught)
+            }
+            bar(bar,camera,age,light,incoming,caught,frame.marble)
         }
         if (!marbleDrawn) marble(camera,frame)
     }
 }
 
 @Composable
-fun MarbleStage(chart: Chart, positionMs: () -> Long, modifier: Modifier = Modifier) {
+fun MarbleStage(
+    chart: Chart, positionMs: () -> Long, modifier: Modifier = Modifier, collectedEchoMs: Long? = null,
+) {
     val atlas = imageResource(Res.drawable.studio_marble)
     val scene = remember(chart, atlas) { MarbleScene(chart,atlas) }
-    Canvas(modifier.clipToBounds()) { with(scene) { draw(positionMs()) } }
+    Canvas(modifier.clipToBounds()) { with(scene) { draw(positionMs(), collectedEchoMs) } }
 }
 
 @Composable
-fun MarbleStage(chart: Chart, positionMs: Long, modifier: Modifier = Modifier) {
-    MarbleStage(chart,{ positionMs },modifier)
+fun MarbleStage(
+    chart: Chart, positionMs: Long, modifier: Modifier = Modifier, collectedEchoMs: Long? = null,
+) {
+    MarbleStage(chart,{ positionMs },modifier,collectedEchoMs)
 }

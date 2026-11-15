@@ -7,6 +7,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import music.pinch.core.Chart
 import music.pinch.core.Note
+import music.pinch.core.echoTargetTimes
+import music.pinch.songLibrary
 import music.pinch.stereoLoveSong
 
 class MarblePathTest {
@@ -24,6 +26,8 @@ class MarblePathTest {
         val path = MarblePath(score)
         assertEquals(score.notes.map { it.atMs }.distinct(), path.keys.map { it.atMs })
         assertEquals(score.notes.count { it.playable }, path.keys.count { it.playable })
+        assertEquals(score.echoTargetTimes(), path.keys.filter { it.isEcho }.map { it.atMs }.toSet())
+        assertTrue(path.keys.none { it.playable && it.isEcho })
         for ((i, key) in path.keys.withIndex()) {
             val frame = path.frame(key.atMs)
             near(key.center + key.normal * MarbleRadius, frame.marble)
@@ -32,6 +36,28 @@ class MarblePathTest {
             assertEquals(1f, key.normal.length(), .00001f)
             assertEquals(i, frame.anchor)
             assertEquals(0f, frame.lift)
+        }
+    }
+
+    @Test fun instrumentAssignmentsFollowMusicalTimeAcrossTempos() {
+        for (bpm in listOf(100, 200)) {
+            val beat = 60_000L / bpm
+            val onsets = listOf(0L, beat, beat*3/2, beat*2, beat*3, beat*7/2)
+            val intro = 2_200L
+            val score = Chart("Тема", bpm, intro+beat*4, onsets.mapIndexed { i, onset ->
+                Note("hit-$i", intro+onset, 60+i, if (i == 3) beat*4/5 else beat/4, .9f)
+            })
+            val keys = MarblePath(score).keys
+            assertEquals(listOf(PanelShape.Drum, PanelShape.Drum, PanelShape.WoodBar, PanelShape.Fork,
+                PanelShape.Drum, PanelShape.WoodBar), keys.map { it.shape })
+            for (drum in keys.filter { it.shape == PanelShape.Drum }) assertEquals(drum.halfLength, drum.halfWidth)
+        }
+    }
+
+    @Test fun everyBundledArrangementIncludesFastStrikesBeatPadsAndSustains() {
+        for (song in songLibrary) {
+            val keys = MarblePath(requireNotNull(song.bundled)).keys
+            assertEquals(PanelShape.entries.toSet(), keys.map { it.shape }.toSet(), song.title)
         }
     }
 
@@ -74,8 +100,11 @@ class MarblePathTest {
         }
     }
 
-    @Test fun stereoLoveHasNoEarlyBarIntersectionsDuringFlight() {
-        val path = MarblePath(requireNotNull(stereoLoveSong.bundled))
+    @Test fun bundledCoursesHaveNoEarlyPanelIntersectionsDuringFlight() {
+        for (song in songLibrary) checkPanelClearance(MarblePath(requireNotNull(song.bundled)))
+    }
+
+    private fun checkPanelClearance(path: MarblePath) {
         // Each oriented box encloses the bar's bevels and has a slightly thicker
         // underside than the rendered part. Include the departure and landing bars.
         val boxes = path.keys.map { key ->

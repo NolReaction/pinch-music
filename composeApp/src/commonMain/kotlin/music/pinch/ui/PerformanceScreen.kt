@@ -46,7 +46,8 @@ internal fun PerformanceScreen(state: ScreenState, actions: Actions, positionMs:
         val interactive = state.scene == Scene.Playing && !state.preview
         if (chart != null) {
             val input = if (interactive) Modifier.rhythmInput(actions) else Modifier
-            MarbleStage(chart, positionMs, Modifier.matchParentSize().then(input).graphicsLayer())
+            MarbleStage(chart, positionMs, Modifier.matchParentSize().then(input).graphicsLayer(),
+                collectedEchoMs = state.collectedEchoMs)
         }
         if (state.scene == Scene.Playing) {
             SessionHeader(state, actions, positionMs)
@@ -183,13 +184,13 @@ private fun PlayControls(state: ScreenState, positionMs: () -> Long) {
     val tail by remember(positionMs, lastWindow) { derivedStateOf { positionMs() > lastWindow } }
     val reaction = state.reaction
     val text = when {
-        tail -> "Конец мелодии"
-        state.countdown != null -> "До первого акцента · ${state.countdown}"
         reaction != null -> reaction
-        else -> "Нажимай в момент удара по золотой планке"
+        state.countdown != null -> "До первого акцента · ${state.countdown}"
+        tail -> "Конец мелодии"
+        else -> "Коснись экрана на ударе по панели с золотым ободом"
     }
     val color = when {
-        tail || reaction == null -> White
+        reaction == null -> White
         reaction == "Пропуск" || reaction == "Мимо" -> Coral
         else -> Mint
     }
@@ -201,6 +202,9 @@ private fun PlayControls(state: ScreenState, positionMs: () -> Long) {
             Text("Счёт  ${number(state.stats?.score ?: 0)}", color = White, fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.Bold, fontSize = 14.sp)
             Text("Комбо  ×${state.stats?.combo ?: 0}", color = Lilac, fontSize = 12.sp)
+            if (state.echoTotal > 0) {
+                Text("Эхо  ${state.echoesCaught}/${state.echoTotal}", color = Mint, fontSize = 12.sp)
+            }
         }
     }
 }

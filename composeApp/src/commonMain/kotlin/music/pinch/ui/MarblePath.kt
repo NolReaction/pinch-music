@@ -1,11 +1,15 @@
 package music.pinch.ui
 
+import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.cos
+import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.round
 import kotlin.math.sin
 import kotlin.math.sqrt
 import music.pinch.core.Chart
+import music.pinch.core.echoTargetTimes
 
 internal const val MarbleRadius = .23f
 // World units per second squared, Y positive towards the bottom of the installation.
@@ -25,13 +29,25 @@ internal data class StagePoint(val x: Float, val y: Float, val z: Float) {
 private fun orbit(angle: Double, y: Float) =
     StagePoint(2.12f * sin(angle).toFloat(), y, .78f + .94f * cos(angle).toFloat())
 
+internal enum class PanelShape { WoodBar, Drum, Fork }
+
 internal class StageKey(
-    val atMs: Long, val midi: Int, val playable: Boolean,
-    val ballCenter: StagePoint, val normal: StagePoint, outward: StagePoint,
+    val atMs: Long, val midi: Int, val playable: Boolean, val isEcho: Boolean, val shape: PanelShape,
+    val ballCenter: StagePoint, val normal: StagePoint, outward: StagePoint, adjacentGapMs: Long,
 ) {
     val center = ballCenter - normal * MarbleRadius
-    val halfLength = if (playable) .64f else .49f
-    val halfWidth = if (playable) .15f else .12f
+    val halfLength = when (shape) {
+        PanelShape.WoodBar -> if (playable) .57f else .46f
+        // A wider skin fits between widely spaced landings; rapid rolls use a small pad.
+        PanelShape.Drum -> (.18f + (adjacentGapMs - 235L).coerceAtLeast(0L)/1100f)
+            .coerceAtMost(if (playable) .30f else .25f)
+        PanelShape.Fork -> if (playable) .64f else .53f
+    }
+    val halfWidth = when (shape) {
+        PanelShape.WoodBar -> .12f
+        PanelShape.Drum -> halfLength
+        PanelShape.Fork -> .15f
+    }
     // Bar spans across the direction of travel. Orthonormal axes keep the two
     // rivets, top face and strike point on the very same plane when it is banked.
     private val depth = normal.cross(outward).unit()
@@ -169,6 +185,13 @@ internal class MarblePath(chart: Chart) {
             integratedX[i] = integratedX[i - 1] + (times[i] - times[i - 1]) * (previous.x + next.x).toDouble() / 2
         }
         spans = sections
+        val echoes = chart.echoTargetTimes()
+        val beatMs = 60_000.0 / chart.bpm
+        val gaps = attacks.zipWithNext { a, b -> (b.atMs - a.atMs).toDouble() }.sorted()
+        val usualStep = gaps.getOrNull(gaps.size/2) ?: beatMs
+        val sustainedMs = max(.75*beatMs, .88*usualStep)
+        val longGapMs = max(1.25*beatMs, 1.40*usualStep)
+        val firstAttack = attacks.first().atMs
         keys = attacks.mapIndexed { i, note ->
             val outgoing = spans[i + 1]
             val angle = angles[i + 1]
@@ -178,7 +201,18 @@ internal class MarblePath(chart: Chart) {
             val normal = if (outgoing.railEnd > 0f) (outgoing.railNormal(0f) + direction * .09f).unit()
                 else StagePoint(.10f * sin(angle).toFloat(), -1f, .16f * cos(angle).toFloat()).unit()
             val outward = StagePoint(-direction.z, 0f, direction.x).unit()
-            StageKey(note.atMs, note.midi, note.playable, centers[i + 1], normal, outward)
+            // Sustains ring on a fork. Beat-aligned strikes get a skin; the smaller
+            // wood bars keep the intervening subdivisions legible in a fast run.
+            val beat = (note.atMs - firstAttack) / beatMs
+            val nearestBeat = round(beat)
+            val downbeat = nearestBeat.toLong() % 4L == 0L
+            val shape = when {
+                note.durationMs >= sustainedMs || outgoing.durationMs >= longGapMs -> PanelShape.Fork
+                abs(beat-nearestBeat) <= .075 && (downbeat || note.durationMs < .67*beatMs) -> PanelShape.Drum
+                else -> PanelShape.WoodBar
+            }
+            StageKey(note.atMs, note.midi, note.playable, note.atMs in echoes, shape, centers[i + 1], normal, outward,
+                min(spans[i].durationMs, outgoing.durationMs))
         }
     }
 

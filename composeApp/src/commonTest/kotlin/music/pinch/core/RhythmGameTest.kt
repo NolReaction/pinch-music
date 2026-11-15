@@ -4,6 +4,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
+import kotlin.test.assertNull
 
 class RhythmGameTest {
     private val first = Note("a", 2_000, 72, 250, .8f)
@@ -102,20 +103,81 @@ class RhythmGameTest {
         val tail = first.copy(id = "tail", atMs = 2_800, playable = false)
         val mixed = chart.copy(notes = listOf(intro, first, inner, accent, tail))
         val game = RhythmGame(mixed, forgiving = true)
-        assertEquals(TapResult.Ignored, game.tap(1_344))
-        assertEquals(TapResult.Automatic(intro), game.tap(1_345))
+        assertEquals(TapResult.Ignored, game.tap(1_314))
+        assertEquals(TapResult.Automatic(intro), game.tap(1_315))
         assertEquals(TapResult.Ignored, game.tap(1_408))
         assertEquals(first, assertIs<TapResult.Hit>(game.tap(1_975)).note)
         assertEquals(TapResult.Automatic(inner), game.tap(2_124))
         assertEquals(TapResult.Ignored, game.tap(2_126))
         assertEquals(1, game.stats.combo)
         assertEquals(accent, assertIs<TapResult.Hit>(game.tap(2_157)).note)
-        assertEquals(TapResult.Automatic(tail), game.tap(2_855))
-        assertEquals(TapResult.Ignored, game.tap(2_856))
+        assertEquals(TapResult.Automatic(tail), game.tap(2_885))
+        assertEquals(TapResult.Ignored, game.tap(2_886))
         assertEquals(GameStats(2, perfect = 2, combo = 2, maxCombo = 2), game.finish())
         game.restart()
         assertEquals(first, assertIs<TapResult.Hit>(game.tap(2_050)).note)
         assertEquals(accent, assertIs<TapResult.Hit>(game.tap(2_150)).note)
+    }
+
+    @Test
+    fun playModeUsesInclusiveWiderGradesAndExpiryOnBothSides() {
+        val game = RhythmGame(chart, forgiving = true)
+        for ((distance, grade) in listOf(80L to Grade.Perfect, 81L to Grade.Good, 135L to Grade.Good,
+            136L to Grade.Okay, 195L to Grade.Okay)) {
+            for (error in listOf(-distance, distance)) {
+                game.restart()
+                assertEquals(TapResult.Hit(first, grade, error), game.tap(first.atMs + error))
+            }
+        }
+        game.restart()
+        assertEquals(TapResult.Ignored, game.tap(first.atMs - 196))
+        assertEquals(0, game.advance(first.atMs + 195))
+        assertEquals(1, game.advance(first.atMs + 196))
+        assertEquals(TapResult.Hit(first, Grade.Okay, 193), game.tap(first.atMs + 193))
+        assertEquals(0, game.stats.missed)
+    }
+
+    @Test
+    fun exactOptionalContactsWinAndAmbiguousDownsPreferTheAccent() {
+        val fill = first.copy(id = "fill", atMs = 2_118, playable = false)
+        val game = RhythmGame(chart.copy(notes = listOf(first, fill, second)), forgiving = true)
+        assertEquals(first, assertIs<TapResult.Hit>(game.tap(2_066)).note)
+        assertEquals(TapResult.Automatic(fill), game.tap(2_118))
+        game.restart()
+        assertEquals(TapResult.Automatic(fill), game.tap(2_112))
+        assertEquals(0, game.stats.combo)
+    }
+
+    @Test
+    fun duplicateDownsNeitherBreakComboNorSpendTheNextNoteAndQuickLegitimateDownsStillScore() {
+        val fill = first.copy(id = "fast", atMs = 2_056, playable = false)
+        val accent = second.copy(atMs = 2_118)
+        val game = RhythmGame(chart.copy(notes = listOf(first, fill, accent)), forgiving = true)
+        assertIs<TapResult.Hit>(game.tap(2_000))
+        assertEquals(TapResult.Ignored, game.tap(2_010))
+        assertEquals(TapResult.Automatic(fill), game.tap(2_056))
+        assertEquals(TapResult.Ignored, game.tap(2_063))
+        assertEquals(accent, assertIs<TapResult.Hit>(game.tap(2_118)).note)
+        assertEquals(TapResult.Ignored, game.tap(2_122))
+        assertEquals(GameStats(2, perfect = 2, combo = 2, maxCombo = 2), game.finish())
+    }
+
+    @Test
+    fun tenFpsMissCuesWaitForQueuedTapsAndDoNotReplayAfterAStall() {
+        val game = RhythmGame(chart, forgiving = true)
+        for (phase in 0L until 100L) {
+            game.restart()
+            val cues = (2_144L + phase..2_944L + phase step 100L).mapNotNull { game.takeMissCue(it) }
+            assertEquals(listOf(first, second), cues)
+        }
+        game.restart()
+        assertNull(game.takeMissCue(2_144))
+        assertNull(game.takeMissCue(2_244))
+        assertIs<TapResult.Hit>(game.tap(2_020))
+        assertNull(game.takeMissCue(2_344))
+        assertNull(game.takeMissCue(2_744))
+        assertNull(game.takeMissCue(5_744))
+        assertNull(game.takeMissCue(5_844))
     }
 
     @Test

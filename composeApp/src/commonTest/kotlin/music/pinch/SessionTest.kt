@@ -4,6 +4,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import music.pinch.core.Chart
 import music.pinch.core.Note
+import music.pinch.core.echoTargetTimes
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -83,14 +84,13 @@ class SessionTest {
         player.tick(2_500)
         session.observe()
         session.tap(12_500)
-        assertEquals(listOf(72, 73, 76), player.sounds.map { it.first })
+        assertEquals(listOf(72, 76), player.sounds.map { it.first })
         assertEquals(.25f, player.sounds.first().second)
         assertEquals(.4f, player.sounds.last().second)
-        assertTrue(player.sounds[1].second in .01f..0.1f)
         player.end()
         session.observe()
         assertEquals(Scene.Result, session.state.scene)
-        assertEquals(66_667, host.bestScore)
+        assertEquals(100_000, host.bestScore)
         assertTrue(session.state.newRecord)
         assertEquals(1, player.closes)
         session.observe()
@@ -329,7 +329,7 @@ class SessionTest {
         val player = host.player
         player.ready()
         session.observe()
-        for (time in listOf(2_214L, 2_225L, 2_714L, 2_715L, 3_500L)) {
+        for (time in listOf(2_244L, 2_255L, 2_744L, 2_745L, 3_500L)) {
             player.tick(time)
             session.observe()
         }
@@ -355,7 +355,7 @@ class SessionTest {
         session.observe()
         player.tick(2_000)
         session.tap(12_000)
-        for (time in listOf(2_280L, 2_285L, 2_312L)) {
+        for (time in listOf(2_280L, 2_285L, 2_299L)) {
             player.tick(time)
             session.tap(10_000 + time)
         }
@@ -528,5 +528,55 @@ class SessionTest {
         assertEquals(Instrument.Mallet, reopened.state.instrument)
         assertTrue("custom" in reopened.state.availableIds)
         assertEquals(listOf(72,76), reopened.state.chart!!.notes.map { it.midi })
+    }
+
+    @Test
+    fun echoesAreOptionalAndSurvivePauseButResetForAnotherRun() {
+        val host = Host()
+        val session = Session(host, scope)
+        val chart = requireNotNull(session.state.chart)
+        val echoes = chart.echoTargetTimes()
+        assertEquals(40, echoes.size)
+        assertEquals(echoes.size, session.state.echoTotal)
+        val firstEcho = echoes.min()
+        for (collect in listOf(true, false)) {
+            session.start(false)
+            assertEquals(0, session.state.echoesCaught)
+            assertNull(session.state.collectedEchoMs)
+            val player = host.player
+            player.ready()
+            session.observe()
+            var uptimeOffset = 10_000L
+            for (note in chart.notes.filter { it.playable || it.atMs in echoes }) {
+                val uptime = uptimeOffset + note.atMs
+                player.tick(note.atMs, uptime)
+                session.observe()
+                if (note.playable || collect) session.tap(uptime)
+                if (collect && note.atMs == firstEcho) {
+                    session.tap(uptime + 8)
+                    assertEquals(1, session.state.echoesCaught)
+                    assertEquals(firstEcho, session.state.collectedEchoMs)
+                    assertEquals("Эхо +1", session.state.reaction)
+                    assertEquals(note.midi + 12, player.sounds.single().first)
+                    session.pause()
+                    session.resume()
+                    session.observe()
+                    uptimeOffset += 2_000L
+                    player.tick(note.atMs, uptimeOffset + note.atMs)
+                    session.observe()
+                    assertEquals(1, session.state.echoesCaught)
+                }
+            }
+            player.end()
+            session.observe()
+            val expected = if (collect) echoes.size else 0
+            assertEquals(expected, session.state.echoesCaught)
+            assertEquals(expected, player.sounds.size)
+            assertEquals(100_000, session.state.stats?.score)
+            assertEquals(159, session.state.stats?.maxCombo)
+        }
+        session.start(true)
+        assertEquals(0, session.state.echoesCaught)
+        assertNull(session.state.collectedEchoMs)
     }
 }
