@@ -12,7 +12,7 @@ import music.pinch.ui.GameScreen
 fun App(platform: Platform, backHandler: @Composable (Boolean, () -> Unit) -> Unit = { _, _ -> }) {
     val scope = rememberCoroutineScope()
     val session = remember(platform, scope) { Session(platform, scope) }
-    DisposableEffect(session) { onDispose { session.close() } }
+    DisposableEffect(session) { onDispose { session.dispose() } }
     val media = session.media
     LaunchedEffect(session, media, session.state.scene) {
         // A frame schedules an observation. The monotonic audio transport supplies the musical time.
@@ -29,5 +29,5 @@ fun App(platform: Platform, backHandler: @Composable (Boolean, () -> Unit) -> Un
         }
     }
     val positionMs = remember(session) { { session.positionMs } }
-    GameScreen(session.state, session, positionMs, session.planarPath)
+    GameScreen(session.state, session, positionMs, session.stage)
 }

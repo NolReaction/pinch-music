@@ -40,8 +40,8 @@ extern "C" JNIEXPORT void JNICALL Java_music_pinch_ui_CascadeGL_upload(JNIEnv* e
 extern "C" JNIEXPORT void JNICALL Java_music_pinch_ui_CascadeGL_draw(JNIEnv* env, jobject, jlong stage,
                                                                      jint width, jint height,
                                                                      jfloatArray frame) {
-    float values[12];
-    env->GetFloatArrayRegion(frame, 0, 12, values);
+    float values[STAGE3D_FRAME_SIZE];
+    env->GetFloatArrayRegion(frame, 0, STAGE3D_FRAME_SIZE, values);
     if (!env->ExceptionCheck())
         stage3d_draw(reinterpret_cast<void*>(stage), width, height, values);
 }

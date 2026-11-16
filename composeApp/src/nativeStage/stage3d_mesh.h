@@ -30,7 +30,7 @@ inline V unit(V v) {
 inline V cross(V a, V b) {
     return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
 }
-enum Surface { Enamel, Skirt, Inlay, Chrome, Iron, Bolt, Accent, Rail, Led, Glass };
+enum Surface { Enamel, Skirt, Inlay, Chrome, Iron, Bolt, Accent, Rail, Led, Glass, Copper };
 struct Vertex {
     V p, n;
     float material, detail;
@@ -196,7 +196,7 @@ inline Mesh keyMesh(bool shortKey, float side, bool accented) {
     return m;
 }
 
-inline Mesh railMesh(const std::vector<V>& input, const std::vector<V>& lamps) {
+inline Mesh railMesh(const std::vector<V>& input, const std::vector<V>& lamps, bool launcher) {
     Mesh m;
     if (input.size() < 2)
         return m;
@@ -204,7 +204,7 @@ inline Mesh railMesh(const std::vector<V>& input, const std::vector<V>& lamps) {
     // along the local normal follows from the sphere/rail radii and track gauge.
     constexpr float gauge = .112f, radius = .022f;
     const float offset = std::sqrt((BallRadius + radius) * (BallRadius + radius) - gauge * gauge);
-    std::vector<V> center, left, right;
+    std::vector<V> center, left, right, spine;
     center.reserve(input.size());
     for (size_t i = 0; i < input.size(); ++i) {
         V t = unit(input[std::min(i + 1, input.size() - 1)] - input[i ? i - 1 : 0]);
@@ -212,7 +212,31 @@ inline Mesh railMesh(const std::vector<V>& input, const std::vector<V>& lamps) {
         center.push_back(input[i] + V{-t.y * sign, t.x * sign, 0} * offset);
         left.push_back(center.back() + V{0, 0, -gauge});
         right.push_back(center.back() + V{0, 0, gauge});
+        // A continuous box spine supports the cross-ties below the two runners.
+        spine.push_back(center.back() + V{0, .090f, 0});
     }
+    if (launcher) {
+        // A padded backstop closes the loading end behind the seated ball.
+        V tangent = unit(input[1] - input[0]);
+        V foot = center.front() - tangent * .267f;
+        V stop = input.front() - tangent * .267f;
+        // The launch magnet holds the seated marble through a rest. Its pole
+        // face and copper windings sit below the runners, clear of the sphere.
+        V down = unit(center.front() - input.front());
+        V pole = input.front() + down * .265f;
+        rod(m, pole, pole + down * .19f, .142f, Iron, 14);
+        for (float inset : {.043f, .078f, .113f})
+            rod(m, pole + down * inset, pole + down * (inset + .022f), .150f, Copper, 14);
+        V mount = pole + down * .17f;
+        rod(m, mount, {mount.x, mount.y, WallZ + .035f}, .040f, Iron);
+        for (float z : {-gauge, gauge}) {
+            V side{0, 0, z};
+            rod(m, foot + side, center.front() + side, radius, Rail);
+            rod(m, foot + side, stop + side, .020f, Chrome);
+        }
+        rod(m, stop + V{0, 0, -.161f}, stop + V{0, 0, .161f}, .036f, Iron, 12);
+    }
+    tube(m, spine, .046f, Iron, 4);
     tube(m, left, radius, Rail, 8);
     tube(m, right, radius, Rail, 8);
     // Seat each runner on its cross-tie. The short shoes sit below the rolling surface.
@@ -230,7 +254,8 @@ inline Mesh railMesh(const std::vector<V>& input, const std::vector<V>& lamps) {
         V a = center[i] + V{0, .052f, gauge + .03f};
         V b = a + V{0, 0, -.32f}, c = b + V{0, -.07f, -.09f};
         V d{c.x, c.y, WallZ + .035f};
-        tube(m, {a, b, c, d}, .019f, Chrome, 7);
+        rod(m, a, b, .023f, Iron, 8);
+        tube(m, {b, c, d}, .018f, Iron, 7);
         shoes(center[i]);
         rod(m, {d.x, d.y, WallZ + .018f}, {d.x, d.y, WallZ + .055f}, .034f, Bolt, 9);
     }

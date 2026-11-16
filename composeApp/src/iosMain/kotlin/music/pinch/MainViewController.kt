@@ -25,6 +25,7 @@ interface AppleMediaSession {
     fun includeSample(midi: Int, root: Int)
     fun prepare(backingAsset: String?)
     fun setBackingVolume(gain: Float)
+    val ready: Boolean
     val backingPositionMs: Long
     val backingPlaying: Boolean
     val backingEnded: Boolean
@@ -70,8 +71,8 @@ private class IosMedia(factory: AppleMediaFactoryProtocol, private val durationM
     private val clock = SessionClock(durationMs)
     private val backingClock = BackingClock(durationMs)
     private val session = factory.createMedia(instrument.name.lowercase(), this)
-    private var hasBacking = false
-    private var ready = false
+    private var backingAsset: String? = null
+    private var preparationRequested = false
     private var closed = false
     override var onInterrupted: (() -> Unit)? = null
 
@@ -84,11 +85,15 @@ private class IosMedia(factory: AppleMediaFactoryProtocol, private val durationM
     }
 
     override fun prepare(pitches: Set<Int>, backingAsset: String?) {
-        if (ready || closed) return
+        if (preparationRequested || closed) return
+        preparationRequested = true
         for (pitch in pitches) session.includeSample(pitch, instrumentRoot(pitch))
-        hasBacking = backingAsset != null
+        this.backingAsset = backingAsset
         session.prepare(backingAsset)
-        ready = session.failure == null
+    }
+
+    override fun prepareResume() {
+        if (preparationRequested && !closed) session.prepare(backingAsset)
     }
 
     override fun setBackingVolume(volume: Float) {
@@ -98,10 +103,12 @@ private class IosMedia(factory: AppleMediaFactoryProtocol, private val durationM
     override fun snapshot(): Playback {
         val now = uptimeMs()
         val failure = session.failure
-        if (!hasBacking) return clock.snapshot(now, ready && !closed, failure)
+        val ready = !closed && session.ready
+        if (backingAsset == null) return clock.snapshot(now, ready, failure)
         val ended = session.backingEnded
-        if (ended || !ready || closed || failure != null) {
-            return Playback(ready && !closed, false, ended, if (ended) durationMs else 0L, now, failure)
+        if (ended || !ready || failure != null) {
+            val position = if (ended) durationMs else session.backingPositionMs.coerceIn(0L, durationMs)
+            return Playback(ready, false, ended, position, now, failure)
         }
         return backingClock.snapshot(now) {
             val playing = session.backingPlaying
@@ -111,9 +118,9 @@ private class IosMedia(factory: AppleMediaFactoryProtocol, private val durationM
     }
 
     override fun play() {
-        if (!ready || closed) return
+        if (closed || !session.ready) return
         backingClock.reset()
-        if (session.activate() && !hasBacking) clock.play(uptimeMs())
+        if (session.activate() && backingAsset == null) clock.play(uptimeMs())
     }
 
     override fun pause() {
@@ -123,11 +130,11 @@ private class IosMedia(factory: AppleMediaFactoryProtocol, private val durationM
     }
 
     override fun note(midi: Int, gain: Float) {
-        if (ready && !closed) session.note(midi, gain)
+        if (!closed) session.note(midi, gain)
     }
 
     override fun strike(gain: Float) {
-        if (ready && !closed) session.strike(gain)
+        if (!closed) session.strike(gain)
     }
 
     override fun close() {

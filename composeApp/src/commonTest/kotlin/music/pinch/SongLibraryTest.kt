@@ -58,6 +58,20 @@ class SongLibraryTest {
         assertEquals(oldJson, encodeChart(old))
     }
 
+    @Test fun practiceArrangementsKeepTheirLeadPlayableAboveTheAutomaticAnswer() {
+        for (song in songLibrary.filter { it.backingAsset == null }) {
+            val chart = requireNotNull(song.bundled)
+            val lead = chart.notes.filter { it.playable }
+            val answer = chart.notes.filterNot { it.playable }
+            assertEquals(lead, chart.cascadeChart().notes.filter { it.playable }, song.title)
+            assertTrue(answer.maxOf { it.velocity } < lead.minOf { it.velocity }, song.title)
+            assertTrue(answer.last().atMs > lead.last().atMs, song.title)
+            // The two parts must use distinct onsets in Orbit and in saved v1 charts.
+            val saved = encodeChart(chart)
+            assertEquals(saved, encodeChart(decodeChart(saved, chart.title)), song.title)
+        }
+    }
+
     @Test fun cascadeReducesOrnamentsAndPreservesAuthoredStereoLoveTargetsAtTheirActualOnsets() {
         val source = requireNotNull(stereoLoveSong.bundled)
         val route = source.cascadeChart()

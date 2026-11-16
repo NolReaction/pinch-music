@@ -37,7 +37,7 @@ final class AppleCascadeDisplay: NSObject, @preconcurrency AppleCascadeSurface, 
     private var keys = [Float]()
     private var rails = [Float]()
     private var lamps = [Float]()
-    private var frame = [Float](repeating: 0, count: 12)
+    private var frame = [Float](repeating: 0, count: Int(STAGE3D_FRAME_SIZE))
     private var needsUpload = true
     private var hasFrame = false
     private var closed = false
@@ -75,7 +75,7 @@ final class AppleCascadeDisplay: NSObject, @preconcurrency AppleCascadeSurface, 
     }
 
     func draw(frame data: Data) {
-        guard !closed, data.count == 12 * MemoryLayout<Float>.stride else { return }
+        guard !closed, data.count == frame.count * MemoryLayout<Float>.stride else { return }
         _ = frame.withUnsafeMutableBytes { dest in data.copyBytes(to: dest) }
         hasFrame = true
         if !suspended && canvas.window != nil && UIApplication.shared.applicationState == .active {

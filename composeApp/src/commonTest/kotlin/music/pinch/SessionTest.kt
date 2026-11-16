@@ -1,7 +1,11 @@
 package music.pinch
 
+import kotlin.coroutines.CoroutineContext
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.Dispatchers
+import music.pinch.ui.PreparedStage
 import music.pinch.core.Chart
 import music.pinch.core.Note
 import music.pinch.core.echoTargetTimes
@@ -16,7 +20,8 @@ class SessionTest {
         Note("a", 2000, 72, 250, .5f), Note("b", 2500, 76, 250, .8f)
     )))
     private val scope = CoroutineScope(Dispatchers.Unconfined)
-    private fun session(host: Host) = Session(host, scope, listOf(song, Song("custom","Другой трек","Test")))
+    private fun session(host: Host, songs: List<Song> = listOf(song, Song("custom","Другой трек","Test"))) =
+        Session(host, scope, songs, Dispatchers.Unconfined)
 
     private class Host : Platform {
         val values = mutableMapOf<String, String>()
@@ -29,7 +34,11 @@ class SessionTest {
         override fun feedback() {}
         val players = mutableListOf<Player>()
         val player get() = players.last()
-        override fun newMedia(durationMs: Long, instrument: Instrument) = Player().also(players::add)
+        var lastInstrument: Instrument? = null
+        override fun newMedia(durationMs: Long, instrument: Instrument): Player {
+            lastInstrument = instrument
+            return Player().also(players::add)
+        }
     }
 
     private class Player : GameMedia {
@@ -65,14 +74,88 @@ class SessionTest {
     }
 
     @Test
+    fun menuAndPauseRespondWhileTheCourseIsBuildingAndAReplayReusesIt() {
+        val work = ArrayDeque<Runnable>()
+        val dispatcher = object : CoroutineDispatcher() {
+            override fun dispatch(context: CoroutineContext, block: Runnable) { work.addLast(block) }
+        }
+        val host = Host()
+        val second = song.copy(id = "other", title = "Другая")
+        val session = Session(host, scope, listOf(song, second), dispatcher)
+        session.selectStageMode(StageMode.Planar)
+        session.start(preview = true)
+        val obsolete = host.player
+        session.start(preview = false)
+        assertEquals(1, host.players.size)
+        assertTrue(session.state.preview)
+        obsolete.ready()
+        session.observe()
+        assertEquals(Scene.Loading, session.state.scene)
+        assertNull(session.stage)
+        session.menu()
+        session.selectSong(second.id)
+        session.start(preview = false)
+        val active = host.player
+        active.ready()
+        active.onInterrupted?.invoke()
+        while (work.isNotEmpty()) work.removeFirst().run()
+        assertEquals(Scene.Paused, session.state.scene)
+        val prepared = requireNotNull(session.stage)
+        assertEquals(0, obsolete.starts)
+        assertEquals(0, active.starts)
+        assertEquals(1, obsolete.closes)
+        session.resume()
+        session.observe()
+        active.tick(0, 12_000)
+        session.observe()
+        assertEquals(1, active.starts)
+        session.restart()
+        assertTrue(session.stage === prepared)
+        assertTrue(work.isEmpty())
+        session.dispose()
+    }
+
+    @Test
+    fun revisedBuiltInScoreAndFixedBackingHaveIndependentSettings() {
+        val host = Host()
+        val backing = song.copy(id = "stereo-love", backingAsset = "backing/stereo-love.m4a")
+        val revised = song.copy(bundledRevision = 2)
+        host.values["record.v3.test.bundled"] = "91000"
+        host.values["record.v3.test.bundled.v2"] = "46000"
+        val session = session(host, listOf(backing, revised))
+        assertEquals(backing.backingAsset, session.state.backingAsset)
+        session.selectInstrument(Instrument.Mallet)
+        assertNull(session.state.backingAsset)
+        session.start(true)
+        host.player.ready()
+        session.observe()
+        host.player.tick(2000)
+        session.observe()
+        assertEquals(Instrument.Mallet, host.lastInstrument)
+        assertEquals(listOf(72), host.player.sounds.map { it.first })
+        session.menu()
+        session.selectRecording()
+        session.start(true)
+        assertEquals(backing.backingAsset, host.player.backing)
+        session.menu()
+        session.selectSong(revised.id)
+        assertEquals(46000, session.state.bestScore)
+        session.selectInstrument(Instrument.Synth)
+        session.selectSong(backing.id)
+        assertEquals(backing.backingAsset, session.state.backingAsset)
+        assertEquals("Synth", host.values["instrument"])
+        session.dispose()
+    }
+
+    @Test
     fun recordedCascadePreviewUsesOnlyTheBackingThroughLampCrossingsAndResume() {
         val host = Host()
-        val session = Session(host, scope)
+        val session = session(host, songLibrary)
         session.selectStageMode(StageMode.Planar)
         session.start(true)
         session.selectStageMode(StageMode.Orbit)
         assertEquals(StageMode.Planar, session.state.stageMode)
-        val cues = requireNotNull(session.planarPath).ledCues
+        val cues = (session.stage as PreparedStage.Cascade).path.ledCues
         assertTrue(cues.isNotEmpty())
         val player = host.player
         assertEquals("backing/stereo-love.m4a", player.backing)
@@ -94,10 +177,10 @@ class SessionTest {
     @Test
     fun aRailOrnamentAcceptsOneOptionalTapWithoutReplayingItsPitch() {
         val host = Host()
-        val session = Session(host, scope)
+        val session = session(host, songLibrary)
         session.selectStageMode(StageMode.Planar)
         session.start(false)
-        val course = requireNotNull(session.planarPath)
+        val course = (session.stage as PreparedStage.Cascade).path
         val cue = course.ledCues.first { light ->
             course.attacks.all { kotlin.math.abs(it.atMs - light.atMs) > 200 }
         }
@@ -129,13 +212,13 @@ class SessionTest {
         ))
         val host = Host()
         host.writeValue("record.v3.test.bundled", "50000")
-        val session = Session(host, scope, listOf(song.copy(bundled = raw)))
+        val session = session(host, listOf(song.copy(bundled = raw)))
         session.selectStageMode(StageMode.Planar)
         assertNull(session.state.bestScore)
         val score = requireNotNull(session.state.chart)
         assertEquals(listOf("target", "end"), score.notes.map { it.id })
         session.start(false)
-        assertEquals(score.notes.map { it.atMs }, requireNotNull(session.planarPath).attacks.map { it.atMs })
+        assertEquals(score.notes.map { it.atMs }, (session.stage as PreparedStage.Cascade).path.attacks.map { it.atMs })
         val player = host.player
         player.ready()
         session.observe()
@@ -474,7 +557,7 @@ class SessionTest {
         val host = Host()
         val stereo = song.copy(id = "stereo-love", backingAsset = "backing/stereo-love.m4a")
         val songs = listOf(song, stereo)
-        val session = Session(host, scope, songs)
+        val session = session(host, songs)
         assertEquals(stereo.id, session.state.selectedSong.id)
         listOf(true, false).forEach { preview ->
             session.start(preview)
@@ -485,13 +568,13 @@ class SessionTest {
             session.menu()
         }
         session.selectSong(song.id)
-        assertEquals(song.id, Session(host, scope, songs).state.selectedSong.id)
+        assertEquals(song.id, session(host, songs).state.selectedSong.id)
         session.start(false)
         assertNull(host.player.backing)
         session.menu()
         host.writeValue("selected.song", stereo.id)
         host.writeValue("chart.${stereo.id}", encodeChart(requireNotNull(song.bundled)))
-        val imported = Session(host, scope, songs)
+        val imported = session(host, songs)
         assertEquals(stereo.id, imported.state.selectedSong.id)
         assertNull(imported.state.backingAsset)
         imported.start(false)
@@ -505,7 +588,7 @@ class SessionTest {
     @Test
     fun entireFeaturedArrangementCanBePlayedMissedAndPreviewedAgainstTheSameTimeline() {
         val host = Host()
-        val session = Session(host, scope)
+        val session = session(host, songLibrary)
         val chart = requireNotNull(session.state.chart)
         val notes = chart.notes.filter { it.playable }
         fun run(preview: Boolean, playEveryNote: Boolean): Player {
@@ -571,7 +654,7 @@ class SessionTest {
         val chart = requireNotNull(song.bundled)
         val between = chart.notes.first().copy(id = "automatic", atMs = 2_390, playable = false)
         val part = chart.copy(notes = listOf(chart.notes.first(), between, chart.notes.last()))
-        val session = Session(host, scope, listOf(song.copy(bundled = part, backingAsset = "full.m4a")))
+        val session = session(host, listOf(song.copy(bundled = part, backingAsset = "full.m4a")))
         session.start(false)
         host.player.ready()
         session.observe()
@@ -629,7 +712,7 @@ class SessionTest {
         val chart = requireNotNull(song.bundled)
         val chord = song.copy(bundled = chart.copy(notes = listOf(chart.notes.first(),
             chart.notes.first().copy(id = "harmony", midi = 79), chart.notes.last())))
-        val session = Session(host, scope, listOf(chord))
+        val session = session(host, listOf(chord))
         session.start(true)
         host.player.ready()
         session.observe()
@@ -656,7 +739,7 @@ class SessionTest {
     @Test
     fun echoesAreOptionalAndSurvivePauseButResetForAnotherRun() {
         val host = Host()
-        val session = Session(host, scope)
+        val session = session(host, songLibrary)
         val chart = requireNotNull(session.state.chart)
         val echoes = chart.echoTargetTimes()
         assertEquals(40, echoes.size)

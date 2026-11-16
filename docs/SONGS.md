@@ -1,19 +1,19 @@
 # Музыка
 
-Сразу после установки доступны восемь песен. У Stereo Love есть инструментальная аранжировка на 3:04, у остальных семи песен — короткие фразы для игры одним пальцем. У каждой партии свой темп. Шарик касается планки в момент, заданный партитурой. В Stereo Love мелодия записана вместе с сопровождением. В коротких фразах и импортированных партиях используются сэмплы выбранного инструмента.
+Сразу после установки доступны восемь песен. У Stereo Love есть инструментальная аранжировка на 3:04, у остальных семи песен — восьмитактовые партии для игры одним пальцем. В них игрок ведёт верхний голос, а более тихий второй голос отвечает в паузах. В режиме «Послушать» оба голоса звучат автоматически. У каждой партии свой темп. Шарик касается планки в момент, заданный партитурой. В Stereo Love кнопка «Оригинал» включает мелодию с сопровождением. Выбор другого тембра переключает всю песню на сольную мелодию. Для соло, восьмитактовых и импортированных партий используются сэмплы выбранного инструмента.
 
 Каталог ведётся в [SongLibrary.kt](../composeApp/src/commonMain/kotlin/music/pinch/SongLibrary.kt). У Stereo Love партия игрока и сопровождение используют [общую партитуру](../tools/stereo_love/score.py). По ней можно проверить игровые панели командой `python3 tools/stereo_love/score.py --check`.
 
 | Песня | Партия для игры | Музыкальный ориентир |
 | --- | --- | --- |
-| On the Floor — Jennifer Lopez ft. Pitbull | Нисходящий мотив из «Llorando se fue», знакомый по «Lambada». Перенесён в ре минор. | [Мелодия](https://melodicnotes.com/song/jennifer-lopez-on-the-floor-4003/) |
+| On the Floor — Jennifer Lopez ft. Pitbull | Нисходящая тема в ре миноре. После синкопированного ответа мелодия поднимается до верхнего до и возвращается к ре. | [Мелодия](https://melodicnotes.com/song/jennifer-lopez-on-the-floor-4003/) |
 | Stereo Love — Edward Maya & Vika Jigulina | 127 BPM, 3:04. Аккордеон, бас и ударные ведут игру от вступления до коды. В партитуре 508 нот, из них 159 помечены как игровые акценты. Орбита использует все ноты, каскад строит маршрут по основным ударам. | [Mark Richards, пример 14](https://mtosmt.org/issues/mto.17.23.3/mto.17.23.3.richards.html) |
-| Gypsy Woman — Crystal Waters | Отдельные ступени органных аккордов, включая хроматическое движение ми – ми-бемоль – ре. | [Гармония органного риффа](https://dancenastysmusicblog.wordpress.com/2019/05/03/crystal-waters-gypsy-woman-a-transcription/) |
-| Levels — Avicii | Две нисходящие фразы синтезатора с разными окончаниями. | [Rick Snoman, Dance Music Manual, пример 1.5](https://api.pageplace.de/preview/DT0400.9783840313257_A38251302/preview-9783840313257_A38251302.pdf) |
-| Stay — The Kid LAROI & Justin Bieber | Контур вокальной фразы припева. | [Нотный ориентир](https://easyletternotes.wordpress.com/2021/09/09/stay-the-kid-laroi-justin-bieber/) |
-| Turn Down for What — DJ Snake & Lil Jon | Октавный ответ синтезатора на повторяющейся нижней ноте. | [Сравнительный нотный пример, нижняя строка, стр. 21–22](https://bpb-us-w2.wpmucdn.com/blogs.law.gwu.edu/dist/a/4/files/2018/12/GoldenCrownComplaint-1hsgroi.pdf#page=21) |
-| Yeah! — Usher ft. Lil Jon & Ludacris | Синтезатор играет от соль с чередованием ре и ми-бемоля. | [Разбор риффа](https://muzikum.eu/index.php/en/usher/yeah-piano-tab) |
-| The Final Countdown — Europe | Два коротких оборота из вступления синтезатора в фа-диез миноре. | [Вступление](https://unpianiste.com/wp-content/uploads/partitions/The_Final_Countdown_Intro.pdf) |
+| Gypsy Woman — Crystal Waters | Удерживаемые верхние ноты и короткие ответы органа между долями. В конце ми спускается через ми-бемоль к ре. | [Гармония органного риффа](https://dancenastysmusicblog.wordpress.com/2019/05/03/crystal-waters-gypsy-woman-a-transcription/) |
+| Levels — Avicii | Две нисходящие фразы заканчиваются на разной высоте. В третьей фразе нижний голос поднимается навстречу мелодии, последняя приходит к до-диезу. | [Rick Snoman, Dance Music Manual, пример 1.5](https://api.pageplace.de/preview/DT0400.9783840313257_A38251302/preview-9783840313257_A38251302.pdf) |
+| Stay — The Kid LAROI & Justin Bieber | На 170 BPM верхний голос движется вдвое спокойнее пульса. Между длинными нотами звучит ответ, в третьей фразе мелодия поднимается выше. | [Нотный ориентир](https://easyletternotes.wordpress.com/2021/09/09/stay-the-kid-laroi-justin-bieber/) |
+| Turn Down for What — DJ Snake & Lil Jon | Октавный ответ на повторяющемся си, редкая середина и более высокий третий заход. Закрывает партию отдельный басовый удар. | [Сравнительный нотный пример, нижняя строка, стр. 21–22](https://bpb-us-w2.wpmucdn.com/blogs.law.gwu.edu/dist/a/4/files/2018/12/GoldenCrownComplaint-1hsgroi.pdf#page=21) |
+| Yeah! — Usher ft. Lil Jon & Ludacris | Низкий соль чередуется с ре и ми-бемолем. В третьей фразе ответ поднимается на соседние ступени и возвращается на соль. | [Разбор риффа](https://muzikum.eu/index.php/en/usher/yeah-piano-tab) |
+| The Final Countdown — Europe | Фанфарный звон в фа-диез миноре. Нижний голос подхватывает долгие ноты, верхний раскрывается к кульминации и возвращается к фа-диезу. | [Вступление](https://unpianiste.com/wp-content/uploads/partitions/The_Final_Countdown_Intro.pdf) |
 
 ## Свой аудиофайл
 

@@ -37,7 +37,7 @@ internal fun CascadeFrameClock(
     display: CascadeDisplay, course: CascadeGpuCourse, frame: (FloatArray) -> Unit, animate: Boolean
 ) {
     val readFrame by rememberUpdatedState(frame)
-    val values = remember(display) { FloatArray(12) }
+    val values = remember(display) { FloatArray(CascadeFrameSize) }
     if (animate) {
         LaunchedEffect(display, course) {
             while (true) withFrameNanos {

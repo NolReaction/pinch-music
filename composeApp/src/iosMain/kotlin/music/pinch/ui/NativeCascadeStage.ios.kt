@@ -55,8 +55,8 @@ private class AppleDisplay(val surface: AppleCascadeSurface) : CascadeDisplay {
             surface.setCourse(course.keys.bytes(), course.rails.bytes(), course.lamps.bytes())
             installed = course
         }
-        // draw() consumes these pinned bytes synchronously. Swift copies the 12
-        // floats into its reusable frame before returning (including paused frames).
+        // draw() consumes these pinned bytes synchronously. Swift copies them
+        // into its reusable frame before returning (including paused frames).
         frame.usePinned {
             val bytes = NSData.create(bytesNoCopy = it.addressOf(0), length = frame.size.toULong() * 4uL,
                 freeWhenDone = false)

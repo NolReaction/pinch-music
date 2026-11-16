@@ -41,7 +41,7 @@ internal actual fun NativeCascadeStage(
 private class CascadeTexture(context: Context) : TextureView(context), TextureView.SurfaceTextureListener, CascadeDisplay {
     private var worker: CascadeWorker? = null
     private var course: CascadeGpuCourse? = null
-    private val lastFrame = FloatArray(12)
+    private val lastFrame = FloatArray(CascadeFrameSize)
     private var renderWidth = 0
     private var renderHeight = 0
     private var released = false
@@ -110,8 +110,8 @@ private class CascadeWorker(private val texture: SurfaceTexture) {
     private val thread = HandlerThread("Cascade GLES").apply { start() }
     private val handler = Handler(thread.looper)
     private val lock = Any()
-    private val pending = FloatArray(12)
-    private val drawing = FloatArray(12)
+    private val pending = FloatArray(CascadeFrameSize)
+    private val drawing = FloatArray(CascadeFrameSize)
     private var width = 1
     private var height = 1
     private var latestCourse: CascadeGpuCourse? = null

@@ -122,7 +122,6 @@ struct Stage {
     Buffer wallMesh, marble;
     std::array<Buffer, 8> keys; // short vs full, mount side, accent vs plain
     std::vector<Piece> pieces;
-    float longestDrop = 0;
     GLsizei backdropIndices = 0, shadowIndices = 0;
     bool init() {
         if (!scene.link(sceneVS, sceneFS) || !wall.link(wallVS, wallFS))
@@ -172,7 +171,6 @@ struct Stage {
     }
     void course(const float* key, int count, const float* rails, int nr, const float* leds, int nl) {
         pieces.clear();
-        longestDrop = 0;
         if (!key || count <= 0)
             return;
         pieces.resize(count);
@@ -195,7 +193,6 @@ struct Stage {
                 Piece& p = pieces[k];
                 V local{data[i * 3 + 1] - p.x, data[i * 3 + 2] - p.y, 0};
                 (lamp ? p.lamps : p.route).push_back(local);
-                longestDrop = std::max(longestDrop, std::abs(local.y));
             }
         };
         assign(rails, nr, false);
@@ -205,19 +202,31 @@ struct Stage {
         if (width <= 0 || height <= 0 || !f)
             return;
         const float aspect = static_cast<float>(width) / height;
-        // Frame both banks together. Keys remain stationary in X as the marble changes direction.
-        const float halfHeight = std::max(2.42f, 2.06f / aspect);
+        // Pull back on long descents so the next stretch of rail enters the frame.
+        // Travel is measured on the smoothed camera path; a strike never kicks the lens.
+        const float run = std::clamp((f[12] - 1.4f) / 4.8f, 0.f, 1.f);
+        const float framing = .98f + .18f * run * run * (3.f - 2.f * run);
+        const float halfHeight = std::max(2.48f, 2.00f / aspect) * framing;
         const float lensY = 9.93f / halfHeight, lensX = lensY / aspect;
-        const float camera = f[3] + .26f, strength = std::max(0.f, std::min(1.f, f[6]));
+        const float cameraX = f[10], cameraY = f[3] + .26f;
+        const float strength = std::max(0.f, std::min(1.f, f[6]));
         const int active = static_cast<int>(f[5]), roll = static_cast<int>(f[7]),
                   next = static_cast<int>(f[9]);
-        const V ball{f[0], f[1] - camera, f[2]};
-        // Lens sees slightly more course below the marble than above due to the
-        // elevated eye. Expand for the wall mounts and the full drop of a curved rail.
-        const float range = halfHeight * 1.9f + 2.4f + longestDrop;
-        auto lo = std::lower_bound(pieces.begin(), pieces.end(), camera - range,
+        const V ball{f[0] - cameraX, f[1] - cameraY, f[2]};
+        // Bound the vertical extent of all four corner rays up to the rear wall.
+        // The perspective view can see farther down at one corner, especially in landscape.
+        const V eye{2.80f, -4.88f, 8.20f};
+        const float wallDepth = std::min(45.f, (eye.z - WallZ + .1f) /
+            std::max(.001f, .827155f - .32033f / lensX - .461818f / lensY));
+        const float upperRayY = .487454f - .873148f / lensY;
+        const float lowerRayY = .487454f + .873148f / lensY;
+        const float top = cameraY + eye.y + upperRayY * (upperRayY < 0.f ? wallDepth : .20f) - 1.5f;
+        const float bottom = cameraY + eye.y + lowerRayY * wallDepth + 1.5f;
+        auto lo = std::lower_bound(pieces.begin(), pieces.end(), top,
                                    [](const Piece& p, float y) { return p.y < y; });
-        auto hi = std::upper_bound(lo, pieces.end(), camera + range,
+        if (lo != pieces.begin())
+            --lo; // The preceding rail can extend down into the viewport.
+        auto hi = std::upper_bound(lo, pieces.end(), bottom,
                                    [](float y, const Piece& p) { return y < p.y; });
         glViewport(0, 0, width, height);
         glDisable(GL_SCISSOR_TEST);
@@ -230,7 +239,6 @@ struct Stage {
             glEnableVertexAttribArray(i);
         glUseProgram(wall.id);
         glUniform4f(wall.lens, lensX, lensY, .20f, 45.f);
-        const V eye{2.80f, -4.88f, 8.20f};
         const V rel = ball - eye;
         float bz = std::max(1.f, dot(rel, {-.279687f, .487454f, -.827155f}));
         glUniform4f(wall.wallLight, dot(rel, {.947306f, 0, -.32033f}) * lensX / bz,
@@ -258,9 +266,11 @@ struct Stage {
                 flush();
         };
         for (auto it = lo; it != hi; ++it) {
+            if (it->style < 0.f)
+                continue;
             float center = keyCenterX(it->route.size() >= 2, it->side);
-            shadow(it->x + center * it->tiltCos,
-                   it->y - camera + center * it->tiltSin, 0, it->slope);
+            shadow(it->x - cameraX + center * it->tiltCos,
+                   it->y - cameraY + center * it->tiltSin, 0, it->slope);
         }
         shadow(ball.x, ball.y, 1, 0);
         flush();
@@ -277,10 +287,10 @@ struct Stage {
             int i = static_cast<int>(it - pieces.begin());
             bool guided = p.route.size() >= 2;
             // Bounding boxes for the two slab clip planes, including mounting
-            // hardware and a curved rail extending inwards from a guided key.
-            const float extension = guided ? p.route.back().x * .5f : 0.f;
-            V center{p.x + extension, p.y - camera + .22f, -.32f};
-            V halfSize{.76f + std::abs(extension), .56f + (guided ? longestDrop : 0.f), 1.06f};
+            // hardware and the full pitched guide from its key to its release lip.
+            const V halfRun = guided ? p.route.back() * .5f : V{0, 0, 0};
+            V center{p.x - cameraX + halfRun.x, p.y - cameraY + .22f + halfRun.y, -.32f};
+            V halfSize{.76f + std::abs(halfRun.x), .64f + std::abs(halfRun.y), 1.06f};
             bool clipped = false;
             for (float sign : {-1.f, 1.f}) {
                 const V plane =
@@ -292,19 +302,24 @@ struct Stage {
             }
             if (clipped)
                 continue;
-            int shape = (guided ? 4 : 0) + (p.side > 0 ? 2 : 0) + (p.style == 1.f ? 1 : 0);
-            float impact = i == active ? strength : 0.f;
-            bool upcoming = i == next && f[10] > .5f;
-            glUniform3f(scene.offset, p.x, p.y - camera, 0);
-            glUniform4f(scene.key, impact, p.style, upcoming ? 1.f : 0.f, -2.f);
-            glUniform2f(scene.tilt, p.tiltCos, p.tiltSin);
-            keys[shape].bind();
-            keys[shape].draw();
+            glUniform3f(scene.offset, p.x - cameraX, p.y - cameraY, 0);
+            if (p.style >= 0.f) {
+                int shape = (guided ? 4 : 0) + (p.side > 0 ? 2 : 0) + (p.style == 1.f ? 1 : 0);
+                float impact = i == active ? strength : 0.f;
+                bool upcoming = i == next && p.style > .5f;
+                glUniform4f(scene.key, impact, p.style, upcoming ? 1.f : 0.f, -2.f);
+                glUniform2f(scene.tilt, p.tiltCos, p.tiltSin);
+                keys[shape].bind();
+                keys[shape].draw();
+            }
             if (guided) {
                 if (!p.rail.count)
-                    p.rail.upload(railMesh(p.route, p.lamps));
+                    p.rail.upload(railMesh(p.route, p.lamps, p.style < 0.f));
                 // Rails are already built in world axes from the physics samples.
-                glUniform4f(scene.key, 0.f, p.style, i == roll ? f[11] : 0.f, i == roll ? f[8] : -2.f);
+                // A finished guide keeps a dim record of crossed lamps. Using the
+                // lamp count puts the brighter moving highlight past the last lamp.
+                float crossed = i == roll ? f[8] : (i <= active ? static_cast<float>(p.lamps.size()) : -2.f);
+                glUniform4f(scene.key, 0.f, p.style, i == roll ? f[11] : 0.f, crossed);
                 glUniform2f(scene.tilt, 1.f, 0.f);
                 p.rail.bind();
                 p.rail.draw();

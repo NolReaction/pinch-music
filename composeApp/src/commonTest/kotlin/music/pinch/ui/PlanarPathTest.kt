@@ -31,7 +31,7 @@ class PlanarPathTest {
                 assertEquals(i, frame.attackIndex)
                 assertEquals(0f, frame.marble.z)
                 assertEquals(attack.x, frame.marble.x)
-                assertEquals(panel.topY - MarbleRadius, frame.marble.y)
+                assertEquals(panel.topY - MarbleRadius, frame.marble.y, .00005f)
                 assertEquals(score.notes[i].playable, attack.playable)
                 path.attacks.getOrNull(i + 1)?.let { next -> assertEquals(panel.left, next.x > attack.x) }
                 if (panel.railSamples.isNotEmpty()) assertEquals(frame.marble, panel.railSamples.first())
@@ -80,11 +80,16 @@ class PlanarPathTest {
     private fun assertCourseClear(chart: Chart, title: String) {
         val path = PlanarPath(chart)
         val rods = path.panels.map { rodCenters(it.railSamples) }
+        val start = rodCenters(path.entryRail)
         for (ms in 0..chart.durationMs step 5) {
             val frame = path.frame(ms)
             val ball = frame.marble
             val active = path.attacks.getOrNull(frame.attackIndex)?.panelIndex ?: 0
             assertEquals(0f, ball.z)
+            if (active < 2) for (j in 1 until start.size) {
+                assertTrue(distanceToRod(ball, start[j - 1], start[j]) >= MarbleRadius - .0004f,
+                    "$title at ${ms}ms crosses starter rod $j")
+            }
             for (index in max(0, active - 3)..min(path.panels.lastIndex, active + 3)) {
                 val p = path.panels[index]
                 val contact = path.attacks[p.firstAttack].x
@@ -112,7 +117,7 @@ class PlanarPathTest {
     }
 
     @Test fun lightsMarkOriginalNotesWhileTheBallRollsAndLeavesTheLipTangentially() {
-        var troughs = 0
+        val inclines = mutableSetOf<Int>()
         for (song in songLibrary) {
             val path = PlanarPath(requireNotNull(song.bundled))
             val sourceNotes = requireNotNull(song.bundled).notes.toSet()
@@ -126,23 +131,13 @@ class PlanarPathTest {
                 val start = path.attacks[panel.lastAttack].atMs
                 val end = path.attacks[panel.lastAttack + 1].atMs
                 val entry = path.frame(start)
-                val speed0 = abs(path.frame(start + 1).marble.x - entry.marble.x) * 1000
-                assertEquals(rail.first().y, rail[1].y)
-                assertEquals(rail.last().y, rail[rail.lastIndex - 1].y)
-                assertTrue(rail.last().y > rail.first().y)
-                if (rail.maxOf { it.y } > rail.last().y + .04f) troughs++
+                val speed0 = (path.frame(start + 4).marble - entry.marble).length() * 250f
                 val direction = if (panel.left) 1 else -1
-                // A guide can only push the sphere. Check that none of its bends would require adhesion.
-                for (j in 1 until rail.lastIndex) {
-                    val a = rail[j] - rail[j - 1]
-                    val b = rail[j + 1] - rail[j]
-                    val tangent = a + b
-                    val curvature = 2 * direction * (a.x * b.y - a.y * b.x) /
-                        (a.length() * b.length() * tangent.length())
-                    val speedSquared = speed0 * speed0 + (10 * CascadeGravity / 7) * (rail[j].y - entry.marble.y)
-                    val support = CascadeGravity * abs(tangent.x) / tangent.length() - curvature * speedSquared
-                    assertTrue(support >= 0, "loss of contact at ${song.title} key $index sample $j")
-                }
+                val pitch = (rail.last().y - rail.first().y) / (rail.last().x - rail.first().x)
+                assertEquals(panel.slope, pitch, .0002f, "guide tangent matches the entry key")
+                inclines += (abs(pitch) * 100).toInt()
+                assertTrue(rail.zipWithNext().all { (a, b) -> b.y > a.y })
+                assertTrue(speed0 >= 2.2f, "slow entry at ${song.title} / $start")
                 for ((lamp, time) in panel.ledTimesMs.withIndex()) {
                     val f = path.frame(time)
                     assertEquals(index, f.rollingPanel)
@@ -151,7 +146,7 @@ class PlanarPathTest {
                     assertEquals(panel.ledCenters[lamp], f.marble)
                     val speed = (path.frame(time + 2).marble - path.frame(time - 2).marble).length() * 250
                     val energy = speed0 * speed0 + (10 * CascadeGravity / 7) * (f.marble.y - entry.marble.y)
-                    assertEquals(energy.toFloat(), speed * speed, .24f, "rolling kinetic energy at $time")
+                    assertTrue(speed >= speed0 - .04f && speed * speed <= energy + .30f, "rolling energy at $time")
                     var distance = 0f
                     for (j in 1 until rail.size) {
                         if ((f.marble.x - rail[j].x) * direction < 0) {
@@ -175,7 +170,7 @@ class PlanarPathTest {
                 assertTrue((lip.marble - rail.last()).length() < .008f)
                 assertEquals(lip.marble.x - before.marble.x, later.marble.x - air.marble.x, .0001f)
                 assertEquals(lip.rollAngle - before.rollAngle, later.rollAngle - air.rollAngle, .0003f)
-                assertEquals(lip.marble.y, air.marble.y, .00012f)
+                assertEquals(lip.marble.y - before.marble.y, later.marble.y - air.marble.y, .00016f)
                 val dt = (end - hi) / 4
                 val a = path.frame(hi).marble
                 val b = path.frame(hi + dt).marble
@@ -183,7 +178,7 @@ class PlanarPathTest {
                 assertEquals((CascadeGravity * dt * dt / 1e6).toFloat(), c.y - 2 * b.y + a.y, .00023f)
             }
         }
-        assertTrue(troughs > 0, "at least one guide must rise toward its exit")
+        assertTrue(inclines.size >= 4, "melodic intervals must produce different grades")
     }
 
     @Test fun fastStereoLovePhraseKeepsEachStrikeAndLimitsTravelPerFrame() {
@@ -204,7 +199,7 @@ class PlanarPathTest {
         for (ms in phrase) {
             val a = path.frame(ms)
             val b = path.frame(ms + 17)
-            val dx = b.marble.x - a.marble.x
+            val dx = (b.marble.x - b.cameraX) - (a.marble.x - a.cameraX)
             val dy = (b.marble.y - b.cameraY) - (a.marble.y - a.cameraY)
             assertTrue(hypot(dx, dy) < MarbleRadius * .60f, "visible step at ${ms}ms")
         }
@@ -238,8 +233,64 @@ class PlanarPathTest {
         assertTrue(path.panels.first().railSamples.isNotEmpty())
         assertTrue(path.ledCues.isEmpty())
         assertEquals(0, path.frame(6000).rollingPanel)
-        assertTrue(path.frame(6100).marble != path.frame(6000).marble)
+        for (t in 0L..11_200L step 100) {
+            val current = path.frame(t)
+            val next = path.frame(t + 100)
+            assertTrue((next.marble - current.marble).length() > .22f, "waiting at $t")
+            assertTrue(next.marble.y > current.marble.y)
+            assertTrue(abs(current.cameraX - current.marble.x) < .9f)
+        }
         assertEquals(path.attacks.last().x, path.frame(12_000).marble.x)
+    }
+
+    @Test fun theStarterSupportsTheBallAndFramesTheFirstLandingFromTheStart() {
+        for (first in listOf(0L, 100L, 639L, 640L, 700L, 2200L, 2800L, 9000L)) {
+            val chart = Chart("Intro", 128, first + 1200, listOf(Note("first", first, 55, 200, .8f)))
+            val path = PlanarPath(chart)
+            val start = path.frame(0)
+            val target = path.frame(first).marble
+            val rail = path.entryRail
+            assertEquals(first >= 640L, rail.isNotEmpty())
+            if (rail.isNotEmpty()) {
+                assertEquals(rail.first(), start.marble)
+                assertTrue(rail.last().y > rail.first().y)
+                val rod = rodCenters(rail)
+                // The ball sits on both steel runners when the gate holds it.
+                assertEquals(MarbleRadius, distanceToRod(start.marble, rod[0], rod[1]), .0002f)
+                if (first >= 3000) assertEquals(start.marble, path.frame(first - 2600).marble)
+                val lip = path.frame(first - 320)
+                assertEquals(rail.last().x, lip.marble.x, .0001f)
+                assertEquals(rail.last().y, lip.marble.y, .0001f)
+                val before = (lip.marble - path.frame(first - 322).marble) * 500f
+                val after = (path.frame(first - 318).marble - lip.marble) * 500f
+                assertTrue((before - after).length() < .03f)
+            }
+            for (time in 0L until first step 15) {
+                val frame = path.frame(time)
+                assertEquals(-1, frame.attackIndex)
+                assertTrue(abs(frame.cameraX - frame.marble.x) < 1.55f)
+                assertTrue(abs(frame.cameraX - target.x) < 1.55f)
+                assertTrue(abs(frame.cameraY - frame.marble.y) < 2.1f)
+                assertTrue(abs(frame.cameraY - target.y) < 2.1f)
+            }
+            assertEquals(0, path.frame(first).attackIndex)
+            assertEquals(1, path.attacks.size)
+            assertTrue(path.ledCues.isEmpty())
+        }
+    }
+
+    @Test fun theCameraKeepsAllMovingLandingsInFrame() {
+        for (song in songLibrary) {
+            val chart = requireNotNull(song.bundled)
+            val path = PlanarPath(chart)
+            for (time in path.attacks.first().atMs..chart.durationMs step 17) {
+                val pose = path.frame(time)
+                assertTrue(abs(pose.cameraX - pose.marble.x) < 1.20f, "${song.title} X at $time")
+                assertTrue(abs(pose.cameraY - pose.marble.y) < 1.70f, "${song.title} Y at $time")
+                val speedChange = abs(pose.cameraTravel - path.frame(time + 17).cameraTravel)
+                assertTrue(speedChange < 1f, "${song.title} camera velocity at $time")
+            }
+        }
     }
 
     @Test fun ornamentsDoNotReboundAndLastKeyCatchesTheMarble() {

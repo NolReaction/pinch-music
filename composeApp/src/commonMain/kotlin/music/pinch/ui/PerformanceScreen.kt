@@ -40,14 +40,13 @@ private val HeaderShade = Brush.verticalGradient(listOf(Color(0xe3141220), Color
 private val FooterShade = Brush.verticalGradient(listOf(Color(0x00141220), Color(0xdf141220)))
 
 @Composable
-internal fun PerformanceScreen(state: ScreenState, actions: Actions, positionMs: () -> Long, planarPath: PlanarPath?) {
+internal fun PerformanceScreen(state: ScreenState, actions: Actions, positionMs: () -> Long, stage: PreparedStage?) {
     Box(Modifier.fillMaxSize()) {
-        val chart = state.chart
         val interactive = state.scene == Scene.Playing && !state.preview
-        if (chart != null) {
-            when (state.stageMode) {
-                StageMode.Orbit -> MarbleStage(chart, positionMs, Modifier.matchParentSize(), state.collectedEchoMs)
-                StageMode.Planar -> if (planarPath != null) PlanarStage(planarPath, positionMs,
+        if (stage != null) {
+            when (stage) {
+                is PreparedStage.Orbit -> MarbleStage(stage.path, positionMs, Modifier.matchParentSize(), state.collectedEchoMs)
+                is PreparedStage.Cascade -> PlanarStage(stage, positionMs,
                     Modifier.matchParentSize(), state.scene == Scene.Playing, state.lastLedTapMs)
             }
             if (interactive) Box(Modifier.matchParentSize().rhythmInput(actions))
@@ -127,6 +126,9 @@ private fun SessionHeader(state: ScreenState, actions: Actions, positionMs: () -
                 if (state.backingAsset != null && state.selectedSong.id == "stereo-love") {
                     val section by remember(positionMs) { derivedStateOf { stereoLoveSectionAt(positionMs()) } }
                     Text(section, color = Lilac, fontSize = 12.sp, lineHeight = 15.sp, maxLines = 1)
+                } else if (state.recordedAsset != null && state.backingAsset == null) {
+                    Text("${state.instrument.label} · соло", color = Lilac, fontSize = 12.sp,
+                        lineHeight = 15.sp, maxLines = 1)
                 }
             }
             SongTime(state.durationMs, positionMs)

@@ -26,6 +26,8 @@ data class Playback(
 interface GameMedia {
     /** A bundled accompaniment begins at chart time zero, including the count-in. */
     fun prepare(pitches: Set<Int>, backingAsset: String?)
+    /** Rebuild interrupted hardware when the user asks to resume. */
+    fun prepareResume() {}
     fun setBackingVolume(volume: Float)
     fun uptimeMs(): Long
     fun snapshot(): Playback

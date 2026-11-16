@@ -12,26 +12,31 @@ import music.pinch.core.RhythmGame
 import music.pinch.core.TapResult
 import music.pinch.core.cascadeChart
 import music.pinch.core.echoTargetTimes
+import music.pinch.ui.MarblePath
 import music.pinch.ui.PlanarPath
+import music.pinch.ui.PreparedStage
 
 /** Session commands, native events and frame observations all run on the UI thread. */
+@OptIn(ExperimentalCoroutinesApi::class)
 internal class Session(
     private val platform: Platform,
     private val scope: CoroutineScope,
     songs: List<Song> = songLibrary,
+    private val courseDispatcher: CoroutineDispatcher = Dispatchers.Default.limitedParallelism(1),
 ) : Actions {
-    private val imports = songs.mapNotNull { song ->
-        platform.readValue("chart.${song.id}")?.takeIf { it.isNotBlank() }?.let { raw ->
-            runCatching { decodeChart(raw, song.title) }.getOrNull()?.let { song.id to it }
-        }
+    // Keep saved JSON until its song is selected. Opening the menu used to decode every import.
+    private val savedCharts = songs.mapNotNull { song ->
+        platform.readValue("chart.${song.id}")?.takeIf { it.isNotBlank() }?.let { song.id to it }
     }.toMap().toMutableMap()
-    private val initialSong = songs.find { it.id == platform.readValue("selected.song") }
-        ?: songs.find { it.id == "stereo-love" && (it.bundled != null || it.id in imports) }
-        ?: songs.firstOrNull { it.bundled != null || it.id in imports }
+    private val imports = mutableMapOf<String, Chart>()
+    private val initialSong = platform.readValue("selected.song")?.let { saved -> songs.find { it.id == saved } }
+        ?: songs.find { it.id == "stereo-love" && (it.bundled != null || it.id in savedCharts) }
+        ?: songs.firstOrNull { it.bundled != null || it.id in savedCharts }
         ?: songs.first()
     var state by mutableStateOf(ScreenState(songs = songs, selectedSong = initialSong,
-        instrument = Instrument.entries.find { it.name == platform.readValue("instrument") } ?: Instrument.Piano,
-        stageMode = StageMode.entries.find { it.name == platform.readValue("stage.mode") } ?: StageMode.Orbit,
+        instrument = platform.readValue("instrument")?.let { name -> Instrument.entries.find { it.name == name } } ?: Instrument.Piano,
+        solo = platform.readValue("playback.solo") == "true",
+        stageMode = platform.readValue("stage.mode")?.let { name -> StageMode.entries.find { it.name == name } } ?: StageMode.Orbit,
         volume = platform.volume, haptics = platform.haptics))
         private set
     var media by mutableStateOf<GameMedia?>(null)
@@ -48,7 +53,11 @@ internal class Session(
     private var automaticNotes: List<Note> = emptyList()
     private var nextAutomaticNote = 0
     private var sourceChart: Chart? = null
-    var planarPath: PlanarPath? = null
+    // Keep the selected course warm across Listen, Play and Restart. A change of song
+    // or scene replaces it. The native player belongs only to the current attempt.
+    private var courseTask: Deferred<Result<PreparedStage>>? = null
+    private var pendingStart: Job? = null
+    var stage by mutableStateOf<PreparedStage?>(null)
         private set
     private var recordKey = ""
     private var echoTargets = emptySet<Long>()
@@ -57,32 +66,73 @@ internal class Session(
 
     init { refreshSong() }
 
+    private fun storedChart(song: Song): Chart? {
+        imports[song.id]?.let { return it }
+        val raw = savedCharts[song.id] ?: return null
+        val chart = runCatching { decodeChart(raw, song.title) }.getOrNull()
+        if (chart == null) {
+            savedCharts.remove(song.id)
+        } else {
+            imports[song.id] = chart
+            // Earlier releases keyed personal records by the canonical v1 representation.
+            savedCharts[song.id] = encodeChart(chart)
+        }
+        return chart
+    }
+
     private fun refreshSong() {
         val song = state.selectedSong
-        val imported = imports[song.id]
+        val imported = storedChart(song)
         val source = imported ?: song.bundled
         sourceChart = source
         val chart = if (state.stageMode == StageMode.Planar) source?.cascadeChart() else source
         echoTargets = chart?.echoTargetTimes().orEmpty()
-        val arrangement = imported?.let { "import.${encodeChart(it).hashCode()}" } ?: "bundled"
+        val arrangement = when {
+            imported != null -> "import.${savedCharts.getValue(song.id).hashCode()}"
+            song.bundledRevision > 1 -> "bundled.v${song.bundledRevision}"
+            else -> "bundled"
+        }
         val version = if (state.stageMode == StageMode.Planar) "cascade.v1" else "v3"
         recordKey = "record.$version.${song.id}.$arrangement"
-        state = state.copy(chart = chart, echoTotal = echoTargets.size, importedIds = imports.keys.toSet(), bestScore = platform.readValue(recordKey)?.toIntOrNull(),
-            availableIds = state.songs.filter { it.bundled != null || it.id in imports }.map { it.id }.toSet())
+        state = state.copy(chart = chart, echoTotal = echoTargets.size, importedIds = savedCharts.keys.toSet(), bestScore = platform.readValue(recordKey)?.toIntOrNull(),
+            availableIds = state.songs.filter { it.bundled != null || it.id in savedCharts }.map { it.id }.toSet())
+        courseTask?.cancel()
+        val mode = state.stageMode
+        courseTask = if (source == null || chart == null) null else scope.async(courseDispatcher) {
+            try {
+                Result.success(when (mode) {
+                    StageMode.Orbit -> PreparedStage.Orbit(MarblePath(chart))
+                    StageMode.Planar -> PreparedStage.Cascade(PlanarPath(source, chart))
+                })
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
     }
 
     override fun selectSong(id: String) {
-        if (state.scene != Scene.Menu || state.importing) return
+        if (state.scene != Scene.Menu || state.importing || id == state.selectedSong.id) return
         val song = state.songs.find { it.id == id } ?: return
         platform.writeValue("selected.song", id)
         state = state.copy(selectedSong = song, notice = null)
         refreshSong()
     }
 
+    override fun selectRecording() {
+        if (state.scene != Scene.Menu || state.recordedAsset == null || !state.solo) return
+        platform.writeValue("playback.solo", "false")
+        state = state.copy(solo = false)
+    }
+
     override fun selectInstrument(value: Instrument) {
         if (state.scene != Scene.Menu) return
-        platform.writeValue("instrument", value.name)
-        state = state.copy(instrument = value)
+        val solo = state.solo || state.recordedAsset != null
+        if (value == state.instrument && solo == state.solo) return
+        if (solo != state.solo) platform.writeValue("playback.solo", solo.toString())
+        if (value != state.instrument) platform.writeValue("instrument", value.name)
+        state = state.copy(instrument = value, solo = solo)
     }
 
     override fun selectStageMode(value: StageMode) {
@@ -97,6 +147,7 @@ internal class Session(
         if (state.scene != Scene.Menu || state.importing || song.bundled == null || song.id !in imports) return
         platform.writeValue("chart.${song.id}", "")
         imports.remove(song.id)
+        savedCharts.remove(song.id)
         refreshSong()
     }
 
@@ -108,7 +159,9 @@ internal class Session(
             try {
                 val pcm = platform.pickAudio() ?: return@launch
                 val chart = withContext(Dispatchers.Default) { extractLeadChart(pcm, 11025, song.title) }
-                platform.writeValue("chart.${song.id}", encodeChart(chart))
+                val saved = withContext(Dispatchers.Default) { encodeChart(chart) }
+                platform.writeValue("chart.${song.id}", saved)
+                savedCharts[song.id] = saved
                 imports[song.id] = chart
                 refreshSong()
             } catch (e: CancellationException) {
@@ -124,17 +177,21 @@ internal class Session(
     override fun dismissNotice() { state = state.copy(notice = null) }
 
     override fun start(preview: Boolean) {
+        if (state.scene != Scene.Loading) startAttempt(preview)
+    }
+
+    override fun restart() = startAttempt(state.preview)
+
+    private fun startAttempt(preview: Boolean) {
         val song = state.chart ?: return
         val source = sourceChart ?: return
         if (state.importing) return
+        if (courseTask == null) refreshSong()
+        val course = courseTask ?: return
         close()
-        if (state.stageMode == StageMode.Planar) {
-            planarPath = PlanarPath(source, song)
-        }
-        game = if (preview) null else RhythmGame(song, forgiving = true, ledNotes = planarPath?.ledCues.orEmpty())
         positionMs = 0
         state = state.copy(scene = Scene.Loading, preview = preview, notice = null,
-            countdown = null, reaction = null, error = null, newRecord = false, stats = game?.stats,
+            countdown = null, reaction = null, error = null, newRecord = false, stats = null,
             echoesCaught = 0, collectedEchoMs = null, lastLedTapMs = null)
         try {
             val player = platform.newMedia(song.durationMs, state.instrument)
@@ -162,12 +219,24 @@ internal class Session(
             }
             player.setBackingVolume(state.volume)
             player.prepare(pitches, backing)
+            pendingStart = scope.launch {
+                val result = course.await()
+                if (media !== player) return@launch
+                val ready = result.getOrElse {
+                    courseTask = null
+                    fail("Не удалось подготовить трассу. " + it.message.orEmpty())
+                    return@launch
+                }
+                stage = ready
+                val lights = (ready as? PreparedStage.Cascade)?.path?.ledCues.orEmpty()
+                game = if (preview) null else RhythmGame(song, forgiving = true, ledNotes = lights)
+                state = state.copy(stats = game?.stats)
+            }
         } catch (e: Exception) {
             fail("Не удалось начать игру. " + e.message.orEmpty())
         }
     }
 
-    override fun restart() = start(state.preview)
 
     fun observe() {
         val player = media ?: return
@@ -178,9 +247,9 @@ internal class Session(
         }
         when (state.scene) {
             Scene.Loading, Scene.Resuming -> {
-                if (!snap.ready) {
+                if (!snap.ready || stage == null) {
                     val start = waitingSince ?: snap.observedUptimeMs.also { waitingSince = it }
-                    if (snap.observedUptimeMs - start >= 15_000) fail("Не удалось подготовить звуки инструмента.")
+                    if (snap.observedUptimeMs - start >= 15_000) fail("Не удалось подготовить мелодию.")
                 } else if (state.scene == Scene.Loading) {
                     beginPlayback(player, snap)
                 } else {
@@ -267,7 +336,7 @@ internal class Session(
         val snap = playingAnchor ?: return
         if (uptimeMs < playRequestedAt) return
         // Pointer timestamps and the audio anchor share an uptime origin. Touch dispatch must not
-        // block on MediaPlayer/AVAudioPlayer queries merely to measure the intervening milliseconds.
+        // block on native audio queries merely to measure the intervening milliseconds.
         val at = if (snap.stalled) snap.positionMs else snap.positionMs + (uptimeMs - snap.observedUptimeMs)
         val feedbackAt = maxOf(at, snap.positionMs)
         val engine = game ?: return
@@ -342,7 +411,9 @@ internal class Session(
     }
 
     override fun resume() {
-        if (state.scene == Scene.Paused) state = state.copy(scene = Scene.Resuming, countdown = 3)
+        if (state.scene != Scene.Paused) return
+        state = state.copy(scene = Scene.Resuming, countdown = 3)
+        media?.prepareResume()
     }
 
     private fun finish() {
@@ -382,14 +453,22 @@ internal class Session(
         state = state.copy(scene = Scene.Error, error = message, countdown = null, reaction = null)
     }
 
-    fun close() {
+    fun dispose() {
+        courseTask?.cancel()
+        courseTask = null
+        close()
+    }
+
+    private fun close() {
+        pendingStart?.cancel()
+        pendingStart = null
         val old = media
         media = null
         old?.onInterrupted = null
         old?.close()
         automaticNotes = emptyList()
         nextAutomaticNote = 0
-        planarPath = null
+        stage = null
         playingAnchor = null
         lastMistakeAt = null
         lastMistakeTarget = null

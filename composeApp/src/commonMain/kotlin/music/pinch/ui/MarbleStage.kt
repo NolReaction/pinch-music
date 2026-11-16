@@ -251,8 +251,7 @@ private class Rail(run: CourseRun) {
     val right = Array(stations.size) { i -> stations[i] + normals[i]*height + offset[i] }
 }
 
-internal class MarbleScene(chart: Chart, private val marbleAtlas: ImageBitmap) {
-    private val path = MarblePath(chart)
+internal class MarbleScene(private val path: MarblePath, private val marbleAtlas: ImageBitmap) {
     private val bars = arrayOfNulls<Bar>(path.keys.size)
     private val rails = arrayOfNulls<Rail>(path.spans.size)
     private val outline = Path()
@@ -556,8 +555,16 @@ internal class MarbleScene(chart: Chart, private val marbleAtlas: ImageBitmap) {
 fun MarbleStage(
     chart: Chart, positionMs: () -> Long, modifier: Modifier = Modifier, collectedEchoMs: Long? = null,
 ) {
+    val path = remember(chart) { MarblePath(chart) }
+    MarbleStage(path, positionMs, modifier, collectedEchoMs)
+}
+
+@Composable
+internal fun MarbleStage(
+    path: MarblePath, positionMs: () -> Long, modifier: Modifier, collectedEchoMs: Long?,
+) {
     val atlas = imageResource(Res.drawable.studio_marble)
-    val scene = remember(chart, atlas) { MarbleScene(chart,atlas) }
+    val scene = remember(path, atlas) { MarbleScene(path, atlas) }
     Canvas(modifier.clipToBounds()) { with(scene) { draw(positionMs(), collectedEchoMs) } }
 }
 

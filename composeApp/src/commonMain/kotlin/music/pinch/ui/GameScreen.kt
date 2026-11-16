@@ -1,9 +1,14 @@
 package music.pinch.ui
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
@@ -18,10 +23,16 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -34,6 +45,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.sp
 import music.pinch.Actions
 import music.pinch.Instrument
@@ -53,13 +65,17 @@ internal val Coral = Color(0xffffa794)
 internal val Mint = Color(0xff91e6c6)
 internal val DarkText = Color(0xff291339)
 
+private val TrackShade = Brush.horizontalGradient(0f to Surface, .43f to Surface,
+    .74f to Surface.copy(alpha = .6f), 1f to Color.Transparent)
+private val RecordingAndInstruments: List<Instrument?> = listOf(null) + Instrument.entries
+
 private val AppColors = darkColorScheme(
     primary = Lilac, onPrimary = DarkText, secondary = Mint, background = Ink,
     onBackground = White, surface = Surface, onSurface = White, onSurfaceVariant = Muted
 )
 
 @Composable
-internal fun GameScreen(state: ScreenState, actions: Actions, positionMs: () -> Long, planarPath: PlanarPath?) {
+internal fun GameScreen(state: ScreenState, actions: Actions, positionMs: () -> Long, stage: PreparedStage?) {
     MaterialTheme(colorScheme = AppColors) {
         Box(Modifier.fillMaxSize().background(Ink), contentAlignment = Alignment.TopCenter) {
             val content = when (state.scene) {
@@ -71,7 +87,7 @@ internal fun GameScreen(state: ScreenState, actions: Actions, positionMs: () -> 
                     Scene.Menu -> Menu(state, actions)
                     Scene.Error -> ErrorScreen(state, actions)
                     Scene.Result -> ResultScreen(state, actions)
-                    else -> PerformanceScreen(state, actions, positionMs, planarPath)
+                    else -> PerformanceScreen(state, actions, positionMs, stage)
                 }
             }
         }
@@ -98,7 +114,14 @@ private fun Menu(state: ScreenState, actions: Actions) {
         StageTabs(state.stageMode, actions::selectStageMode)
         TrackCard(state)
         ActionButton("Выбрать мелодию", onClick = { library = true }, primary = false, enabled = !state.importing)
-        Choices("Инструмент", Instrument.entries, state.instrument, { it.label }, actions::selectInstrument)
+        if (state.recordedAsset != null) {
+            Choices("Звучание", RecordingAndInstruments, state.instrument.takeIf { state.backingAsset == null },
+                { it?.label ?: "Оригинал" }, { voice ->
+                    if (voice == null) actions.selectRecording() else actions.selectInstrument(voice)
+                }, columns = 2)
+        } else if (chart != null) {
+            Choices("Инструмент", Instrument.entries, state.instrument, { it.label }, actions::selectInstrument)
+        }
         if (state.importing) {
             Row(Modifier.fillMaxWidth().heightIn(min = 54.dp), verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -143,7 +166,7 @@ private fun Menu(state: ScreenState, actions: Actions) {
     if (library) {
         SongPicker(state, onDismiss = { library = false }) {
             library = false
-            actions.selectSong(it.id)
+            if (it.id != state.selectedSong.id) actions.selectSong(it.id)
         }
     }
     state.notice?.let { notice ->
@@ -154,12 +177,7 @@ private fun Menu(state: ScreenState, actions: Actions) {
         AlertDialog(onDismissRequest = { settings = false }, title = { Text("Настройки") },
             text = {
                 Column {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("Громкость")
-                        Text("${(state.volume * 100).roundToInt()} %", color = Lilac)
-                    }
-                    Slider(value = state.volume, onValueChange = actions::volume,
-                        modifier = Modifier.semantics { contentDescription = "Громкость" })
+                    VolumeSlider(state.volume, actions::volume)
                     Spacer(Modifier.height(12.dp))
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Text("Тактильный отклик", modifier = Modifier.weight(1f))
@@ -174,17 +192,38 @@ private fun Menu(state: ScreenState, actions: Actions) {
 }
 
 @Composable
+private fun VolumeSlider(volume: Float, save: (Float) -> Unit) {
+    var value by remember(volume) { mutableFloatStateOf(volume) }
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text("Громкость")
+        Text("${(value * 100).roundToInt()} %", color = Lilac)
+    }
+    Slider(value = value, onValueChange = { value = it },
+        onValueChangeFinished = { if (value != volume) save(value) },
+        modifier = Modifier.semantics { contentDescription = "Громкость" })
+}
+
+@Composable
 private fun StageTabs(selected: StageMode, choose: (StageMode) -> Unit) {
     val track = RoundedCornerShape(16.dp)
+    val modes = StageMode.entries
+    val selectedPosition = animateFloatAsState(selected.ordinal.toFloat(), tween(160), label = "Сцена")
+    val selectedTint = if (selected == StageMode.Planar) Mint else Lilac
     Row(Modifier.fillMaxWidth().clip(track).background(Surface).border(1.dp, Line, track)
-        .selectableGroup().padding(3.dp), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-        for (mode in StageMode.entries) {
+        .selectableGroup().padding(3.dp).drawBehind {
+            val gap = 3.dp.toPx()
+            val width = (size.width - gap * (modes.size - 1)) / modes.size
+            val start = (width + gap) * selectedPosition.value
+            val x = if (layoutDirection == LayoutDirection.Ltr) start else size.width - width - start
+            drawRoundRect(selectedTint.copy(alpha = .15f), Offset(x, 0f), Size(width, size.height),
+                cornerRadius = CornerRadius(12.dp.toPx()))
+        }, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+        for (mode in modes) {
             val active = selected == mode
             val accent = if (mode == StageMode.Planar) Mint else Lilac
             val tint = if (active) accent else Muted
             Row(Modifier.weight(1f).clip(RoundedCornerShape(12.dp))
-                .background(if (active) accent.copy(alpha = .13f) else Color.Transparent)
-                .selectable(active, role = Role.Tab, onClick = { choose(mode) })
+                .selectable(active, role = Role.Tab, onClick = { if (!active) choose(mode) })
                 .heightIn(min = 44.dp).padding(horizontal = 6.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
                 verticalAlignment = Alignment.CenterVertically) {
@@ -221,13 +260,13 @@ private fun TrackCard(state: ScreenState) {
         val source = when {
             chart == null -> "Нужен аудиофайл"
             imported -> "Из записи"
-            state.backingAsset != null -> "Инструментал"
+            state.backingAsset != null -> "Полный инструментал"
+            state.recordedAsset != null -> "Мелодия соло"
             else -> "Фрагмент"
         }
         Box(Modifier.matchParentSize(), contentAlignment = Alignment.CenterEnd) {
             StageCover(state.stageMode, Modifier.fillMaxWidth(.54f).fillMaxHeight())
-            Spacer(Modifier.matchParentSize().background(Brush.horizontalGradient(0f to Surface,
-                .43f to Surface, .74f to Surface.copy(alpha = .6f), 1f to Color.Transparent)))
+            Spacer(Modifier.matchParentSize().background(TrackShade))
         }
         Column(Modifier.fillMaxWidth(.79f).heightIn(min = 150.dp).padding(16.dp),
             verticalArrangement = Arrangement.SpaceBetween) {
@@ -250,65 +289,85 @@ private fun TrackCard(state: ScreenState) {
 
 @Composable
 private fun StageCover(mode: StageMode, modifier: Modifier) {
-    Canvas(modifier) {
+    Spacer(modifier.drawWithCache {
         val w = size.width
         val h = size.height
         val unit = size.minDimension
+        if (unit <= 0f) return@drawWithCache onDrawBehind {}
+        val ballRadius = .087f * unit
         val ball = when (mode) {
+            StageMode.Planar -> Offset(.77f * w, .62f * h - ballRadius)
+            StageMode.Orbit -> Offset(.66f * w, .54f * h - ballRadius)
+        }
+        val light = ball - Offset(.33f * ballRadius, .36f * ballRadius)
+        val ballFill = Brush.radialGradient(listOf(White, Coral, Color(0xff8d1b4e), DarkText), light, 1.5f * ballRadius)
+        when (mode) {
             StageMode.Planar -> {
                 // Paired rails dip between the keys, with lights set into the path.
-                for (shift in listOf(0f, .055f)) {
-                    val rail = Path().apply {
+                val rails = List(2) { i ->
+                    val shift = i * .055f
+                    Path().apply {
                         moveTo(-.05f * w, (.23f + shift) * h)
                         cubicTo(.20f * w, (.18f + shift) * h, .41f * w, (.85f + shift) * h,
                             .77f * w, (.62f + shift) * h)
                         lineTo(1.05f * w, (.44f + shift) * h)
                     }
-                    drawPath(rail, Line, style = Stroke(.034f * unit))
-                    drawPath(rail, Mint.copy(alpha = .84f), style = Stroke(.012f * unit))
                 }
-                for (point in listOf(Offset(.48f, .59f), Offset(.70f, .66f), Offset(.92f, .53f))) {
-                    drawCircle(Coral, .018f * unit, Offset(point.x * w, point.y * h))
+                val outline = Stroke(.034f * unit)
+                val highlight = Stroke(.012f * unit)
+                val leds = listOf(Offset(.48f * w, .59f * h), Offset(.70f * w, .66f * h), Offset(.92f * w, .53f * h))
+                onDrawBehind {
+                    for (rail in rails) {
+                        drawPath(rail, Line, style = outline)
+                        drawPath(rail, Mint.copy(alpha = .84f), style = highlight)
+                    }
+                    for (led in leds) drawCircle(Coral, .018f * unit, led)
+                    drawCircle(ballFill, ballRadius, ball)
                 }
-                Offset(.77f * w, .62f * h - .087f * unit)
             }
             StageMode.Orbit -> {
                 // Suspended circular pads recede towards the top of the scene.
-                for (i in 0..3) {
-                    val x = (.50f + .27f * i - .095f * i * i) * w
-                    val y = (.14f + .20f * i) * h
-                    val radius = (.065f + .037f * i) * unit
-                    drawLine(Line, Offset(x, 0f), Offset(x, y), strokeWidth = .009f * unit)
-                    val top = Offset(x - radius, y - .32f * radius)
-                    val pad = Size(2f * radius, .64f * radius)
-                    drawOval(Lilac.copy(alpha = .24f), top + Offset(0f, .23f * radius), pad)
-                    drawOval(Lilac, top, pad, style = Stroke(.013f * unit))
+                val rim = Stroke(.013f * unit)
+                onDrawBehind {
+                    for (i in 0..3) {
+                        val x = (.50f + .27f * i - .095f * i * i) * w
+                        val y = (.14f + .20f * i) * h
+                        val radius = (.065f + .037f * i) * unit
+                        drawLine(Line, Offset(x, 0f), Offset(x, y), strokeWidth = .009f * unit)
+                        val top = Offset(x - radius, y - .32f * radius)
+                        val pad = Size(2f * radius, .64f * radius)
+                        drawOval(Lilac.copy(alpha = .24f), top + Offset(0f, .23f * radius), pad)
+                        drawOval(Lilac, top, pad, style = rim)
+                    }
+                    drawCircle(ballFill, ballRadius, ball)
                 }
-                Offset(.66f * w, .54f * h - .087f * unit)
             }
         }
-        val radius = .087f * unit
-        val light = ball - Offset(.33f * radius, .36f * radius)
-        drawCircle(Brush.radialGradient(listOf(White, Coral, Color(0xff8d1b4e), DarkText), light, 1.5f * radius),
-            radius, ball)
-    }
+    })
 }
 
 @Composable
-private fun <T> Choices(label: String, values: List<T>, selected: T, title: (T) -> String, choose: (T) -> Unit) {
+private fun <T> Choices(label: String, values: List<T>, selected: T, title: (T) -> String, choose: (T) -> Unit,
+    columns: Int = values.size,
+) {
+    val rows = remember(values, columns) { values.chunked(columns) }
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Caption(label, White)
-        Row(Modifier.fillMaxWidth().selectableGroup(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-            values.forEach { value ->
-                val active = value == selected
-                val shape = RoundedCornerShape(12.dp)
-                Box(Modifier.weight(1f).clip(shape).background(if (active) Lilac.copy(alpha = .16f) else Surface)
-                    .border(1.dp, if (active) Lilac.copy(alpha = .65f) else Line, shape)
-                    .selectable(active, role = Role.RadioButton, onClick = { choose(value) })
-                    .heightIn(min = 44.dp).padding(horizontal = 4.dp, vertical = 6.dp),
-                    contentAlignment = Alignment.Center) {
-                    Text(title(value), color = if (active) Lilac else Muted, fontWeight = FontWeight.SemiBold,
-                        fontSize = 14.sp, lineHeight = 16.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+        Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+            for (row in rows) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    for (value in row) {
+                        val active = value == selected
+                        val shape = RoundedCornerShape(12.dp)
+                        Box(Modifier.weight(1f).clip(shape).background(if (active) Lilac.copy(alpha = .16f) else Surface)
+                            .border(1.dp, if (active) Lilac.copy(alpha = .65f) else Line, shape)
+                            .selectable(active, role = Role.RadioButton, onClick = { if (!active) choose(value) })
+                            .heightIn(min = 44.dp).padding(horizontal = 4.dp, vertical = 6.dp),
+                            contentAlignment = Alignment.Center) {
+                            Text(title(value), color = if (active) Lilac else Muted, fontWeight = FontWeight.SemiBold,
+                                fontSize = 14.sp, lineHeight = 16.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                        }
+                    }
                 }
             }
         }
@@ -469,8 +528,26 @@ internal fun ActionButton(
 ) {
     val shape = RoundedCornerShape(14.dp)
     val fg = if (primary) DarkText else White
-    Row(modifier.fillMaxWidth().clip(shape).background(if (primary) Lilac else Surface)
-        .border(1.dp, if (primary) Lilac else Line, shape).clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+    var pressed by remember { mutableStateOf(false) }
+    val scale = animateFloatAsState(if (pressed && enabled) .975f else 1f, tween(95), label = "Нажатие")
+    Row(modifier.fillMaxWidth().graphicsLayer {
+            scaleX = scale.value
+            scaleY = scale.value
+            alpha = if (enabled) 1f else .50f
+        }
+        .clip(shape).background(if (primary) Lilac else Surface)
+        .border(1.dp, if (primary) Lilac else Line, shape)
+        // Scrollable parents delay the default ripple. Show contact on down while
+        // letting clickable own activation, keyboard semantics and scroll cancellation.
+        .pointerInput(enabled) {
+            if (!enabled) return@pointerInput
+            awaitEachGesture {
+                awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                pressed = true
+                try { waitForUpOrCancellation() } finally { pressed = false }
+            }
+        }
+        .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
         .heightIn(min = 50.dp).padding(vertical = 10.dp, horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
         if (icon != null) {

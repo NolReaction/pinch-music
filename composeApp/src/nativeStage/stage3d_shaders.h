@@ -12,6 +12,7 @@ uniform mediump vec4 uKey; // impact, style, preview target, last crossed LED
 varying mediump vec3 vPos;
 varying mediump vec3 vN;
 varying mediump vec2 vMat;
+varying mediump vec2 vFace;
 const vec3 eye=vec3(2.80,-4.88,8.20);
 const vec3 forward=vec3(-.279687,.487454,-.827155);
 const vec3 right=vec3(.947306,0.,-.32033);
@@ -25,6 +26,7 @@ void main(){
         (uLens.w+uLens.z)/(uLens.w-uLens.z)*z-2.*uLens.w*uLens.z/(uLens.w-uLens.z),z);
     vN=vec3(turn*aNormal.xy,aNormal.z);
     vMat=aMat;
+    vFace=aPos.xz;
 }
 )GL";
 
@@ -37,6 +39,7 @@ precision mediump float;
 varying mediump vec3 vPos;
 varying mediump vec3 vN;
 varying mediump vec2 vMat;
+varying mediump vec2 vFace;
 uniform mediump vec4 uKey;
 uniform mediump vec4 uBall;
 uniform mediump vec2 uSpin; // cos, sin
@@ -64,7 +67,7 @@ vec3 studio(vec3 r){
 void main(){
     vec3 n=normalize(vN), v=normalize(eye-vPos), r=reflect(-v,n);
     float mat=vMat.x;
-    if(mat>8.5) {
+    if(mat>8.5 && mat<9.5) {
         // Polished ruby marble. The inclusion rotates with the ball inside
         // the clear glass skin; the studio reflections remain in world space.
         vec3 bn=vec3(n.x*uSpin.x+n.y*uSpin.y,-n.x*uSpin.y+n.y*uSpin.x,n.z);
@@ -100,25 +103,39 @@ void main(){
                      (1.-smoothstep(.24,.83,abs(vPos.y-uBall.y)));
         col=(vec3(.022,.032,.061)+vec3(.019,.021,.040)*nl+
              env*(.105+.23*edge)+vec3(.23,.22,.27)*spec)*ao;
-        float emissive=.78+.21*top;
-        col=mix(col,accent*(.40+.48*top+.14*nl)+env*.075,impact*emissive);
+        // A single pressure wave expands from the tangent point on the playing face.
+        // Its light decays while the rigid face remains exactly under the ball.
+        float arrival=abs(length(vFace)-.96*(1.-impact));
+        float wave=1.-smoothstep(.035,.15,arrival);
+        float release=impact*impact;
+        float flash=impact*(.70+.21*top)+.14*release*wave;
+        col=mix(col,accent*(.38+.48*top+.14*nl)+env*.075,min(1.,flash));
+        col+=vec3(.37,.29,.18)*release*wave*top;
     } else if(mat<2.5) {
         col=mix(vec3(.085,.096,.128)+env*.16,accent,
                 min(1.,impact*1.25+preview*.97));
     } else if(mat<3.5 || (mat>4.5 && mat<5.5) || (mat>6.5 && mat<7.5)) {
-        float polished=mat<3.5 ? .75 : (mat<5.5 ? 1.07 : .57);
+        float polished=mat<3.5 ? .75 : (mat<5.5 ? 1.07 : .86);
         col=vec3(.042,.060,.088)+min(env,vec3(.78))*polished+vec3(.11,.13,.16)*spec;
-        if(mat>6.5) col=mix(col,vec3(.145,.177,.226),.30);
+        if(mat>6.5) {
+            // A soft ruby reflection follows the real ball on both metal runners,
+            // growing on approach and falling away naturally beyond the lip.
+            float nearBall=1.-smoothstep(.25,.58,length(vPos-uBall.xyz));
+            col=mix(col,vec3(.24,.28,.32),.24)+vec3(.35,.105,.14)*nearBall;
+        }
         col+=accent*.12*impact;
     } else if(mat<4.5) {
         col=vec3(.025,.032,.046)+env*.23;
     } else if(mat<6.5) {
         col=mix(vec3(.20,.135,.052),accent,min(1.,preview*.84+impact+.28));
+    } else if(mat>9.5) {
+        col=vec3(.22,.085,.037)+env*vec3(.75,.38,.20)+vec3(.34,.18,.093)*spec;
     } else {
         float visited=step(vMat.y-.1,uKey.w);
         float latest=1.-step(.25,abs(uKey.w-vMat.y));
-        col=mix(vec3(.11,.20,.24),vec3(.23,.84,.95),.66*visited);
-        col+=(vec3(.36,.22,.34)+vec3(.44,.56,.50)*uKey.z)*latest;
+        float nearBall=1.-smoothstep(.29,.64,length(vPos-uBall.xyz));
+        col=mix(vec3(.11,.20,.24),vec3(.23,.84,.95),.50*visited);
+        col+=(vec3(.48,.38,.42)*nearBall+vec3(.44,.56,.50)*uKey.z)*latest;
     }
     gl_FragColor=vec4(col,1.);
 }

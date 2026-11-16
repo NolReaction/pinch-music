@@ -37,7 +37,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        platform.active?.close()
+        platform.close()
         super.onDestroy()
     }
 }
@@ -49,6 +49,12 @@ private class AndroidPlatform(private val activity: MainActivity) : Platform {
         private set
 
     private val songImport = AndroidSongImport(activity)
+    private val samples = NoteSampleCache(activity.assets)
+
+    fun close() {
+        active?.close()
+        samples.close()
+    }
 
     override suspend fun pickAudio() = songImport.pickAudio()
     override fun readValue(key: String): String? = settings.getString(key, null)
@@ -70,7 +76,7 @@ private class AndroidPlatform(private val activity: MainActivity) : Platform {
 
     override fun newMedia(durationMs: Long, instrument: Instrument): GameMedia {
         active?.close()
-        return AndroidMedia(activity, durationMs, instrument, { foreground }) { media ->
+        return AndroidMedia(activity, durationMs, instrument, samples, { foreground }) { media ->
             if (active === media) active = null
         }.also { active = it }
     }
