@@ -9,7 +9,6 @@ import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sin
-import kotlin.math.sqrt
 import music.pinch.core.BackingNote
 import music.pinch.core.BackingVoice
 import music.pinch.core.Chart
@@ -90,7 +89,7 @@ private class FloorStudio(val score: Chart) {
         val voice = floorLeadVoiceAt(note.atMs)
         // Both the calls and the sung melody are interpreted by the same piano.
         if (voice == FloorLeadVoice.Pluck || voice == FloorLeadVoice.Vocal) {
-            val mono = piano(note.midi, note.durationMs, note.velocity)
+            val mono = studioPiano(note.midi, note.durationMs, note.velocity)
             placePiano(mono, frames(note.atMs), .88f * note.velocity, -.035)
             return
         }
@@ -171,7 +170,7 @@ private class FloorStudio(val score: Chart) {
         val size = gate + frames(tailMs)
         val mono = when (voice) {
             BackingVoice.Kick, BackingVoice.Snare, BackingVoice.Hat -> drum(note, size)
-            BackingVoice.Keys -> piano(note.midi, note.durationMs, note.velocity)
+            BackingVoice.Keys -> studioPiano(note.midi, note.durationMs, note.velocity)
             else -> harmony(note, size)
         }
         val start = frames(note.atMs)
@@ -194,55 +193,6 @@ private class FloorStudio(val score: Chart) {
                 place(mono, start + frames(22), gain * .14f, -pan, .31f)
             }
         }
-    }
-
-    /** A struck string loses its bright overtones first; the damper then closes over the body.
-     * Each partial has its own slightly stiff frequency and two nearly unison strings.
-     * This keeps a short written articulation from chopping the waveform at the next key. */
-    private fun piano(midi: Int, durationMs: Long, velocity: Float): FloatArray {
-        val gate = frames(durationMs)
-        val tail = frames(720)
-        val mono = FloatArray(gate + tail)
-        val hz = frequency(midi)
-        val stiffness = .000035 * 2.0.pow((midi - 60) / 18.0)
-        val fundamentalCorrection = sqrt(1.0 + stiffness)
-        val registerDecay = 1.85 * 2.0.pow((60 - midi) / 28.0)
-        val weights = doubleArrayOf(.92, .62, .37, .21, .15, .080, .065, .045, .025, .024, .018, .012)
-        for ((index, weight) in weights.withIndex()) {
-            val partial = index + 1
-            val partialHz = hz * partial * sqrt(1.0 + stiffness * partial * partial) / fundamentalCorrection
-            if (partialHz >= FloorRate * .46) break
-            val inc = step(partialHz)
-            val unisonInc = step(partialHz * 1.00064)
-            val phaseOffset = (.18 * sin(partial * 1.43) * Cycle / (2 * PI)).toInt()
-            var phase = phaseOffset
-            var unisonPhase = phaseOffset
-            val brightness = (.62 + .65 * velocity).pow((partial - 1) * .52)
-            val amplitude = (weight * brightness / 1.72).toFloat()
-            var body = amplitude * .76f
-            var hammer = amplitude * .24f
-            val bodyDecay = decay(registerDecay / partial.toDouble().pow(.68))
-            val hammerDecay = decay(.075 / partial.toDouble().pow(.31))
-            for (i in mono.indices) {
-                phase += inc
-                unisonPhase += unisonInc
-                mono[i] += (.58f * sample(sine, phase) + .42f * sample(sine, unisonPhase)) * (body + hammer)
-                body *= bodyDecay
-                hammer *= hammerDecay
-            }
-        }
-        val attack = 1f - decay(.0017)
-        val damper = decay(.120)
-        var open = 0f
-        var release = 1f
-        for (i in mono.indices) {
-            open += (1f - open) * attack
-            if (i >= gate) release *= damper
-            // The residual is already below -50 dB. Bring the last 10 ms precisely to zero.
-            val end = min(1f, (mono.lastIndex - i) / (FloorRate * .010f))
-            mono[i] *= open * release * end
-        }
-        return mono
     }
 
     private fun placePiano(mono: FloatArray, start: Int, gain: Float, pan: Double) {

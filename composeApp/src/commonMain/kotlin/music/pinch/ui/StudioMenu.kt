@@ -7,18 +7,21 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.progressSemantics
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -35,7 +38,7 @@ import music.pinch.Actions
 import music.pinch.ScreenState
 import music.pinch.StageMode
 
-private enum class StudioPage { Catalog, Settings, Profile }
+private enum class StudioPage { Catalog, Favorites, Settings, Profile }
 private val CardShape = RoundedCornerShape(15.dp)
 private val ControlShape = RoundedCornerShape(12.dp)
 
@@ -56,7 +59,7 @@ internal fun StudioMenu(state: ScreenState, actions: Actions) {
             StudioIconButton(StudioIcon.Settings, "Настройки", onClick = { page = StudioPage.Settings })
         }
         Spacer(Modifier.height(14.dp))
-        SongHero(state, onClick = { page = StudioPage.Catalog })
+        SongHero(state, actions, onClick = { page = StudioPage.Catalog })
         Spacer(Modifier.height(10.dp))
         when {
             state.importing -> Row(Modifier.fillMaxWidth().heightIn(min = 54.dp),
@@ -72,12 +75,20 @@ internal fun StudioMenu(state: ScreenState, actions: Actions) {
             }
             else -> Caption("Фонограмма готовится")
         }
-        if (state.canMeasure && !state.importing) {
-            androidx.compose.material3.TextButton(onClick = actions::openReference) {
-                Text("Сверить ритм", color = StudioMint, fontSize = 14.sp)
+        if (!state.importing) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { page = StudioPage.Favorites }) {
+                    StudioGlyph(StudioIcon.Heart, StudioMint, Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Избранное", color = StudioMint, fontSize = 14.sp)
+                }
+                if (state.canMeasure) TextButton(onClick = actions::openReference) {
+                    Text("Сверить ритм", color = StudioMint, fontSize = 14.sp)
+                }
             }
         }
-        Spacer(Modifier.height(21.dp))
+        Spacer(Modifier.height(9.dp))
         SectionLabel("Сцена")
         Row(Modifier.fillMaxWidth().selectableGroup(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
             for (mode in StageMode.entries) {
@@ -102,7 +113,7 @@ internal fun StudioMenu(state: ScreenState, actions: Actions) {
         }
     }
     when (page) {
-        StudioPage.Catalog -> StudioCatalog(state, actions, close) { song ->
+        StudioPage.Catalog, StudioPage.Favorites -> StudioCatalog(state, actions, close, favorites = page == StudioPage.Favorites) { song ->
             close()
             if (song.id != state.selectedSong.id) actions.selectSong(song.id)
         }
@@ -123,6 +134,7 @@ internal fun StudioMenu(state: ScreenState, actions: Actions) {
 private fun LevelButton(state: ScreenState, onClick: () -> Unit) {
     val profile = state.profile
     Row(Modifier.clip(ControlShape).clickable(role = Role.Button, onClick = onClick)
+        .semantics { contentDescription = "Профиль игрока, уровень ${profile.level}" }
         .heightIn(min = 48.dp).padding(horizontal = 6.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
         StudioGlyph(StudioIcon.Medal, StudioMint, Modifier.size(19.dp))
@@ -154,11 +166,12 @@ internal fun StudioIconButton(icon: StudioIcon, label: String, onClick: () -> Un
 }
 
 @Composable
-private fun SongHero(state: ScreenState, onClick: () -> Unit) {
+private fun SongHero(state: ScreenState, actions: Actions, onClick: () -> Unit) {
     val song = state.selectedSong
-    Box(Modifier.fillMaxWidth().clip(CardShape)
-        .clickable(enabled = !state.importing, role = Role.Button, onClickLabel = "Выбрать мелодию", onClick = onClick)) {
+    Box(Modifier.fillMaxWidth().clip(CardShape)) {
         RecordSleeve(stageTheme(song.id), Modifier.matchParentSize())
+        Box(Modifier.matchParentSize().clickable(enabled = !state.importing, role = Role.Button, onClick = onClick)
+            .semantics { contentDescription = "Открыть каталог. ${song.title}" })
         Column(Modifier.fillMaxWidth(.633f).heightIn(min = 199.dp)
             .padding(start = 20.dp, top = 15.dp, bottom = 17.dp, end = 5.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
@@ -185,6 +198,35 @@ private fun SongHero(state: ScreenState, onClick: () -> Unit) {
             )
             if (details.isNotEmpty()) Text(details.joinToString("   /   "), color = SleeveType,
                 fontFamily = FontFamily.Monospace, fontSize = 11.sp, lineHeight = 14.sp, fontWeight = FontWeight.Bold)
+        }
+        if (!state.importing) {
+            val liked = song.id in state.favoriteIds
+            Box(Modifier.align(Alignment.TopEnd).size(48.dp).clip(CircleShape)
+                .toggleable(liked, role = Role.Checkbox, onValueChange = { actions.toggleFavorite(song.id) })
+                .semantics { contentDescription = (if (liked) "Из избранного: " else "В избранное: ") + song.title },
+                contentAlignment = Alignment.Center) {
+                Box(Modifier.size(32.dp).background(StudioGraphite, CircleShape), contentAlignment = Alignment.Center) {
+                    StudioGlyph(if (liked) StudioIcon.FilledHeart else StudioIcon.Heart,
+                        if (liked) StudioCoral else StudioIvory, Modifier.size(17.dp))
+                }
+            }
+            val ready = remember(state.songs, state.availableIds) { state.songs.filter { it.id in state.availableIds } }
+            val index = ready.indexOfFirst { it.id == song.id }
+            if (ready.size > 1 && index >= 0) {
+                Row(Modifier.align(Alignment.BottomEnd).padding(end = 3.dp)) {
+                    for (step in listOf(-1, 1)) {
+                        val next = ready[(index + step + ready.size) % ready.size]
+                        val label = if (step < 0) "Предыдущая песня" else "Следующая песня"
+                        Box(Modifier.size(48.dp).clip(CircleShape).clickable(role = Role.Button) { actions.selectSong(next.id) }
+                            .semantics { contentDescription = "$label: ${next.title}" }, contentAlignment = Alignment.Center) {
+                            Box(Modifier.size(30.dp).background(StudioGraphite, CircleShape), contentAlignment = Alignment.Center) {
+                                StudioGlyph(StudioIcon.Chevron, StudioIvory, Modifier.size(15.dp)
+                                    .graphicsLayer { scaleX = if (step < 0) -1f else 1f })
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

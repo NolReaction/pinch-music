@@ -10,7 +10,8 @@ kotlin {
             "music/pinch/BuildArrangements.kt", "music/pinch/LaunchSound.kt", "music/pinch/StereoLoveMaster.kt",
             "music/pinch/OnTheFloorMaster.kt", "music/pinch/OnTheFloor.kt", "music/pinch/ArrangementScore.kt",
             "music/pinch/core/Chart.kt", "music/pinch/StereoLove.kt", "music/pinch/StereoLoveBand.kt",
-            "music/pinch/WaveHeader.kt",
+            "music/pinch/WaveHeader.kt", "music/pinch/GypsyWoman.kt", "music/pinch/Levels.kt",
+            "music/pinch/DanceMaster.kt", "music/pinch/StudioPiano.kt",
         )
     }
 }
@@ -22,7 +23,7 @@ val encoder = File("/usr/bin/afconvert").takeIf { it.canExecute() } ?: System.ge
 
 val generateArrangements = tasks.register<JavaExec>("generateArrangements") {
     group = "build"
-    description = "Prepare the two full-length recordings and the launch sound."
+    description = "Prepare the four full-length recordings and the launch sound."
     classpath = sourceSets.main.get().runtimeClasspath
     mainClass.set("music.pinch.BuildArrangementsKt")
     inputs.file(performance).withPathSensitivity(PathSensitivity.RELATIVE)

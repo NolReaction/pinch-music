@@ -24,7 +24,7 @@ class SongLibraryTest {
             assertEquals(bpms[song.id], chart.bpm)
             val targets = chart.notes.filter { it.playable }
             assertEquals(0L, targets.first().atMs, song.title)
-            val minimumGap = if (song == stereoLoveSong || song == onTheFloorSong) 15_000L / chart.bpm else 225L
+            val minimumGap = if (song.backingAsset != null) 15_000L / chart.bpm else 225L
             assertTrue(targets.zipWithNext().all { (a, b) -> b.atMs - a.atMs >= minimumGap }, song.title)
         }
     }
@@ -80,17 +80,26 @@ class SongLibraryTest {
         assertEquals(508, chart.notes.size - bellAlone.size)
     }
 
-    @Test fun everyStereoLandingScoresExactlyOnceIncludingTheMiddleOfAReedRoll() {
-        val route = requireNotNull(stereoLoveSong.bundled).cascadeChart()
-        val game = RhythmGame(route, forgiving = true)
-        for (note in route.notes) {
-            assertEquals(TapResult.Hit(note, Grade.Perfect, 0), game.tap(note.atMs))
-            assertEquals(TapResult.Ignored, game.tap(note.atMs + 8))
+    @Test fun everyFullArrangementScoresItsWrittenLandingsExactlyOnce() {
+        val songs = songLibrary.filter { it.backingAsset != null }
+        assertEquals(setOf("on-the-floor", "stereo-love", "gypsy-woman", "levels"), songs.map { it.id }.toSet())
+        for (song in songs) {
+            val score = requireNotNull(song.bundled)
+            assertEquals("backing/${song.id}.m4a", song.backingAsset)
+            assertEquals(score.durationMs, song.bundledDurationMs)
+            assertTrue(score.authoredLandings, song.id)
+            val route = score.cascadeChart()
+            assertEquals(score.notes.filter { it.playable }, route.notes, song.id)
+            val game = RhythmGame(route, forgiving = true)
+            for (note in route.notes) {
+                assertEquals(TapResult.Hit(note, Grade.Perfect, 0), game.tap(note.atMs), song.id)
+                assertEquals(TapResult.Ignored, game.tap(note.atMs + 8), song.id)
+            }
+            val stats = game.finish()
+            assertEquals(route.notes.size, stats.perfect, song.id)
+            assertEquals(route.notes.size, stats.maxCombo, song.id)
+            assertEquals(100_000, stats.score, song.id)
         }
-        val stats = game.finish()
-        assertEquals(523, stats.perfect)
-        assertEquals(523, stats.maxCombo)
-        assertEquals(100_000, stats.score)
     }
 
     @Test fun savedChartsRememberAutoContactsAndLoadEarlierSingleFingerCharts() {
@@ -106,9 +115,10 @@ class SongLibraryTest {
     }
 
     @Test fun authoredLeadsKeepChordVoicesAndDrumsOutOfThePlayableRoute() {
-        val lengths = mapOf("gypsy-woman" to 16, "levels" to 20,
-            "stay" to 32, "turn-down-for-what" to 12, "yeah" to 16, "the-final-countdown" to 16)
-        for (song in songLibrary.filter { it.backingAsset == null }) {
+        val lengths = mapOf("stay" to 32, "turn-down-for-what" to 12, "yeah" to 16, "the-final-countdown" to 16)
+        val songs = songLibrary.filter { it.backingAsset == null }
+        assertEquals(lengths.keys, songs.map { it.id }.toSet())
+        for (song in songs) {
             val chart = requireNotNull(song.bundled)
             val lead = chart.notes.filter { it.playable }
             assertTrue(chart.authoredLandings, song.title)

@@ -47,7 +47,24 @@ private fun renderRecording(source: File, destination: File, scratch: File, code
     }
 }
 
-/** The recorded mix and the generated dance score each produce one audio timeline. */
+private fun renderGenerated(
+    id: String, output: File, scratch: File, codec: File?, render: (File) -> Unit,
+): File {
+    val wav = scratch.resolve("$id.wav")
+    val aac = scratch.resolve("$id.m4a")
+    try {
+        render(wav)
+        val track = if (codec != null && encodeAac(codec, wav, aac, bitRate = 160_000)) aac else wav
+        return output.resolve(track.name).also {
+            Files.move(track.toPath(), it.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        }
+    } finally {
+        Files.deleteIfExists(wav.toPath())
+        Files.deleteIfExists(aac.toPath())
+    }
+}
+
+/** Each song is rendered from the same score used for its playable contacts. */
 fun main(args: Array<String>) {
     val source = File(args[0])
     val assets = File(args[1])
@@ -60,18 +77,17 @@ fun main(args: Array<String>) {
     val stereoLove = output.resolve("stereo-love.m4a")
     renderRecording(source, stereoLove, scratch, codec)
 
-    val wav = scratch.resolve("on-the-floor.wav")
-    val aac = scratch.resolve("on-the-floor.m4a")
-    val floor = try {
+    val floor = renderGenerated("on-the-floor", output, scratch, codec) { wav ->
         writeOnTheFloorMaster(wav, requireNotNull(onTheFloorSong.bundled))
-        val track = if (codec != null && encodeAac(codec, wav, aac, bitRate = 160_000)) aac else wav
-        output.resolve(track.name).also { Files.move(track.toPath(), it.toPath(), StandardCopyOption.REPLACE_EXISTING) }
-    } finally {
-        Files.deleteIfExists(wav.toPath())
-        Files.deleteIfExists(aac.toPath())
+    }
+    val gypsy = renderGenerated("gypsy-woman", output, scratch, codec) { wav ->
+        writeDanceMaster(wav, requireNotNull(gypsyWomanSong.bundled), DanceStyle.GypsyWoman)
+    }
+    val levels = renderGenerated("levels", output, scratch, codec) { wav ->
+        writeDanceMaster(wav, requireNotNull(levelsSong.bundled), DanceStyle.Levels)
     }
     writeLaunchSound(assets.resolve("launch.wav"))
-    val current = setOf(stereoLove, floor)
+    val current = setOf(stereoLove, floor, gypsy, levels)
     output.listFiles().orEmpty().filter { it.isFile && it !in current }.forEach { Files.delete(it.toPath()) }
     // Upgrading a checkout with old generated previews must also retire its artifacts.
     val previews = assets.resolve("arrangements")

@@ -36,7 +36,7 @@ data class ScreenState(
 ) {
     val backingAsset: String? get() = selectedSong.backingAsset.takeUnless { selectedSong.id in importedIds }
     val needsSourceFile: Boolean get() = selectedSong.id in importedIds && selectedSong.id !in recordedImportIds
-    val canChooseReference: Boolean get() = selectedSong.id == "stereo-love" || selectedSong.id == "on-the-floor"
+    val canChooseReference: Boolean get() = backingAsset != null
     val canMeasure: Boolean get() = canPlay
     val canPlay: Boolean get() = selectedSong.id in availableIds
     val title: String get() = selectedSong.title

@@ -232,8 +232,11 @@ internal class MarblePath(chart: Chart) {
                 gapMs.toDouble() in (.5 * beatMs - 1.0)..(1.12 * beatMs) &&
                 nextGap <= 1.65 * beatMs) {
                 val desired = phraseDirection(attacks, i - 2, beatMs)
-                if (desired != 0 && desired != heading) {
-                    heading = desired
+                // A repeated contour can start a return once the previous phrase has
+                // wound all the way around the installation.
+                val sweep = abs(angles[i - 1] - angles[maxOf(1, lastTurn - 1)])
+                if (desired != 0 && (desired != heading || sweep >= 2 * kotlin.math.PI)) {
+                    heading = -heading
                     lastTurn = i
                 }
             }
@@ -244,7 +247,14 @@ internal class MarblePath(chart: Chart) {
             val drop = min((Descent - .12f + .22f * reach) * seconds, .19f * OrbitGravity * seconds * seconds)
             val previous = centers.last()
             val next = if (catcher) previous else orbit(angles[i], previous.y + drop)
-            val guided = contacts.hasGuideAfter(i - 2)
+            // A free parabola above a close stack would strike an earlier key.
+            // Carry the ball to a lower lip when there is too little overhead clearance.
+            val upwardSpeed = if (seconds > 0f) (.5f * OrbitGravity * seconds - drop / seconds).coerceAtLeast(0f) else 0f
+            val risingHeight = upwardSpeed * upwardSpeed / (2f * OrbitGravity)
+            val headroom = if (i > 2) previous.y - centers[centers.lastIndex - 1].y else Float.POSITIVE_INFINITY
+            val reachesUpperBank = gapMs >= 1.25 * beatMs &&
+                risingHeight > 2f * MarbleRadius && risingHeight + MarbleRadius > headroom
+            val guided = !catcher && (contacts.hasGuideAfter(i - 2) || reachesUpperBank)
             val span = OrbitRun(times[i - 1], times[i], previous, next, angles[i - 1], angles[i], spin, guided)
             sections.add(span)
             spin = span.spin(1f) % (2f * kotlin.math.PI.toFloat())
@@ -265,7 +275,7 @@ internal class MarblePath(chart: Chart) {
             } else outgoing.launchDirection()
             // The plate releases the sphere onto the curved rail. Pitch it a
             // little below the rail tangent so the outside edge clears the ball.
-            val normal = if (outgoing.railEnd > 0f) (outgoing.railNormal(0f) + direction * .09f).unit()
+            val normal = if (outgoing.railEnd > 0f) (outgoing.railNormal(0f) + direction * .18f).unit()
                 else StagePoint(.10f * sin(angle).toFloat(), -1f, .16f * cos(angle).toFloat()).unit()
             val outward = StagePoint(-direction.z, 0f, direction.x).unit()
             // Sustains ring on a fork. Beat-aligned strikes get a skin; the smaller

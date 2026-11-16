@@ -38,7 +38,7 @@ internal fun TapReferenceScreen(state: ScreenState, actions: Actions, positionMs
         }
         if (!ref.recording) {
             if (state.canChooseReference) {
-                val gameLabel = if (state.selectedSong.id == "on-the-floor") "Игровая инструментальная версия" else "Игровая версия"
+                val gameLabel = "Игровая инструментальная версия"
                 Text(if (ref.usingFile) ref.fileName.orEmpty() else gameLabel, color = StudioIvory,
                     fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                 Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {

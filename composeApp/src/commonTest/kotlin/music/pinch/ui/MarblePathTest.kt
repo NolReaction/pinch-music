@@ -13,7 +13,6 @@ import music.pinch.core.cascadeChart
 import music.pinch.core.cascadePreRollMs
 import music.pinch.core.Note
 import music.pinch.songLibrary
-import music.pinch.stereoLoveSong
 
 class MarblePathTest {
     private fun chart(times: List<Long>, end: Long) = Chart("Проверка", 127, end,
@@ -25,18 +24,20 @@ class MarblePathTest {
         assertEquals(a.z, b.z, tolerance)
     }
 
-    @Test fun everyStereoLoveAttackHasOneTangentContactAtItsAudioTime() {
-        val score = requireNotNull(stereoLoveSong.bundled).cascadeChart()
-        val path = MarblePath(score)
-        assertEquals(score.notes.map { it.atMs }.distinct(), path.keys.map { it.atMs })
-        for ((i, key) in path.keys.withIndex()) {
-            val frame = path.frame(key.atMs)
-            near(key.center + key.normal * MarbleRadius, frame.marble)
-            near(path.spans[i].ball(1f), frame.marble)
-            near(path.spans[i + 1].ball(0f), frame.marble)
-            assertEquals(1f, key.normal.length(), .00001f)
-            assertEquals(i, frame.anchor)
-            assertEquals(0f, frame.lift)
+    @Test fun everyFullArrangementHasOneTangentContactAtEachWrittenLanding() {
+        for (song in songLibrary.filter { it.backingAsset != null }) {
+            val score = requireNotNull(song.bundled).cascadeChart()
+            val path = MarblePath(score)
+            assertEquals(score.notes.map { it.atMs }.distinct(), path.keys.map { it.atMs })
+            for ((i, key) in path.keys.withIndex()) {
+                val frame = path.frame(key.atMs)
+                near(key.center + key.normal * MarbleRadius, frame.marble)
+                near(path.spans[i].ball(1f), frame.marble)
+                near(path.spans[i + 1].ball(0f), frame.marble)
+                assertEquals(1f, key.normal.length(), .00001f)
+                assertEquals(i, frame.anchor)
+                assertEquals(0f, frame.lift)
+            }
         }
     }
 
@@ -62,9 +63,9 @@ class MarblePathTest {
         }
     }
 
-    @Test fun bothFullSongsLeadThroughClockwiseAndCounterclockwisePhrases() {
-        for (id in listOf("stereo-love", "on-the-floor")) {
-            val chart = requireNotNull(songLibrary.single { it.id == id }.bundled)
+    @Test fun fullArrangementsLeadThroughClockwiseAndCounterclockwisePhrases() {
+        for (song in songLibrary.filter { it.backingAsset != null }) {
+            val chart = requireNotNull(song.bundled)
             val path = MarblePath(chart.cascadeChart())
             fun angle(point: StagePoint) = atan2(point.x / 2.12f, (point.z - .78f) / .94f)
             // Only short flights are unambiguous from their end points (under half a turn).
@@ -73,7 +74,7 @@ class MarblePathTest {
                 val rotation = atan2(sin(delta), cos(delta))
                 if (abs(rotation) < .001f) null else rotation > 0f
             }
-            assertTrue(sweeps.zipWithNext().count { (a, b) -> a != b } >= 2, id)
+            assertTrue(sweeps.zipWithNext().count { (a, b) -> a != b } >= 2, song.id)
         }
     }
 

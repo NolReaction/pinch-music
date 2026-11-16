@@ -63,8 +63,9 @@ internal fun StudioDialog(title: String, dismiss: () -> Unit, content: @Composab
 private enum class CatalogTab(val label: String) { All("Все"), Favorites("Избранное"), Personal("Мои") }
 
 @Composable
-internal fun StudioCatalog(state: ScreenState, actions: Actions, dismiss: () -> Unit, select: (Song) -> Unit) {
-    var tab by rememberSaveable { mutableStateOf(CatalogTab.All) }
+internal fun StudioCatalog(state: ScreenState, actions: Actions, dismiss: () -> Unit,
+    favorites: Boolean = false, select: (Song) -> Unit) {
+    var tab by rememberSaveable { mutableStateOf(if (favorites) CatalogTab.Favorites else CatalogTab.All) }
     var deleting by rememberSaveable { mutableStateOf<String?>(null) }
     val songs = remember(state.songs, state.favoriteIds, state.importedIds, state.availableIds, tab) {
         when (tab) {
@@ -184,36 +185,41 @@ internal fun StudioSettings(state: ScreenState, actions: Actions, dismiss: () ->
 @Composable
 internal fun StudioProfile(state: ScreenState, dismiss: () -> Unit) {
     val profile = state.profile
-    StudioDialog("Мой уровень", dismiss) {
+    StudioDialog("Мой профиль", dismiss) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = 8.dp)) {
-            Row(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(67.dp).background(Surface, RoundedCornerShape(16.dp)), contentAlignment = Alignment.Center) {
-                    StudioGlyph(StudioIcon.Medal, StudioMint, Modifier.size(41.dp))
-                }
-                Spacer(Modifier.width(14.dp))
-                Column {
+            val remaining = profile.xpForNextLevel - profile.xpInLevel
+            val card = RoundedCornerShape(14.dp)
+            Column(Modifier.fillMaxWidth().background(Surface, card).padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    StudioGlyph(StudioIcon.Medal, StudioMint, Modifier.size(24.dp))
                     Text("Уровень ${profile.level}", color = StudioIvory, fontWeight = FontWeight.Bold, fontSize = 23.sp)
-                    Text("Всего ${profile.totalXp} XP", color = Muted, fontSize = 14.sp)
                 }
+                Text("Всего ${profile.totalXp} XP", color = Muted, fontSize = 14.sp)
+                XpTrack(profile.progress, Modifier.fillMaxWidth().height(6.dp))
+                Text("Ещё $remaining XP до уровня ${profile.level + 1}", color = StudioMint,
+                    fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
             }
-            Spacer(Modifier.height(17.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("До уровня ${profile.level + 1}", color = Muted, modifier = Modifier.weight(1f), fontSize = 14.sp)
-                Text("${profile.xpInLevel} / ${profile.xpForNextLevel} XP", color = StudioMint,
-                    fontSize = 13.sp, fontFamily = FontFamily.Monospace)
-            }
-            Spacer(Modifier.height(9.dp))
-            XpTrack(profile.progress, Modifier.fillMaxWidth().height(5.dp))
-            Spacer(Modifier.height(14.dp))
-            Caption("Попадания и серии приносят опыт.")
             Spacer(Modifier.height(18.dp))
             Text("Пламя серии", color = StudioIvory, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+            val nextFlameLevel = when (profile.flameTier) {
+                0 -> 3
+                1 -> 6
+                else -> null
+            }
+            Caption(nextFlameLevel?.let { "Новый вид пламени откроется на уровне $it." } ?: "Все виды пламени открыты.")
             Spacer(Modifier.height(8.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 FlameLevel(1, 0, profile.flameTier, Modifier.weight(1f))
                 FlameLevel(3, 1, profile.flameTier, Modifier.weight(1f))
                 FlameLevel(6, 2, profile.flameTier, Modifier.weight(1f))
             }
+            Spacer(Modifier.height(18.dp))
+            Rule()
+            Spacer(Modifier.height(12.dp))
+            Text("Как заработать XP", color = StudioIvory, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(5.dp))
+            Caption("Попадание даёт 3–5 XP, каждые пять попаданий подряд — ещё 2 XP. За завершённый трек можно получить до 12 XP.")
         }
     }
 }

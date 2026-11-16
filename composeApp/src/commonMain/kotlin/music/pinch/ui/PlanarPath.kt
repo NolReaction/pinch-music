@@ -231,7 +231,8 @@ internal class PlanarPath(chart: Chart, contactChart: Chart = chart.cascadeChart
         val beat = 60_000.0 / contactChart.bpm
         var direction = if (phraseDirection(notes, 0, beat) < 0) -1 else 1
         origin = StagePoint(0f, -MarbleRadius, 0f)
-        entry = StarterChute(notes.first().atMs, startMs, StagePoint(direction.toFloat(), 0f, 0f), origin, CascadeGravity, .32)
+        // The entry needs enough downward speed to clear a steep key before an octave burst.
+        entry = StarterChute(notes.first().atMs, startMs, StagePoint(direction.toFloat(), 0f, 0f), origin, CascadeGravity, .36)
         var center = origin
         var runSteps = 0
         var spin = direction * entry.spin(1f) % 6.2831855f

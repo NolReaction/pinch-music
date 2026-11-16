@@ -80,10 +80,8 @@ class PlanarPathTest {
             Note("r$i", if (i == 0) 0L else 460L + (i - 1) * 115L, 64 + i % 2, 85L, .9f)
         }, authoredLandings = true)
         assertCourseClear(roll, roll.title)
-        val songs = listOf("stereo-love", "on-the-floor").map { id ->
-            requireNotNull(songLibrary.single { it.id == id }.bundled)
-        }
-        for (chart in songs + roll) {
+        val scores = songLibrary.filter { it.backingAsset != null }.map { requireNotNull(it.bundled) }
+        for (chart in scores + roll) {
             val path = PlanarPath(chart)
             val bodies = path.panels.mapIndexed { i, panel ->
                 val dx = 1f / hypot(1f, panel.slope)
@@ -354,11 +352,11 @@ class PlanarPathTest {
                 // The ball sits on both steel runners when the gate holds it.
                 assertEquals(MarbleRadius, distanceToRod(start.marble, rod[0], rod[1]), .0002f)
                 if (first >= 4000) assertEquals(start.marble, path.frame(first - 3200).marble)
-                val lip = path.frame(first - 320)
+                val lip = path.frame(first - 360)
                 assertEquals(rail.last().x, lip.marble.x, .0001f)
                 assertEquals(rail.last().y, lip.marble.y, .0001f)
-                val before = (lip.marble - path.frame(first - 322).marble) * 500f
-                val after = (path.frame(first - 318).marble - lip.marble) * 500f
+                val before = (lip.marble - path.frame(first - 362).marble) * 500f
+                val after = (path.frame(first - 358).marble - lip.marble) * 500f
                 assertTrue((before - after).length() < .03f)
             }
             for (time in -lead until first step 15) {
