@@ -60,11 +60,7 @@ internal fun PlanarPath.writeGpuFrame(timeMs: Long, out: FloatArray,
     out[5] = (active?.let { it.panelIndex + panelOffset } ?: -1).toFloat()
     // The cap starts moving at physical contact. A delayed score update only changes its colour.
     out[6] = active?.let { (1f - (timeMs - it.atMs) / 235f).coerceIn(0f, 1f) } ?: 0f
-    val age = timeMs - (active?.atMs ?: timeMs)
-    val travel = if (age in 0L..190L) {
-        val u = if (age < 40) age / 40f else (190L - age) / 150f
-        .081f * u * u * (3f - 2f * u)
-    } else 0f
+    val travel = if (active == null) 0f else panelCompression(timeMs - active.atMs, next?.let { it.atMs - active.atMs })
     out[7] = travel
     out[8] = if (active != null && next == null) travel else 0f // ball stays seated in the last catcher
     out[9] = (next?.let { it.panelIndex + panelOffset } ?: -1).toFloat()

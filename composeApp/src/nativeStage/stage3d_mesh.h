@@ -1,6 +1,7 @@
 // Local-coordinate triangle meshes shared by the Android and iOS renderers.
 #pragma once
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <vector>
@@ -108,12 +109,22 @@ inline void tube(Mesh& m, const std::vector<V>& path, float radius, Surface surf
     const int begin = static_cast<int>(m.verts.size());
     const V axis = unit(path.back() - path.front());
     const V guide = std::abs(axis.z) < .9f ? V{0, 0, 1} : V{0, 1, 0};
+    // The rails and turned hardware use 4–14 sides. Reuse the polar basis for
+    // every station and fitting, including when a context is rebuilt after sleep.
+    static const auto circles = [] {
+        std::array<std::array<V, 16>, 17> result{};
+        for (int n = 3; n <= 16; ++n) for (int k = 0; k < n; ++k) {
+            const float a = k * 2.f * Pi / n;
+            result[n][k] = {std::cos(a), std::sin(a), 0};
+        }
+        return result;
+    }();
+    const auto& circle = circles.at(sides);
     for (size_t j = 0; j < path.size(); ++j) {
         V t = unit(path[std::min(j + 1, path.size() - 1)] - path[j ? j - 1 : 0]);
         V b = unit(cross(t, guide)), c = cross(b, t);
         for (int k = 0; k < sides; ++k) {
-            float a = k * 2.f * Pi / sides;
-            V n = b * std::cos(a) + c * std::sin(a);
+            V n = b * circle[k].x + c * circle[k].y;
             m.point(path[j] + n * radius, n, surface, detail);
         }
         if (j)
@@ -154,13 +165,35 @@ inline void ellipsoid(Mesh& m, V at, V radii, Surface surface, int sides, int ri
         }
 }
 
+// The contact plane and outside envelope are common to all records. Change the
+// perimeter cuts, fascia and alloy without moving the face under the sphere.
+struct KeyDesign {
+    int cornerSteps;
+    float corner;
+    Surface rim, band;
+    float lacquer, reflection, grainX, grainZ;
+};
+inline const KeyDesign& keyDesign(int motif) {
+    static constexpr KeyDesign designs[] = {
+        {2, .108f, Copper, Accent, .92f, .26f, .34f, .34f}, // Floor: cut obsidian and copper
+        {4, .082f, Chrome, Inlay, .34f, .63f, 1.05f, .14f}, // Stereo: brushed nickel
+        {3, .132f, Copper, Iron, .83f, .24f, .14f, 2.7f}, // Gypsy: warm, lengthwise grain
+        {2, .152f, Chrome, Accent, .82f, .44f, 1.4f, 1.4f}, // Levels: faceted blue enamel
+        {5, .210f, Chrome, Inlay, .65f, .46f, .35f, .35f}, // Stay: rolled porcelain
+        {2, .054f, Iron, Copper, .86f, .29f, 2.1f, .21f}, // Turn Down: square graphite
+        {4, .167f, Copper, Accent, .70f, .40f, .26f, 1.2f}, // Yeah: rounded olive/brass caps
+        {3, .110f, Iron, Chrome, .74f, .62f, 1.8f, .23f}, // Countdown: dark nickel and violet
+    };
+    return designs[motif >= 0 && motif < 8 ? motif : 1];
+}
+
 inline float keyCenterX(bool shortKey, float side) {
     return side * (shortKey ? .23f : .22f);
 }
 
 // Loft rounded rectangular contours. Bevel normals angle smoothly into the flat top.
 // The two fasteners sit inside recessed ferrules on the playing face.
-inline Mesh keyMesh(bool shortKey, float side, bool accented) {
+inline Mesh keyMesh(bool shortKey, float side, bool accented, const KeyDesign& design) {
     Mesh m;
     float width = shortKey ? .46f : .70f;
     // Keep the strike near the inward lip and the long part of the key behind
@@ -169,8 +202,8 @@ inline Mesh keyMesh(bool shortKey, float side, bool accented) {
     float frontZ = .25f, backZ = shortKey ? -.585f : -.66f;
     float length = frontZ - backZ, cz = (frontZ + backZ) * .5f;
     float depth = accented ? .36f : .215f;
-    const float corner = .064f;
-    const int perCorner = 4, ring = 4 * perCorner;
+    const float corner = design.corner;
+    const int perCorner = design.cornerSteps, ring = 4 * perCorner;
     struct Level {
         float y, inset, slope;
         Surface surface;
@@ -178,11 +211,11 @@ inline Mesh keyMesh(bool shortKey, float side, bool accented) {
     // A broad face, two cuts around the polished bevel, a narrow polymer
     // gasket, and the recessed gunmetal underbody are all inside the key bounds.
     const Level levels[] = {{0, .033f, 1, Face},
-                            {.010f, .016f, .82f, Chrome},
-                            {.024f, .002f, .41f, Chrome},
+                            {.010f, .016f, .82f, design.rim},
+                            {.024f, .002f, .41f, design.rim},
                             {.040f, 0, 0, Skirt},
-                            {.052f, 0, 0, Inlay},
-                            {.066f, .009f, -.28f, Chrome},
+                            {.052f, 0, 0, design.band},
+                            {.066f, .009f, -.28f, design.rim},
                             {.083f, .026f, -.45f, Skirt},
                             {depth - .018f, .026f, 0, Skirt},
                             {depth, .043f, -.78f, Chrome}};

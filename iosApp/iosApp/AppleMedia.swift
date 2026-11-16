@@ -4,13 +4,22 @@ import UIKit
 
 @MainActor
 final class AppleMediaFactory: NSObject, @preconcurrency AppleMediaFactoryProtocol {
-    private let songImport = AppleSongImport()
+    private lazy var songImport = AppleSongImport()
     private weak var current: NativeMedia?
     private var sceneActive = false
     private var pendingLaunch: (gain: Float, time: TimeInterval)?
     private var launchTask: Task<Void, Never>?
     private var launchID: UUID?
     private var launchObservers = [NSObjectProtocol]()
+
+    func firstMenuFrame() {
+        #if DEBUG
+        if let start = PinchTiming.launch {
+            PinchTiming.launch = nil
+            PinchTiming.log.notice("[PinchTiming] Swift app init to first Compose menu frame: \(PinchTiming.ms(since: start)) ms")
+        }
+        #endif
+    }
 
     func setSceneActive(_ active: Bool) {
         guard active != sceneActive else { return }
@@ -40,7 +49,6 @@ final class AppleMediaFactory: NSObject, @preconcurrency AppleMediaFactoryProtoc
     }
 
     private func beginLaunchSound(volume: Float, requestedAt: TimeInterval) {
-        guard let url = Bundle.main.url(forResource: "launch", withExtension: "wav") else { return }
         let id = UUID()
         launchID = id
         for name in [AVAudioSession.interruptionNotification, AVAudioSession.silenceSecondaryAudioHintNotification,
@@ -58,7 +66,7 @@ final class AppleMediaFactory: NSObject, @preconcurrency AppleMediaFactoryProtoc
             })
         launchTask = Task { [weak self] in
             do {
-                let started = try await LaunchAudio.shared.play(id: id, url: url, volume: volume, requestedAt: requestedAt) {
+                let started = try await LaunchAudio.shared.play(id: id, volume: volume, requestedAt: requestedAt) {
                     [weak self] in
                     Task { @MainActor in
                         if self?.launchID == id { self?.stopLaunchSound() }
@@ -85,6 +93,9 @@ final class AppleMediaFactory: NSObject, @preconcurrency AppleMediaFactoryProtoc
     func createCascade() -> AppleCascadeSurface { AppleCascadeDisplay() }
 
     func pickAudio(listener: AppleAudioImportListener) { songImport.pick(listener) }
+    func pickReference(directory: String, listener: AppleReferenceListener) {
+        songImport.pickReference(directory: directory, listener: listener)
+    }
 
     func createMedia(instrument: String, observer: AppleInterruptListener) -> AppleMediaSession {
         stopLaunchSound()
@@ -97,7 +108,7 @@ final class AppleMediaFactory: NSObject, @preconcurrency AppleMediaFactoryProtoc
     }
 }
 
-private final class LaunchCompletion: NSObject, AVAudioPlayerDelegate {
+private nonisolated final class LaunchCompletion: NSObject, AVAudioPlayerDelegate {
     private let finished: @Sendable () -> Void
     init(_ finished: @escaping @Sendable () -> Void) { self.finished = finished }
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) { finished() }
@@ -107,14 +118,16 @@ private final class LaunchCompletion: NSObject, AVAudioPlayerDelegate {
 // Serial ownership keeps cold audio hardware setup off the UI thread and orders it before game playback.
 private actor LaunchAudio {
     static let shared = LaunchAudio()
-    private let session = AVAudioSession.sharedInstance()
+    // Accessing `shared` itself is synchronous. Only touch Core Audio on this actor.
+    private lazy var session = AVAudioSession.sharedInstance()
     private var owner: UUID?
     private var player: AVAudioPlayer?
     private var completion: LaunchCompletion?
 
-    func play(id: UUID, url: URL, volume: Float, requestedAt: TimeInterval,
+    func play(id: UUID, volume: Float, requestedAt: TimeInterval,
               finished: @escaping @Sendable () -> Void) throws -> Bool {
-        guard !Task.isCancelled, session.outputVolume > 0, !session.isOtherAudioPlaying, !session.secondaryAudioShouldBeSilencedHint,
+        guard !Task.isCancelled, let url = Bundle.main.url(forResource: "launch", withExtension: "wav"),
+              session.outputVolume > 0, !session.isOtherAudioPlaying, !session.secondaryAudioShouldBeSilencedHint,
               ProcessInfo.processInfo.systemUptime - requestedAt <= 0.35 else { return false }
         // Ambient observes the hardware Silent switch and lock without interrupting other audio.
         try session.setCategory(.ambient, mode: .default)
@@ -154,28 +167,33 @@ private final class NativeMedia: NSObject, @preconcurrency AppleMediaSession {
     private let instrument: String
     private var observer: AppleInterruptListener?
     private let foreground: () -> Bool
-    private let audioSession = AVAudioSession.sharedInstance()
+    private var audioSession: AVAudioSession { AVAudioSession.sharedInstance() }
     private var graph: GameAudioGraph?
     private var savedFrame: AVAudioFramePosition = 0
+    private var initialPositionMs: Int64?
     private var sampleRate = 1.0
     private var backingVolume: Float = 1
     private(set) var backingEnded = false
     var backingPlaying: Bool { wantsPlayback && graph?.backingIsPlaying == true }
     var backingPositionMs: Int64 {
         capturePosition()
-        return Int64((Double(savedFrame) * 1000 / sampleRate).rounded())
+        return initialPositionMs ?? Int64((Double(savedFrame) * 1000 / sampleRate).rounded())
     }
     private var roots = [Int32: Int32]()
     private var tokens = [NSObjectProtocol]()
     private var preparation: Task<Void, Never>?
     var ready: Bool { graph != nil }
     private var wantsPlayback = false
-    private var sessionActive = false
+    private var generation: UUID?
     private var outputPorts: [String] = []
     private var outputRate = 0.0
     private var mediaServicesAvailable = true
     private var closed = false
     private(set) var failure: String?
+    #if DEBUG
+    private var firstActivation = true
+    private var firstStrike = true
+    #endif
 
     init(instrument: String, observer: AppleInterruptListener, foreground: @escaping () -> Bool) {
         self.instrument = instrument
@@ -185,21 +203,47 @@ private final class NativeMedia: NSObject, @preconcurrency AppleMediaSession {
         observeSession()
     }
 
+    func startAt(positionMs: Int64) {
+        guard generation == nil, graph == nil, !closed else { return }
+        initialPositionMs = max(0, positionMs)
+    }
+
     func includeSample(midi: Int32, root: Int32) { roots[midi] = root }
 
     func prepare(backingAsset: String?, arrangementPath: String?, includeStrike: Bool) {
         guard !closed, !backingEnded, graph == nil, preparation == nil, failure == nil else { return }
         guard foreground(), mediaServicesAvailable else { interrupt(); return }
-        preparation = Task { [weak self, instrument, roots, backingAsset, arrangementPath, savedFrame] in
+        let id = UUID()
+        #if DEBUG
+        let started = PinchTiming.now
+        #endif
+        generation = id
+        preparation = Task { [weak self, instrument, roots, backingAsset, arrangementPath, savedFrame, initialPositionMs] in
             do {
                 await LaunchAudio.shared.stop()
                 try Task.checkCancellation()
-                let graph = try await GameAudioLoader.shared.load(instrument, roots: roots, backingAsset: backingAsset, arrangementPath: arrangementPath, includeStrike: includeStrike, from: savedFrame)
-                guard !Task.isCancelled, let self else { return }
+                let loader = GameAudioLoader.shared
+                let graph = try await loader.load(instrument, roots: roots, backingAsset: backingAsset,
+                    arrangementPath: arrangementPath, includeStrike: includeStrike, from: savedFrame,
+                    initialPositionMs: initialPositionMs, owner: id) { [weak self] in
+                        Task { @MainActor in self?.completed(id) }
+                    }
+                guard !Task.isCancelled, let self, self.generation == id else {
+                    await loader.release(id, graph: graph)
+                    return
+                }
                 self.preparation = nil
+                self.graph = graph
                 guard self.foreground(), self.mediaServicesAvailable else { self.interrupt(); return }
                 self.sampleRate = graph.backingRate
-                self.graph = graph
+                self.savedFrame = graph.startFrame
+                self.initialPositionMs = nil
+                graph.setBackingVolume(self.backingVolume)
+                self.outputPorts = graph.outputPorts
+                self.outputRate = graph.outputRate
+                #if DEBUG
+                PinchTiming.log.notice("[PinchTiming] Audio prepare, hardware and first buffers: \(PinchTiming.ms(since: started)) ms")
+                #endif
             } catch {
                 guard !Task.isCancelled, let self else { return }
                 self.preparation = nil
@@ -217,43 +261,41 @@ private final class NativeMedia: NSObject, @preconcurrency AppleMediaSession {
         if wantsPlayback, let frame = graph?.currentBackingFrame { savedFrame = max(savedFrame, frame) }
     }
 
+    func scheduleStart(delayMs: Int64) {
+        guard !closed, foreground(), let graph, graph.engine.isRunning else { return }
+        graph.startBacking(after: Double(delayMs) / 1000)
+    }
+
     func activate() -> Bool {
-        guard !closed, !backingEnded, failure == nil else { return false }
-        guard foreground(), mediaServicesAvailable else { interrupt(); return false }
-        if wantsPlayback { return true }
-        guard let current = graph else { return false }
-        do {
-            if audioSession.category != .playback || audioSession.mode != .default {
-                try audioSession.setCategory(.playback, mode: .default)
-            }
-            try audioSession.setActive(true)
-            sessionActive = true
-        } catch {
-            interrupt()
-            return false
+        guard !closed, !backingEnded, failure == nil, let graph else { return false }
+        guard foreground(), mediaServicesAvailable, graph.engine.isRunning else { interrupt(); return false }
+        #if DEBUG
+        let start = PinchTiming.now
+        #endif
+        wantsPlayback = true
+        if graph.backingLength > 0 && graph.startFrame >= graph.backingLength {
+            backingEnded = true
+        } else {
+            graph.startBacking(after: 0)
         }
-        do {
-            try current.start(volume: backingVolume) { [weak self, weak current] in
-                Task { @MainActor [weak self, weak current] in
-                    guard let self, let current, self.graph === current, self.wantsPlayback else { return }
-                    // Core Audio may also complete a scheduled segment when hardware is interrupted.
-                    self.capturePosition()
-                    if self.foreground(), current.engine.isRunning, current.reachedEnd(at: self.savedFrame) {
-                        self.savedFrame = current.backingLength
-                        self.backingEnded = true
-                    } else {
-                        self.interrupt()
-                    }
-                }
-            }
-            outputPorts = audioSession.currentRoute.outputs.map(\.uid)
-            outputRate = audioSession.sampleRate
-            wantsPlayback = true
-            return true
-        } catch {
-            silence()
-            failure = error.localizedDescription
-            return false
+        #if DEBUG
+        if firstActivation {
+            firstActivation = false
+            PinchTiming.log.notice("[PinchTiming] First playback activation on UI: \(PinchTiming.ms(since: start)) ms")
+        }
+        #endif
+        return true
+    }
+
+    private func completed(_ id: UUID) {
+        guard id == generation, let graph, wantsPlayback else { return }
+        // Core Audio may also complete a scheduled segment when hardware is interrupted.
+        capturePosition()
+        if foreground(), graph.engine.isRunning, graph.reachedEnd(at: savedFrame) {
+            savedFrame = graph.backingLength
+            backingEnded = true
+        } else {
+            interrupt()
         }
     }
 
@@ -268,11 +310,13 @@ private final class NativeMedia: NSObject, @preconcurrency AppleMediaSession {
         wantsPlayback = false
         // Detach ownership before stopping: stop() can complete scheduled buffers.
         let previous = graph
+        let id = generation
         graph = nil
-        previous?.stop()
-        if sessionActive {
-            sessionActive = false
-            try? audioSession.setActive(false, options: .notifyOthersOnDeactivation)
+        generation = nil
+        if let previous, let id {
+            // Silence instantly. Core Audio shutdown may block and is serialized with the next load.
+            previous.mute()
+            Task { await GameAudioLoader.shared.release(id, graph: previous) }
         }
     }
 
@@ -280,7 +324,17 @@ private final class NativeMedia: NSObject, @preconcurrency AppleMediaSession {
         if wantsPlayback && foreground() { graph?.play(midi, gain: gain, durationMs: durationMs) }
     }
     func strike(gain: Float) {
-        if wantsPlayback && foreground() { graph?.strike(gain: gain) }
+        guard wantsPlayback, foreground(), let graph else { return }
+        #if DEBUG
+        if firstStrike {
+            firstStrike = false
+            let start = PinchTiming.now
+            graph.strike(gain: gain)
+            PinchTiming.log.notice("[PinchTiming] First scored audio feedback: \(PinchTiming.ms(since: start)) ms")
+            return
+        }
+        #endif
+        graph.strike(gain: gain)
     }
 
     func close() {
@@ -335,11 +389,11 @@ private final class NativeMedia: NSObject, @preconcurrency AppleMediaSession {
             // Resume from the saved musical position with fresh hardware objects.
             if media.preparation != nil || media.ready { media.interrupt() }
         }
-        observeAudio(AVAudioSession.interruptionNotification, object: audioSession) { notification in
+        observeAudio(AVAudioSession.interruptionNotification) { notification in
             let raw = (notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? NSNumber)?.uintValue
             return raw == AVAudioSession.InterruptionType.began.rawValue ? .interruption : nil
         }
-        observeAudio(AVAudioSession.routeChangeNotification, object: audioSession) { _ in .routeChanged }
+        observeAudio(AVAudioSession.routeChangeNotification) { _ in .routeChanged }
         observeAudio(.AVAudioEngineConfigurationChange) { notification in
             (notification.object as? AVAudioEngine).map { .engineChanged(ObjectIdentifier($0)) }
         }
@@ -355,12 +409,15 @@ private final class NativeMedia: NSObject, @preconcurrency AppleMediaSession {
         case .routeChanged:
             // Compare with the route used at play(). A queued notification about an earlier
             // route may arrive after the new graph is already playing on the correct output.
+            guard let graph else { return }
             let outputs = audioSession.currentRoute.outputs.map(\.uid)
-            if wantsPlayback && (outputPorts != outputs || outputRate != audioSession.sampleRate || graph?.running != true) {
+            if outputPorts != outputs || outputRate != audioSession.sampleRate || !graph.engine.isRunning ||
+                (wantsPlayback && !graph.running) {
                 interrupt()
             }
         case .engineChanged(let id):
-            if let current = graph, ObjectIdentifier(current.engine) == id, wantsPlayback && !current.running {
+            if let current = graph, ObjectIdentifier(current.engine) == id,
+               !current.engine.isRunning || (wantsPlayback && !current.running) {
                 interrupt()
             }
         case .lost, .reset:
@@ -368,7 +425,8 @@ private final class NativeMedia: NSObject, @preconcurrency AppleMediaSession {
             if case .lost = event { mediaServicesAvailable = false } else { mediaServicesAvailable = true }
             cancelPreparation()
             wantsPlayback = false
-            sessionActive = false
+            if let id = generation { Task { await GameAudioLoader.shared.forget(id) } }
+            generation = nil
             graph = nil
             observer?.interrupted()
         }
@@ -380,11 +438,13 @@ private final class NativeMedia: NSObject, @preconcurrency AppleMediaSession {
 private actor GameAudioLoader {
     static let shared = GameAudioLoader()
     private let samples = NSCache<NSString, AVAudioPCMBuffer>()
+    private var activeOwner: UUID?
 
     private init() { samples.totalCostLimit = 24 * 1024 * 1024 }
 
     func load(_ instrument: String, roots: [Int32: Int32], backingAsset: String?, arrangementPath: String?,
-              includeStrike: Bool, from frame: AVAudioFramePosition) throws -> GameAudioGraph {
+              includeStrike: Bool, from frame: AVAudioFramePosition, initialPositionMs: Int64?,
+              owner: UUID, finished: @escaping @Sendable () -> Void) throws -> GameAudioGraph {
         try Task.checkCancellation()
         var track: AVAudioFile?
         var sourceURL: URL?
@@ -418,7 +478,41 @@ private actor GameAudioLoader {
             contact = try cached("media/feedback/\(instrument)") { try Self.readSample(instrument, folder: "media/feedback") }
         }
         try Task.checkCancellation()
-        return try GameAudioGraph(track: track, buffers: buffers, contact: contact, from: frame)
+        let session = AVAudioSession.sharedInstance()
+        if session.category != .playback || session.mode != .default {
+            try session.setCategory(.playback, mode: .default)
+        }
+        try session.setActive(true)
+        activeOwner = owner
+        var starting: GameAudioGraph?
+        do {
+            let first: AVAudioFramePosition
+            if let ms = initialPositionMs, let track {
+                first = AVAudioFramePosition(min(Double(track.length), Double(ms) * track.processingFormat.sampleRate / 1000))
+            } else {
+                first = frame
+            }
+            let graph = try GameAudioGraph(track: track, buffers: buffers, contact: contact, from: first)
+            starting = graph
+            try graph.prime(session: session, finished: finished)
+            try Task.checkCancellation()
+            return graph
+        } catch {
+            release(owner, graph: starting)
+            throw error
+        }
+    }
+
+    func release(_ owner: UUID, graph: GameAudioGraph?) {
+        graph?.stop()
+        // Cancellation and a replacement prepare can reach this actor in either order.
+        guard activeOwner == owner else { return }
+        activeOwner = nil
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+
+    func forget(_ owner: UUID) {
+        if activeOwner == owner { activeOwner = nil }
     }
 
     private func cached(_ key: String, load: () throws -> AVAudioPCMBuffer) rethrows -> AVAudioPCMBuffer {
@@ -461,14 +555,17 @@ private actor GameAudioLoader {
 }
 
 /// Backing, pitched notes and taps share one output mixer and one hardware clock.
-private final class GameAudioGraph: @unchecked Sendable {
+private nonisolated final class GameAudioGraph: @unchecked Sendable {
     let engine = AVAudioEngine()
     private let backingNode = AVAudioPlayerNode()
     private let track: AVAudioFile?
-    private let startFrame: AVAudioFramePosition
+    let startFrame: AVAudioFramePosition
     private let fadeHead: AVAudioPCMBuffer?
     private var presentationDelay = 0.0
     private var renderQuantum = 0.0
+    private var backingArmed = false
+    private(set) var outputPorts = [String]()
+    private(set) var outputRate = 0.0
     private let buffers: [Int32: AVAudioPCMBuffer]
     private let contact: AVAudioPCMBuffer?
     // The immutable gated buffers may still be in the render pipeline after a
@@ -480,7 +577,7 @@ private final class GameAudioGraph: @unchecked Sendable {
     var backingRate: Double { track?.processingFormat.sampleRate ?? 1 }
     var backingLength: AVAudioFramePosition { track?.length ?? 0 }
     var backingIsPlaying: Bool { track != nil && backingNode.isPlaying && engine.isRunning }
-    var running: Bool { engine.isRunning && (track == nil || backingNode.isPlaying) }
+    var running: Bool { engine.isRunning && (!backingArmed || backingNode.isPlaying) }
 
     func reachedEnd(at frame: AVAudioFramePosition) -> Bool {
         // The last UI sample can predate the hardware's played-back callback by a
@@ -552,7 +649,8 @@ private final class GameAudioGraph: @unchecked Sendable {
 
     func setBackingVolume(_ gain: Float) { backingNode.volume = gain }
 
-    func start(volume: Float, finished: @escaping @Sendable () -> Void) throws {
+    /// Schedule and predecode while the stage is loading. No audio plays before startBacking.
+    func prime(session: AVAudioSession, finished: @escaping @Sendable () -> Void) throws {
         if let track {
             var first = startFrame
             if let fadeHead {
@@ -566,15 +664,28 @@ private final class GameAudioGraph: @unchecked Sendable {
             if first < track.length {
                 backingNode.scheduleSegment(track, startingFrame: first, frameCount: AVAudioFrameCount(track.length - first),
                                             at: nil, completionCallbackType: .dataPlayedBack) { _ in finished() }
-            } else if startFrame == track.length {
-                finished()
             }
-            backingNode.volume = volume
+            let available = track.length - startFrame
+            if available > 0 { backingNode.prepare(withFrameCount: AVAudioFrameCount(min(8192, available))) }
         }
         try engine.start()
-        if track != nil {
-            presentationDelay = max(0, backingNode.outputPresentationLatency)
-            renderQuantum = AVAudioSession.sharedInstance().ioBufferDuration
+        // An idle player can accept a tap without its first play() doing work on the touch callback.
+        nodes.forEach { $0.play() }
+        outputPorts = session.currentRoute.outputs.map(\.uid)
+        outputRate = session.sampleRate
+        renderQuantum = session.ioBufferDuration
+        if track != nil { presentationDelay = max(0, backingNode.outputPresentationLatency) }
+    }
+
+    func startBacking(after delay: TimeInterval) {
+        guard track != nil, !backingArmed else { return }
+        backingArmed = true
+        // The note should arrive at the speaker at the same instant as the first collision.
+        let lead = max(0, delay - presentationDelay)
+        if lead > 0 {
+            let target = mach_absolute_time() + AVAudioTime.hostTime(forSeconds: lead)
+            backingNode.play(at: AVAudioTime(hostTime: target))
+        } else {
             backingNode.play()
         }
     }
@@ -619,8 +730,9 @@ private final class GameAudioGraph: @unchecked Sendable {
         if !node.isPlaying { node.play() }
     }
 
+    func mute() { engine.mainMixerNode.outputVolume = 0 }
+
     func stop() {
-        engine.mainMixerNode.outputVolume = 0
         engine.stop()
         if track != nil { backingNode.stop() }
         nodes.forEach { $0.stop() }

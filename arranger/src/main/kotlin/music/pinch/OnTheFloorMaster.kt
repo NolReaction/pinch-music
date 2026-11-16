@@ -32,7 +32,8 @@ private fun sample(table: FloatArray, phase: Int): Float {
 /** One period per pitch and registration. Leave headroom for harmonics and omit partials above Nyquist. */
 private fun leadTable(voice: FloorLeadVoice, hz: Double): FloatArray {
     val harmonics = when (voice) {
-        FloorLeadVoice.Reed -> doubleArrayOf(1.0, .47, .57, .22, .22, .12, .10, .055, .035, .025)
+        // The upper octave and fifth carry the accordion hook over the bass and kick.
+        FloorLeadVoice.Reed -> doubleArrayOf(.89, 1.04, 1.01, .47, .45, .28, .19, .14, .09, .055)
         FloorLeadVoice.Pluck -> doubleArrayOf(1.0, .42, .21, .075, .04, .025)
         FloorLeadVoice.Brass -> doubleArrayOf(.79, .76, .60, .37, .27, .15, .09, .04)
         FloorLeadVoice.Vocal -> DoubleArray(14) { index ->
@@ -108,12 +109,13 @@ private class FloorStudio(val score: Chart) {
             else -> 55L
         }
         val mono = FloatArray(gate + frames(tailMs))
+        val reedSides = if (voice == FloorLeadVoice.Reed) FloatArray(mono.size) else null
         val attack = 1f - decay(attackMs * .00040)
         val release = decay(tailMs * .00017)
         val pluckDecay = decay(.23)
         val scoopDecay = decay(.021)
         val separation = when (voice) {
-            FloorLeadVoice.Reed -> 1.0039
+            FloorLeadVoice.Reed -> 1.0048
             FloorLeadVoice.Vocal -> 1.0014
             FloorLeadVoice.Pluck -> 1.0022
             FloorLeadVoice.Brass -> .9970
@@ -122,6 +124,10 @@ private class FloorStudio(val score: Chart) {
         val pitchStep = step(hz)
         var centerPhase = 0
         var rankPhase = step(hz * .09)
+        // The two outer reed ranks speak independently. The center rank anchors the pitch on a phone speaker.
+        val registrationPhase = ((note.atMs % 1024L).toInt() * 37 + note.midi * 131) shl 22
+        if (reedSides != null) rankPhase = registrationPhase
+        var lowerPhase = registrationPhase + 0x58000000
         var vibratoPhase = 0
         var pressure = 0f
         var brightness = 1f
@@ -138,7 +144,12 @@ private class FloorStudio(val score: Chart) {
             val rank = sample(tone, rankPhase)
             val fundamental = sample(sine, centerPhase)
             val colour = when (voice) {
-                FloorLeadVoice.Reed -> .72f * main + .28f * rank
+                FloorLeadVoice.Reed -> {
+                    lowerPhase += (delta * .9956).toInt()
+                    val lower = sample(tone, lowerPhase)
+                    reedSides?.set(i, .43f * (rank - lower) * pressure)
+                    .65f * main + .175f * (rank + lower)
+                }
                 FloorLeadVoice.Pluck -> (.69f * main + .31f * rank) * (.28f + .72f * brightness) +
                     .16f * brightness * sample(sine, centerPhase * 3)
                 FloorLeadVoice.Vocal -> .76f * main + .24f * rank
@@ -152,9 +163,14 @@ private class FloorStudio(val score: Chart) {
         val gain = note.velocity * when (voice) {
             FloorLeadVoice.Pluck -> .49f
             FloorLeadVoice.Brass -> .57f
+            FloorLeadVoice.Reed -> .69f
             else -> .58f
         }
         place(mono, start, gain, -.035)
+        if (reedSides != null) {
+            place(reedSides, start, gain, -1.0)
+            place(reedSides, start, -gain, 1.0)
+        }
         // Early reflections carry the sustained line out to the sides. Leave the attack centered.
         place(mono, start + frames(17), gain * .115f, .78)
         place(mono, start + frames(29), gain * .082f, -.74)

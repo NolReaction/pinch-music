@@ -353,7 +353,7 @@ class PlanarPathTest {
                 val rod = rodCenters(rail)
                 // The ball sits on both steel runners when the gate holds it.
                 assertEquals(MarbleRadius, distanceToRod(start.marble, rod[0], rod[1]), .0002f)
-                if (first >= 3000) assertEquals(start.marble, path.frame(first - 2600).marble)
+                if (first >= 4000) assertEquals(start.marble, path.frame(first - 3200).marble)
                 val lip = path.frame(first - 320)
                 assertEquals(rail.last().x, lip.marble.x, .0001f)
                 assertEquals(rail.last().y, lip.marble.y, .0001f)
@@ -379,7 +379,7 @@ class PlanarPathTest {
             Note("b", 620, 65, 200, .9f), Note("c", 1310, 63, 120, .8f)))
         val path = PlanarPath(chart)
         val lead = chart.cascadePreRollMs()
-        assertEquals(1364L, lead)
+        assertEquals(3200L, lead)
         val contact = path.frame(0)
         assertEquals(0, contact.attackIndex)
         assertEquals(path.attacks.first().x, contact.marble.x)

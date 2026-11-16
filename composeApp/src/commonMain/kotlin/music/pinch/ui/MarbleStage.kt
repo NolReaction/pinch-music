@@ -12,6 +12,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Paint
+import androidx.compose.ui.graphics.VertexMode
+import androidx.compose.ui.graphics.Vertices
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Canvas as BitmapCanvas
@@ -98,14 +103,60 @@ internal class Finish(rest: Color, tint: Color) {
             else -> lerp(BlackNickel, faces[light], .52f*shade)
         }
     }
+    val sideArgb = IntArray(sides.size) { sides[it].toArgb() }
 }
 
-private val Maple = Finish(Color(0xffa38c77), Color(0xffe8d7be))
-private val DrumShell = Finish(Color(0xff929295), Color(0xffdbdad5))
-private val BrushedSteel = Finish(Color(0xff8b9499), Color(0xffe6e9e7))
-private val DrumSkin = Array(LightSteps+1) { i ->
-    lerp(Color(0xffaaa7a2), Color(0xffebe8d9), i / LightSteps.toFloat())
+/** Each bevel has one colour on its four vertices. Upload all visible sides with one
+ * canvas command, leaving the outline, rivets, membrane and contact effects antialiased. */
+private class PanelSides {
+    private val quads = (Levels - 1) * Corners
+    private val points = List(4 * quads) { Offset.Zero }
+    private val vertices = Vertices(VertexMode.Triangles, points, points, List(4 * quads) { Color.White }, List(6 * quads) { k ->
+            val i = 4 * (k / 6)
+            i + when (k % 6) { 0, 3 -> 0; 1 -> 1; 2, 4 -> 2; else -> 3 }
+        })
+    private val paint = Paint().apply { color = Color.White }
+    private var count = 0
+
+    fun add(x: FloatArray, y: FloatArray, a: Int, b: Int, c: Int, d: Int, color: Int) {
+        val v = count * 4
+        val xy = vertices.positions
+        val offset = v * 2
+        xy[offset] = x[a]
+        xy[offset + 1] = y[a]
+        xy[offset + 2] = x[b]
+        xy[offset + 3] = y[b]
+        xy[offset + 4] = x[c]
+        xy[offset + 5] = y[c]
+        xy[offset + 6] = x[d]
+        xy[offset + 7] = y[d]
+        vertices.colors.fill(color, v, v+4)
+        count++
+    }
+
+    fun draw(scope: DrawScope) {
+        if (count > 0) {
+            // Vertices is reused across keys. Trailing faces must have zero area.
+            vertices.positions.fill(0f, count * 8)
+            scope.drawContext.canvas.drawVertices(vertices, BlendMode.Modulate, paint)
+        }
+        count = 0
+    }
 }
+
+// Construct the palette and geometry off the display thread with the course.
+internal class OrbitMaterials(val theme: StageTheme) {
+    private val pigment = stageColor(theme.panel)
+    private val light = stageColor(theme.light)
+    val wood = Finish(lerp(pigment, Color(0xffb5855b), .18f), lerp(pigment, light, .70f))
+    val drum = Finish(lerp(pigment, BlackNickel, .19f), lerp(pigment, light, .62f))
+    val fork = Finish(lerp(pigment, Silver, .23f), lerp(pigment, Color.White, .73f))
+    val membrane = Array(LightSteps + 1) { i ->
+        lerp(lerp(pigment, light, .24f), light, i / LightSteps.toFloat())
+    }
+    val trim = lerp(stageColor(theme.accent), Silver, .42f)
+}
+
 private val HitColor = stageColor(0x6FF1AC)
 private val MissColor = stageColor(0xFF494C)
 
@@ -145,11 +196,11 @@ private val Circle = Array(Corners) { i ->
     Offset(cos(angle), sin(angle))
 }
 
-internal class Bar(val key: StageKey, index: Int) {
+internal class Bar(val key: StageKey, index: Int, private val materials: OrbitMaterials) {
     val finish = when (key.shape) {
-        PanelShape.WoodBar -> Maple
-        PanelShape.Drum -> DrumShell
-        PanelShape.Fork -> BrushedSteel
+        PanelShape.WoodBar -> materials.wood
+        PanelShape.Drum -> materials.drum
+        PanelShape.Fork -> materials.fork
     }
     private val length = key.halfLength
     private val width = key.halfWidth
@@ -163,15 +214,28 @@ internal class Bar(val key: StageKey, index: Int) {
     private val ringInset = floatArrayOf(chamfer, 0f, 0f, chamfer*.65f)
 
     private fun contour(i: Int, halfX: Float, halfZ: Float): Offset {
+        val theme = materials.theme
         return when (key.shape) {
-            PanelShape.Fork -> Offset(ForkProfile[i].x*halfX, ForkProfile[i].y*halfZ)
-            PanelShape.Drum -> Offset(Circle[i].x*halfX, Circle[i].y*halfZ)
+            PanelShape.Fork -> {
+                val p = ForkProfile[i]
+                val neck = if (theme.cutCorners && p.x > .5f) .84f else 1f
+                Offset(p.x * halfX, p.y * halfZ * neck)
+            }
+            PanelShape.Drum -> {
+                val p = if (theme.cutCorners && i % 2 != 0)
+                    (Circle[i - 1] + Circle[(i + 1) % Corners]) * .5f else Circle[i]
+                Offset(p.x * halfX, p.y * halfZ)
+            }
             PanelShape.WoodBar -> {
                 val angle = (i/4 - 1 + (i%4)/3f) * (PI/2).toFloat()
-                val radius = min(halfZ*.45f, .065f)
+                val radius = min(halfX, halfZ) * theme.cornerFraction
                 val sx = if (i < 8) 1 else -1
                 val sz = if (i in 4..11) 1 else -1
-                Offset(sx*(halfX-radius) + radius*cos(angle), sz*(halfZ-radius) + radius*sin(angle))
+                // The bevel styles join quarter-circle endpoints with a flat cut.
+                val nx = cos(angle)
+                val nz = sin(angle)
+                val cut = if (theme.cutCorners) kotlin.math.abs(nx) + kotlin.math.abs(nz) else 1f
+                Offset(sx*(halfX-radius) + radius*nx/cut, sz*(halfZ-radius) + radius*nz/cut)
             }
         }
     }
@@ -236,8 +300,11 @@ internal class Rail(run: CourseRun) {
     val right = Array(stations.size) { i -> stations[i] + normals[i]*height + offset[i] }
 }
 
+private val orbitMaterials = StageTheme.entries.map { theme -> lazy { OrbitMaterials(theme) } }
+
 /** The preparation worker builds the opening view. Later bands are filled as they enter the camera. */
-internal class OrbitMeshes(val path: MarblePath) {
+internal class OrbitMeshes(val path: MarblePath, theme: StageTheme = StageTheme.Stereo) {
+    val materials = orbitMaterials[theme.ordinal].value
     private val bars = arrayOfNulls<Bar>(path.keys.size)
     private val rails = arrayOfNulls<Rail>(path.spans.size)
 
@@ -248,18 +315,19 @@ internal class OrbitMeshes(val path: MarblePath) {
         }
     }
 
-    fun barAt(i: Int) = bars[i] ?: Bar(path.keys[i], i).also { bars[i] = it }
+    fun barAt(i: Int) = bars[i] ?: Bar(path.keys[i], i, materials).also { bars[i] = it }
     fun railAt(i: Int) = rails[i] ?: Rail(path.spans[i]).also { rails[i] = it }
 }
 
 internal class MarbleScene(private val meshes: OrbitMeshes, private val marbleAtlas: ImageBitmap, private val theme: StageTheme) {
     private val path = meshes.path
-    private val lacquer = stageColor(theme.panel)
     private val accent = stageColor(theme.accent)
     private val outline = Path()
     private val detail = Path()
     private val projectedX = FloatArray(Levels*Corners)
     private val projectedY = FloatArray(Levels*Corners)
+    private val sides = if (supportsPanelMesh) PanelSides() else null
+    private val rods = IntArray(Corners / 2)
     private val sorted = IntArray(VisibleLimit)
     private val depths = FloatArray(VisibleLimit)
     private var roomSize = Size.Zero
@@ -368,6 +436,7 @@ internal class MarbleScene(private val meshes: OrbitMeshes, private val marbleAt
         val step = (light * LightSteps).roundToInt().coerceIn(0, LightSteps)
         val finish = bar.finish
         val shadeBase = step*(ShadeSteps+1)
+        var rodCount = 0
         for (level in Levels-2 downTo 0) {
             val a = level*Corners
             val b = a+Corners
@@ -380,21 +449,30 @@ internal class MarbleScene(private val meshes: OrbitMeshes, private val marbleAt
                 val ux = projectedX[b+i]
                 val uy = projectedY[b+i]
                 if ((qx-px)*(uy-py) - (qy-py)*(ux-px) >= 0f) continue
-                outline.rewind()
-                outline.moveTo(px, py)
-                outline.lineTo(qx, qy)
-                outline.lineTo(projectedX[b+j], projectedY[b+j])
-                outline.lineTo(ux, uy)
-                outline.close()
-                drawPath(outline, finish.sides[(shadeBase + bar.shading[i])*3 + level])
-                if (bar.key.shape == PanelShape.Drum && level == 1 && i%2 == 0) {
-                    // Tension rods tie the hoop to the shell. Only fit them to
-                    // the visible side so none can show through the membrane.
-                    val top = Offset((px+qx)*.5f, (py+qy)*.5f)
-                    val bottom = Offset((ux+projectedX[b+j])*.5f, (uy+projectedY[b+j])*.5f)
-                    drawLine(Silver, top, bottom, unit*.012f, StrokeCap.Round, alpha=.78f)
+                val shade = (shadeBase + bar.shading[i]) * 3 + level
+                if (sides != null) {
+                    sides.add(projectedX, projectedY, a+i, a+j, b+j, b+i, finish.sideArgb[shade])
+                } else {
+                    // Hardware Canvas on Android 7–9 supports antialiased paths.
+                    outline.rewind()
+                    outline.moveTo(px, py)
+                    outline.lineTo(qx, qy)
+                    outline.lineTo(projectedX[b+j], projectedY[b+j])
+                    outline.lineTo(ux, uy)
+                    outline.close()
+                    drawPath(outline, finish.sides[shade])
                 }
+                if (bar.key.shape == PanelShape.Drum && level == 1 && i % 2 == 0) rods[rodCount++] = i
             }
+        }
+        sides?.draw(this)
+        for (n in 0 until rodCount) {
+            val a = Corners + rods[n]
+            val b = Corners + (rods[n]+1) % Corners
+            val top = Offset((projectedX[a]+projectedX[b])*.5f, (projectedY[a]+projectedY[b])*.5f)
+            val bottom = Offset((projectedX[a+Corners]+projectedX[b+Corners])*.5f,
+                (projectedY[a+Corners]+projectedY[b+Corners])*.5f)
+            drawLine(Silver, top, bottom, unit*.012f, StrokeCap.Round, alpha=.78f)
         }
         // A steeply banked key can rise above the camera. Hide its rivets when
         // the underside is visible instead of painting the top over the sides.
@@ -411,12 +489,10 @@ internal class MarbleScene(private val meshes: OrbitMeshes, private val marbleAt
             return
         }
         drawPath(outline, finish.tops[step])
-        drawPath(outline, lacquer, alpha = .26f)
         room?.let { drawPath(outline, it.sheen) }
         if (bar.skin.isNotEmpty()) {
             detailLoop(bar.skin, camera)
-            drawPath(detail, DrumSkin[step])
-            drawPath(detail, lacquer, alpha = .18f)
+            drawPath(detail, meshes.materials.membrane[step])
             if (age in 1..260) {
                 val progress = age/260f
                 val center = camera.project(bar.key.center)
@@ -452,7 +528,7 @@ internal class MarbleScene(private val meshes: OrbitMeshes, private val marbleAt
         for (pin in bar.pins) {
             val p = camera.project(pin)
             drawOval(PinShade, p-Offset(radius,.16f*radius), Size(2.1f*radius,1.2f*radius))
-            drawOval(Steel, p-Offset(radius,.68f*radius), Size(2f*radius,1.23f*radius))
+            drawOval(meshes.materials.trim, p-Offset(radius,.68f*radius), Size(2f*radius,1.23f*radius))
             drawOval(PinLight, p-Offset(radius*.57f,radius*.71f), Size(radius*.93f,radius*.43f))
         }
     }
@@ -534,7 +610,7 @@ internal class MarbleScene(private val meshes: OrbitMeshes, private val marbleAt
             val incoming = if (i == frame.next && age in -540..-1) 1f + age / 540f else 0f
             val result = feedback.lastOrNull { it.effectsVisible && it.noteAtMs == bar.key.atMs }
             // The wall mounts are fixed. Only the struck plate travels on its springs.
-            val travel = panelCompression(age)
+            val travel = panelCompression(age, path.keys.getOrNull(i + 1)?.let { it.atMs - bar.key.atMs })
             val face = camera.project(bar.key.center)
             val offset = if (travel == 0f) Offset.Zero else camera.project(bar.key.center - bar.key.normal * travel) - face
             if (offset != Offset.Zero) drawContext.transform.translate(offset.x, offset.y)

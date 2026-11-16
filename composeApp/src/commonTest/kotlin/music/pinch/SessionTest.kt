@@ -1,6 +1,7 @@
 package music.pinch
 
 import kotlin.coroutines.CoroutineContext
+import kotlinx.coroutines.async
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Runnable
@@ -29,6 +30,12 @@ class SessionTest {
         override fun readValue(key: String) = values[key]
         override fun writeValue(key: String, value: String) { values[key] = value }
         override fun removeValue(key: String) { values.remove(key) }
+        var referenceChoice: ChosenRecording? = null
+        val referenceFiles = mutableMapOf<String, String>()
+        override suspend fun pickReferenceRecording(id: String) = referenceChoice?.also { referenceFiles[id] = it.suffix }
+        override fun referenceFile(id: String, suffix: String) =
+            if (referenceFiles[id] == suffix) ArrangementTrack("/reference/$id.$suffix") else null
+        override fun removeReferenceRecording(id: String) { referenceFiles.remove(id) }
         var picked: PickedAudio? = null
         override suspend fun pickAudio() = picked
         val recordings = mutableSetOf<String>()
@@ -61,6 +68,13 @@ class SessionTest {
         var snapshots = 0
         var prepared = emptySet<Int>()
         override var onInterrupted: (() -> Unit)? = null
+        var startPosition = 0L
+        var preparedOnce = false
+        override fun startAt(positionMs: Long) {
+            check(!preparedOnce)
+            startPosition = positionMs
+            status = status.copy(positionMs = positionMs)
+        }
         var starts = 0
         var closes = 0
         var backing: String? = null
@@ -68,6 +82,7 @@ class SessionTest {
         var includeStrike = false
         var backingGain = 0f
         override fun prepare(pitches: Set<Int>, backingAsset: String?, arrangement: ArrangementTrack?, includeStrike: Boolean) {
+            preparedOnce = true
             prepared = pitches
             this.includeStrike = includeStrike
             backing = backingAsset
@@ -108,6 +123,27 @@ class SessionTest {
             observe()
         }
         assertEquals(Scene.Playing, state.scene)
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test fun fullReferenceKeepsItsTimebaseAndSurvivesCancellationOrReplacement() {
+        val host = Host()
+        val files = ReferenceRecordingStore(host)
+        fun choose() = scope.async { files.choose("on-the-floor") }.getCompleted()
+        host.referenceChoice = ChosenRecording("Radio Edit.m4a", 231_777L, "m4a")
+        val first = requireNotNull(choose())
+        assertEquals(231_777L, first.durationMs)
+        assertEquals(first, ReferenceRecordingStore(host).current("on-the-floor"))
+        host.referenceChoice = null
+        assertNull(choose())
+        assertEquals(first, files.current("on-the-floor"))
+        host.referenceChoice = ChosenRecording("Other mix.mp3", 260_000L, "mp3")
+        val second = requireNotNull(choose())
+        assertTrue(second.id != first.id)
+        assertEquals(setOf(second.id), host.referenceFiles.keys)
+        files.remove("on-the-floor")
+        assertNull(files.current("on-the-floor"))
+        assertTrue(host.referenceFiles.keys.isEmpty())
     }
 
     @Test fun aPartialRunKeepsItsHitsThroughPauseAndProcessRecreation() {
@@ -234,7 +270,10 @@ class SessionTest {
         val host = Host()
         val second = song.copy(id = "other", title = "Другая")
         val session = Session(host, scope, listOf(song, second), dispatcher)
+        assertTrue(work.isEmpty(), "A known chart must not build an Orbit course on the first menu frame")
+        assertNull(host.values["library.personal.v1"], "A fresh install has no personal index to migrate")
         session.selectStageMode(StageMode.Planar)
+        assertTrue(work.isEmpty(), "Selecting a stage only chooses the course to load on play")
         session.start(preview = true)
         val obsolete = host.player
         session.start(preview = false)
@@ -1025,6 +1064,36 @@ class SessionTest {
     }
 
     @Test
+    fun resumingHalfwayDownTheChutePreservesTheDisplayedPoseAndRemainingRunway() {
+        val host = Host()
+        val chart = requireNotNull(song.bundled)
+        val first = chart.notes.first().copy(atMs = 0)
+        val session = session(host, listOf(song.copy(bundled = chart.copy(notes = listOf(first, chart.notes.last())))))
+        session.start(false)
+        val player = host.player
+        player.ready()
+        session.stagePresented(session.state.attempt)
+        session.observe()
+        val roll = requireNotNull(session.state.chart).cascadePreRollMs()
+        player.tick(0, 10_000L + roll - 900)
+        session.observe()
+        assertEquals(-883L, session.presentationPosition(player.uptimeMs() + 17))
+        session.pause()
+        assertEquals(-883L, session.positionMs)
+        player.tick(0, 40_000)
+        session.resume()
+        session.observe()
+        assertEquals(Scene.CountIn, session.state.scene)
+        player.tick(0, 40_882)
+        session.observe()
+        assertEquals(-1L, session.presentationPosition(40_882))
+        player.tick(0, 40_883)
+        session.observe()
+        assertEquals(Scene.Playing, session.state.scene)
+        assertEquals(1, player.starts)
+    }
+
+    @Test
     fun aDownQueuedDuringCountInCanArriveAfterTheFirstAudioFrame() {
         val host = Host()
         val chart = requireNotNull(song.bundled)
@@ -1170,9 +1239,9 @@ class SessionTest {
         session.tap(12_000)
         assertEquals(1, session.state.stats?.perfect)
         session.pause()
-        assertEquals(1_983L, session.presentationPosition(20_000))
+        assertEquals(2_000L, session.presentationPosition(20_000))
         session.resume()
-        assertEquals(1_983L, session.presentationPosition(21_500))
+        assertEquals(2_000L, session.presentationPosition(21_500))
     }
 
     @Test
@@ -1309,5 +1378,131 @@ class SessionTest {
         assertEquals(78000, game.state.bestScore)
         assertEquals(78000, session(host).state.bestScore)
         assertEquals(raw, host.values["chart.test"])
+    }
+
+    @Test
+    fun referenceCapturesActualTouchTimesWithoutScoringAndReopensTheIndependentTake() {
+        val host = Host()
+        val game = session(host)
+        game.openReference()
+        assertEquals(Scene.Reference, game.state.scene)
+        game.recordReference(1_000)
+        val player = host.player
+        assertEquals(1_000, player.startPosition)
+        assertEquals(song.backingAsset, player.backing)
+        assertFalse(player.includeStrike)
+        game.markReference(9_500) // Still preparing.
+        player.ready()
+        game.observe()
+        game.observe()
+        player.tick(2_100, 20_000)
+        game.observe()
+        game.markReference(19_950) // The real touch precedes delivery by 50 ms.
+        game.markReference(20_006)
+        game.markReference(20_006) // Duplicate timestamp.
+        game.tap(20_006)
+        player.tick(2_200, 20_100)
+        game.stopReference()
+        val take = game.state.reference!!.takes.single()
+        assertEquals(listOf(2_050L, 2_106L), take.taps)
+        assertEquals(1_000L, take.startMs)
+        assertEquals(2_200L, take.endMs)
+        assertTrue(player.sounds.isEmpty() && player.strikes.isEmpty())
+        assertFalse(game.state.reference!!.recording)
+        assertNull(game.state.stats)
+        assertNull(game.state.bestScore)
+        assertEquals(0, game.state.profile.totalXp)
+        val restored = session(host)
+        restored.openReference()
+        assertEquals(listOf(take), restored.state.reference!!.takes)
+        restored.menu()
+        restored.start(false)
+        assertEquals(0, host.player.startPosition)
+    }
+
+    @Test
+    fun personalReferenceVersionCanReachItsOwnEndingAndIsSeparateFromTheGameMaster() {
+        val host = Host()
+        val floor = song.copy(id = "on-the-floor")
+        val game = session(host, listOf(floor))
+        game.openReference()
+        game.chooseReferenceRecording() // Cancel.
+        assertFalse(game.state.reference!!.usingFile)
+        host.referenceChoice = ChosenRecording("Мой оригинал.m4a", 240_000, "m4a")
+        game.chooseReferenceRecording()
+        val ref = game.state.reference!!
+        assertTrue(ref.usingFile)
+        assertEquals(240_000, ref.durationMs)
+        game.recordReference(210_000)
+        val player = host.player
+        assertEquals(210_000L, player.startPosition)
+        assertNull(player.backing)
+        assertTrue(player.generated!!.startsWith("/reference/"))
+        player.ready()
+        game.observe()
+        game.observe()
+        player.tick(220_000)
+        game.observe()
+        game.markReference(null)
+        player.end()
+        game.observe()
+        assertEquals(240_000L, game.state.reference!!.takes.single().endMs)
+        assertEquals("Мой оригинал.m4a", game.state.reference!!.takes.single().sourceName)
+        game.useReferenceRecording(false)
+        assertEquals(4_000, game.state.reference!!.durationMs)
+        game.menu()
+        game.start(false)
+        assertEquals(floor.backingAsset, host.player.backing)
+        assertFalse(game.state.preview)
+    }
+
+    @Test
+    fun interruptionSavesOnlyObservedTapsAndDoesNotResumeOrCaptureOtherSongs() {
+        val host = Host()
+        val other = song.copy(id = "second")
+        val game = session(host, listOf(song, other))
+        game.openReference()
+        game.recordReference(0)
+        val player = host.player
+        player.ready()
+        game.observe()
+        game.observe()
+        player.tick(1_800)
+        game.observe()
+        game.markReference(11_804)
+        player.onInterrupted!!.invoke()
+        game.markReference(14_000)
+        game.observe()
+        val saved = game.state.reference!!.takes.single()
+        assertEquals(listOf(1_804L), saved.taps)
+        assertEquals(1, player.starts)
+        assertEquals(1, player.closes)
+        assertFalse(game.state.reference!!.recording)
+        game.adjustReference(saved, -55)
+        assertEquals(-55, game.state.reference!!.takes.single().offsetMs)
+        game.menu()
+        game.selectSong(other.id)
+        game.openReference()
+        assertTrue(game.state.reference!!.takes.isEmpty())
+    }
+
+    @Test
+    fun aDeliberatelySilentPassageReportsAllPanelsInTheMeasuredTime() {
+        val host = Host()
+        val run = session(host)
+        run.openReference()
+        run.recordReference(1_800)
+        val player = host.player
+        player.ready()
+        run.observe()
+        run.observe()
+        player.tick(2_800)
+        run.stopReference()
+        val take = run.state.reference!!.takes.single()
+        assertTrue(take.taps.isEmpty())
+        assertEquals(listOf(2_000L, 2_500L), compareTaps(take, listOf(2_000L, 2_500L)).panelsOnly)
+        run.menu()
+        run.openReference()
+        assertEquals(listOf(take), run.state.reference!!.takes)
     }
 }

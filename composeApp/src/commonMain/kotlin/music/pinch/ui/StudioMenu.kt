@@ -72,6 +72,11 @@ internal fun StudioMenu(state: ScreenState, actions: Actions) {
             }
             else -> Caption("Фонограмма готовится")
         }
+        if (state.canMeasure && !state.importing) {
+            androidx.compose.material3.TextButton(onClick = actions::openReference) {
+                Text("Сверить ритм", color = StudioMint, fontSize = 14.sp)
+            }
+        }
         Spacer(Modifier.height(21.dp))
         SectionLabel("Сцена")
         Row(Modifier.fillMaxWidth().selectableGroup(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {

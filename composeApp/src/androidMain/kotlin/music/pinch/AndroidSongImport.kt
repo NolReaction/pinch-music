@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.AudioFormat
 import android.media.MediaCodec
 import android.media.MediaExtractor
+import android.media.MediaMetadataRetriever
 import android.media.MediaFormat
 import android.net.Uri
 import android.os.SystemClock
@@ -33,32 +34,81 @@ internal class AndroidSongImport(private val activity: ComponentActivity) {
         if (continuation?.isActive == true) continuation.resume(uri)
     }
 
+    private suspend fun chooseUri(): Uri? = withContext(Dispatchers.Main.immediate) {
+        suspendCancellableCoroutine<Uri?> { next ->
+            if (pending != null) {
+                next.resumeWithException(IllegalStateException("Выбор файла уже открыт"))
+            } else {
+                pending = next
+                try {
+                    picker.launch(arrayOf("audio/*", "video/mp4"))
+                } catch (error: RuntimeException) {
+                    pending = null
+                    next.resumeWithException(error)
+                }
+            }
+        }
+    }
+
+    private fun displayName(context: Context, uri: Uri) = runCatching {
+        context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+            if (it.moveToFirst()) it.getString(0) else null
+        }
+    }.getOrNull()
+
     suspend fun pickAudio(): PickedAudio? {
-        val uri = withContext(Dispatchers.Main.immediate) {
-            suspendCancellableCoroutine<Uri?> { next ->
-                if (pending != null) {
-                    next.resumeWithException(IllegalStateException("Выбор файла уже открыт"))
-                } else {
-                    pending = next
-                    try {
-                        picker.launch(arrayOf("audio/*", "video/mp4"))
-                    } catch (error: RuntimeException) {
-                        pending = null
-                        next.resumeWithException(error)
+        val uri = chooseUri() ?: return null
+        return withContext(Dispatchers.IO) {
+            val context = activity.applicationContext
+            readSongExcerpt(context, uri).picked(displayName(context, uri))
+        }
+    }
+
+    private fun referenceDir(id: String): File {
+        require(validReferenceId(id))
+        return File(activity.filesDir, "references/$id")
+    }
+
+    fun referenceFile(id: String, suffix: String): ArrangementTrack? {
+        require(validAudioSuffix(suffix))
+        return File(referenceDir(id), "track.$suffix").takeIf { it.isFile }?.let { ArrangementTrack(it.path) }
+    }
+
+    fun removeReference(id: String) { referenceDir(id).deleteRecursively() }
+
+    suspend fun pickReference(id: String): ChosenRecording? {
+        val uri = chooseUri() ?: return null
+        return withContext(Dispatchers.IO) {
+            val context = activity.applicationContext
+            val name = displayName(context, uri) ?: "Моя фонограмма"
+            val suffix = name.substringAfterLast('.', "").lowercase().takeIf(::validAudioSuffix) ?: "audio"
+            val directory = referenceDir(id)
+            check(directory.mkdirs())
+            val dest = File(directory, "track.$suffix")
+            checkNotNull(context.contentResolver.openInputStream(uri)).use { input ->
+                dest.outputStream().buffered().use { output ->
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) {
+                        currentCoroutineContext().ensureActive()
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        output.write(buffer, 0, count)
                     }
                 }
             }
-        } ?: return null
-        return withContext(Dispatchers.IO) {
-            val context = activity.applicationContext
-            val displayName = runCatching {
-                context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
-                    if (it.moveToFirst()) it.getString(0) else null
+            val inspector = MediaMetadataRetriever()
+            try {
+                inspector.setDataSource(dest.path)
+                val milliseconds = inspector.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
+                require(milliseconds != null && milliseconds > 0 &&
+                    inspector.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_AUDIO) == "yes") {
+                    "Не удалось прочитать звуковую дорожку."
                 }
-            }.getOrNull()
-            readSongExcerpt(context, uri).picked(displayName)
+                ChosenRecording(name, milliseconds, suffix)
+            } finally { inspector.release() }
         }
     }
+
 }
 
 private const val EXCERPT_SECONDS = 30

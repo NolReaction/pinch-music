@@ -3,10 +3,13 @@ package music.pinch.ui
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.math.abs
 import kotlin.math.hypot
 import music.pinch.PanelFeedback
 import music.pinch.core.Chart
 import music.pinch.core.Note
+import music.pinch.core.cascadeChart
+import music.pinch.core.cascadePreRollMs
 import music.pinch.songLibrary
 
 class CascadeGeometryTest {
@@ -86,7 +89,7 @@ class CascadeGeometryTest {
         path.writeGpuFrame(second + 220L, frame, listOf(early, corrected))
         assertEquals(firstKey, frame[17])
         assertEquals(1f, frame[18])
-        assertEquals(0f, frame[7])
+        assertEquals(panelCompression(220L, null), frame[7])
         val frozen = frame.copyOf()
         path.writeGpuFrame(second + 220L, frame, listOf(early, corrected))
         assertTrue(frozen.contentEquals(frame))
@@ -138,6 +141,54 @@ class CascadeGeometryTest {
         assertEquals(-1f, frame[28])
     }
 
+    @Test fun eachKeyHasOneContiguousPhysicalContactInBothCourses() {
+        fun dot(a: StagePoint, b: StagePoint) = a.x * b.x + a.y * b.y + a.z * b.z
+        for (song in songLibrary) {
+            val chart = requireNotNull(song.bundled).cascadeChart()
+            val path = PlanarPath(chart)
+            val orbit = MarblePath(chart)
+            for ((i, hit) in path.attacks.withIndex()) {
+                val panel = path.panels[i]
+                val key = orbit.keys[i]
+                val norm = hypot(1f, panel.slope)
+                val axis = StagePoint(1f / norm, panel.slope / norm, 0f)
+                val normal = StagePoint(axis.y, -axis.x, 0f)
+                val struck = StagePoint(hit.x, panel.topY - MarbleRadius, 0f)
+                val face = struck - normal * MarbleRadius
+                val guide = panel.railSamples.isNotEmpty()
+                val width = if (guide) .23f else .35f
+                val middle = (if (panel.left) -1 else 1) * (if (guide) width else .22f)
+                val xAxis = key.point(1f, 0f, 0f) - key.center
+                val zAxis = key.point(0f, 0f, 1f) - key.center
+                val gap = path.attacks.getOrNull(i + 1)?.let { it.atMs - hit.atMs }
+                val from = path.attacks.getOrNull(i - 2)?.atMs ?: -chart.cascadePreRollMs()
+                val to = path.attacks.getOrNull(i + 2)?.atMs ?: chart.durationMs
+                var wasPlanar = false
+                var wasOrbit = false
+                var planarVisits = 0
+                var orbitVisits = 0
+                // Align the sweep with the exact attack, even for a 115 ms passage.
+                for (t in hit.atMs - (hit.atMs - from) / 4 * 4..to step 4L) {
+                    val travel = panelCompression(t - hit.atMs, gap)
+                    val ball = path.frame(t).marble - face
+                    val touchingPlanar = abs(dot(ball, axis) - middle) <= width + .001f &&
+                        abs(dot(ball, normal) + (if (gap == null) 0f else travel) - MarbleRadius) < .004f
+                    val delta = orbit.frame(t).marble - key.center
+                    val touchingOrbit = abs(dot(delta, xAxis)) <= key.halfLength + .001f &&
+                        abs(dot(delta, zAxis)) <= key.halfWidth + .001f &&
+                        abs(dot(delta, key.normal) + travel - MarbleRadius) < .004f
+                    if (touchingPlanar && !wasPlanar) planarVisits++
+                    if (touchingOrbit && !wasOrbit) orbitVisits++
+                    wasPlanar = touchingPlanar
+                    wasOrbit = touchingOrbit
+                    if (t == hit.atMs) assertTrue(touchingOrbit && touchingPlanar, "${song.id} missing ${hit.atMs}")
+                }
+                assertEquals(1, planarVisits, "${song.id} cascade ${hit.atMs}")
+                assertEquals(1, orbitVisits, "${song.id} orbit ${hit.atMs}")
+            }
+        }
+    }
+
     @Test fun finalCatcherCarriesTheSeatedBallThroughItsOneStroke() {
         val path = PlanarPath(Chart("catch", 120, 1500, listOf(Note("single", 400L, 60, 250, 1f))))
         val frame = FloatArray(CascadeFrameSize)
@@ -145,6 +196,6 @@ class CascadeGeometryTest {
             path.writeGpuFrame(t, frame)
             assertEquals(frame[7], frame[8])
         }
-        assertEquals(0f, frame[7])
+        assertEquals(.050f, frame[7])
     }
 }

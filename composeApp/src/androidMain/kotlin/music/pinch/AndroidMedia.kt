@@ -5,6 +5,7 @@ import java.io.FileDescriptor
 import java.io.FileInputStream
 import java.io.FileNotFoundException
 import android.media.MediaPlayer
+import android.os.Build
 import android.os.SystemClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -29,6 +30,7 @@ internal class AndroidMedia(
     private var samplesReady = false
     private var backing: MediaPlayer? = null
     private var backingReady = false
+    private var initialPositionMs = 0L
     private var backingStarted = false
     private var backingEnded = false
     private var backingVolume = 1f
@@ -38,6 +40,11 @@ internal class AndroidMedia(
     private val ready get() = samplesReady && (backing == null || backingReady)
 
     override var onInterrupted: (() -> Unit)? = null
+
+    override fun startAt(positionMs: Long) {
+        check(preparation == null && !closed)
+        initialPositionMs = positionMs.coerceIn(0L, (durationMs - 1L).coerceAtLeast(0L))
+    }
 
     override fun prepare(pitches: Set<Int>, backingAsset: String?, arrangement: ArrangementTrack?, includeStrike: Boolean) {
         if (closed || preparation != null || error != null) return
@@ -91,7 +98,15 @@ internal class AndroidMedia(
         player.setOnPreparedListener {
             if (!closed && error == null) {
                 it.setVolume(backingVolume, backingVolume)
-                backingReady = true
+                if (initialPositionMs == 0L) backingReady = true
+                else {
+                    it.setOnSeekCompleteListener { active ->
+                        if (!closed && active === backing && error == null) backingReady = true
+                    }
+                    val at = initialPositionMs.coerceAtMost((it.duration - 1L).coerceAtLeast(0L))
+                    if (Build.VERSION.SDK_INT >= 26) it.seekTo(at, MediaPlayer.SEEK_CLOSEST)
+                    else @Suppress("DEPRECATION") it.seekTo(at.toInt())
+                }
             }
         }
         player.setOnCompletionListener {

@@ -52,12 +52,8 @@ fun App(platform: Platform, backHandler: @Composable (Boolean, () -> Unit) -> Un
     if (media != null && session.state.scene != Scene.Paused) {
         PlaybackFrames { target ->
             if (session.media === media && session.state.scene != Scene.Paused) {
-                val previousScene = session.state.scene
                 session.observe()
-                val targetMs = session.presentationPosition(target)
-                // An escaped prediction at the start of a decoder stall must not rewind the ball.
-                shownMs = if (previousScene == Scene.Playing && session.state.scene == Scene.Playing)
-                    maxOf(shownMs, targetMs) else targetMs
+                shownMs = session.presentationPosition(target)
                 stageFrames.render?.invoke()
             }
         }
@@ -99,6 +95,7 @@ fun App(platform: Platform, backHandler: @Composable (Boolean, () -> Unit) -> Un
             val phase = remember { Animatable(0f) }
             LaunchedEffect(platform) {
                 withFrameMillis { }
+                platform.firstMenuFrame()
                 if (!LaunchPresentation.visible) return@LaunchedEffect
                 val gain = platform.volume
                 if (gain > 0f) platform.playLaunchSound(gain)

@@ -10,6 +10,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import music.pinch.core.Chart
 import music.pinch.core.cascadeChart
+import music.pinch.core.cascadePreRollMs
 import music.pinch.core.Note
 import music.pinch.songLibrary
 import music.pinch.stereoLoveSong
@@ -78,7 +79,7 @@ class MarblePathTest {
 
     @Test fun airborneSegmentsUseGravityAndConstantHorizontalVelocity() {
         val path = MarblePath(chart(listOf(0, 118, 354, 826), 1340L))
-        for (run in path.spans.dropLast(1).filter { it.durationMs > 0 }) {
+        for (run in path.spans.drop(1).dropLast(1).filter { it.durationMs > 0 }) {
             assertEquals(0f, run.railEnd)
             val a = run.ball(0f)
             val b = run.ball(.5f)
@@ -99,10 +100,10 @@ class MarblePathTest {
         assertTrue(path.onRail(2250))
         assertTrue(!path.onRail(3940))
         assertTrue(!path.onRail(3950))
-        near(path.frame(4500).marble, path.frame(3950).marble)
+        near(path.frame(4500).marble, path.frame(4050).marble)
         val last = path.keys.last()
         assertEquals(1f, (last.point(1f, 0f, 0f) - last.center).length(), .00001f)
-        near(last.ballCenter - last.normal * panelCompression(55), path.frame(4005).marble)
+        near(last.ballCenter - last.normal * panelCompression(55, null), path.frame(4005).marble)
     }
 
     @Test fun rollIsSupportedAndVelocitySurvivesReleaseFromTheRail() {
@@ -169,15 +170,44 @@ class MarblePathTest {
     }
 
     @Test fun plateCompressionAndJudgementAreIndependentOfRenderRate() {
-        assertEquals(0f, panelCompression(-1))
-        assertEquals(0f, panelCompression(0))
-        assertTrue(panelCompression(25) in .01f..panelCompression(55))
-        assertTrue(panelCompression(120) in .01f..panelCompression(55))
-        assertEquals(0f, panelCompression(250))
+        assertEquals(0f, panelCompression(-1, 500L))
+        assertEquals(0f, panelCompression(0, 500L))
+        assertTrue(panelCompression(25, 500L) in .01f..panelCompression(55, 500L))
+        assertTrue(panelCompression(120, 500L) in .01f..panelCompression(55, 500L))
+        assertEquals(0f, panelCompression(250, 500L))
         assertEquals(0f, feedbackStrength(-1))
         assertEquals(1f, feedbackStrength(580))
         assertEquals(.5f, feedbackStrength(690), .00001f)
         assertEquals(0f, feedbackStrength(800))
+    }
+
+    @Test fun startupRollsFromRestOnTheVisibleGuideBeforeTheFirstAbsoluteNote() {
+        for (first in listOf(0L, 460L, 700L, 2000L, 3500L, 9000L)) {
+            val chart = chart(listOf(first, first + 550), first + 1100)
+            val orbit = MarblePath(chart)
+            val planar = PlanarPath(chart)
+            val run = orbit.spans.first()
+            val beginning = -chart.cascadePreRollMs()
+            assertTrue(first - beginning >= 2400L)
+            assertTrue(run.durationMs * run.railEnd >= 2000f)
+            assertTrue((run.ball(run.railEnd) - run.ball(0f)).length() > 2f)
+            assertTrue((planar.entryRail.last() - planar.entryRail.first()).length() > 2f)
+            val lip = run.startMs + (run.durationMs * run.railEnd).toLong()
+            assertTrue(orbit.frame(lip - 1).rollAngle > 5f)
+            val start = orbit.frame(run.startMs)
+            near(start.marble, run.ball(0f))
+            near(start.marble, orbit.frame(run.startMs + 10).marble, .0001f)
+            for (time in beginning until first step 7L) {
+                val pose = orbit.frame(time)
+                assertEquals(-1, pose.anchor)
+                assertEquals(0, pose.next)
+                near(run.ball(((time - run.startMs) / run.durationMs.toFloat()).coerceIn(0f, 1f)), pose.marble)
+            }
+            near(orbit.keys.first().ballCenter, run.ball(1f))
+            near(run.ball(1f), orbit.frame(first).marble)
+            near(orbit.frame(first - 1).marble, orbit.frame(first).marble, .008f)
+            assertEquals(0, orbit.frame(first).anchor)
+        }
     }
 
     @Test fun chordAtZeroKeepsItsManualAccentAndSeekingDoesNotDependOnFrameOrder() {

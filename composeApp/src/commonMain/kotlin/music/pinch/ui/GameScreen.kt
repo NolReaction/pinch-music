@@ -51,16 +51,21 @@ private val AppColors = darkColorScheme(
 
 @Composable
 internal fun GameScreen(state: ScreenState, actions: Actions, positionMs: () -> Long, stage: PreparedStage?) {
-    val orbitAtlas = rememberOrbitAtlas(state.stageMode == StageMode.Orbit)
+    val showingStage = when (state.scene) {
+        Scene.Menu, Scene.Reference, Scene.Error, Scene.Result -> false
+        else -> true
+    }
+    val orbitAtlas = rememberOrbitAtlas(showingStage && state.stageMode == StageMode.Orbit)
     MaterialTheme(colorScheme = AppColors) {
         Box(Modifier.fillMaxSize().background(Ink), contentAlignment = Alignment.TopCenter) {
             val content = when (state.scene) {
-                Scene.Menu, Scene.Error, Scene.Result -> Modifier.safeDrawingPadding().widthIn(max = 560.dp)
+                Scene.Menu, Scene.Reference, Scene.Error, Scene.Result -> Modifier.safeDrawingPadding().widthIn(max = 560.dp)
                 else -> Modifier
             }
             Box(content.fillMaxSize()) {
                 when (state.scene) {
                     Scene.Menu -> StudioMenu(state, actions)
+                    Scene.Reference -> TapReferenceScreen(state, actions, positionMs)
                     Scene.Error -> ErrorScreen(state, actions)
                     Scene.Result -> ResultScreen(state, actions)
                     else -> PerformanceScreen(state, actions, positionMs, stage, orbitAtlas.value)

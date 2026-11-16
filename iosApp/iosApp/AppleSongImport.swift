@@ -17,47 +17,65 @@ private enum SongImportError: LocalizedError {
 /// The document URL is read only while its security-scoped access is active.
 @MainActor
 final class AppleSongImport: NSObject, UIDocumentPickerDelegate, UIAdaptivePresentationControllerDelegate {
-    private var listener: AppleAudioImportListener?
+    private enum Request {
+        case excerpt(AppleAudioImportListener)
+        case reference(String, AppleReferenceListener)
+
+        func fail(_ message: String) {
+            switch self {
+            case .excerpt(let listener): listener.failed(message: message)
+            case .reference(_, let listener): listener.failed(message: message)
+            }
+        }
+        func cancel() {
+            switch self {
+            case .excerpt(let listener): listener.cancelled()
+            case .reference(_, let listener): listener.cancelled()
+            }
+        }
+    }
+    private var request: Request?
     private var decoding = false
 
-    func pick(_ listener: AppleAudioImportListener) {
-        guard self.listener == nil else {
-            listener.failed(message: "Выбор файла уже открыт")
-            return
-        }
+    func pick(_ listener: AppleAudioImportListener) { present(.excerpt(listener)) }
+    func pickReference(directory: String, listener: AppleReferenceListener) {
+        present(.reference(directory, listener))
+    }
+
+    private func present(_ next: Request) {
+        guard request == nil else { next.fail("Выбор файла уже открыт"); return }
         let windows = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
             .filter { $0.activationState == .foregroundActive }.flatMap(\.windows)
         guard var presenter = windows.first(where: { $0.isKeyWindow })?.rootViewController else {
-            listener.failed(message: "Не удалось открыть приложение «Файлы»")
+            next.fail("Не удалось открыть приложение «Файлы»")
             return
         }
         while let next = presenter.presentedViewController { presenter = next }
 
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.audio, .mpeg4Movie], asCopy: false)
         picker.delegate = self
-        self.listener = listener
+        request = next
         presenter.present(picker, animated: true)
         picker.presentationController?.delegate = self
     }
 
     func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
-        if !decoding { finish { $0.cancelled() } }
+        if !decoding { takeRequest()?.cancel() }
     }
 
     func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
-        if !decoding { finish { $0.cancelled() } }
+        if !decoding { takeRequest()?.cancel() }
     }
 
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-        guard let url = urls.first else {
-            finish { $0.cancelled() }
-            return
-        }
+        guard let url = urls.first, let pending = request else { takeRequest()?.cancel(); return }
         decoding = true
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let result = Result { try Self.readDocument(url) }
-            DispatchQueue.main.async {
-                self?.finish { listener in
+        switch pending {
+        case .excerpt:
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                let result = Result { try Self.readDocument(url, read: Self.decode) }
+                DispatchQueue.main.async {
+                    guard case .excerpt(let listener) = self?.takeRequest() else { return }
                     switch result {
                     case .success(let clip):
                         listener.decoded(pcm16: clip.data, rate: Int32(clip.rate), channels: Int32(clip.channels),
@@ -66,14 +84,45 @@ final class AppleSongImport: NSObject, UIDocumentPickerDelegate, UIAdaptivePrese
                     }
                 }
             }
+        case .reference(let directory, _):
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                let result = Result { try Self.copyReference(url, directory: directory) }
+                DispatchQueue.main.async {
+                    guard case .reference(_, let listener) = self?.takeRequest() else { return }
+                    switch result {
+                    case .success(let file):
+                        listener.copied(displayName: url.lastPathComponent, durationMs: file.duration, suffix: file.suffix)
+                    case .failure(let error): listener.failed(message: error.localizedDescription)
+                    }
+                }
+            }
         }
     }
 
-    private func finish(_ callback: (AppleAudioImportListener) -> Void) {
-        let pending = listener
-        listener = nil
-        decoding = false
-        if let pending = pending { callback(pending) }
+    private func takeRequest() -> Request? {
+        defer { request = nil; decoding = false }
+        return request
+    }
+
+    nonisolated private static func copyReference(_ url: URL, directory: String) throws -> (duration: Int64, suffix: String) {
+        let manager = FileManager.default
+        let folder = URL(fileURLWithPath: directory, isDirectory: true)
+        try manager.createDirectory(at: folder, withIntermediateDirectories: true)
+        let ext = url.pathExtension.lowercased()
+        let valid = (1...12).contains(ext.utf8.count) && ext.utf8.allSatisfy { (97...122).contains($0) || (48...57).contains($0) }
+        let suffix = valid ? ext : "audio"
+        let destination = folder.appendingPathComponent("track." + suffix)
+        do {
+            try readDocument(url) { try manager.copyItem(at: $0, to: destination) }
+            let audio = try AVAudioFile(forReading: destination)
+            guard audio.length > 0, audio.processingFormat.sampleRate > 0 else { throw SongImportError.invalidFormat }
+            let duration = Int64((1000 * Double(audio.length) / audio.processingFormat.sampleRate).rounded())
+            guard duration > 0 else { throw SongImportError.shortAudio }
+            return (duration, suffix)
+        } catch {
+            try? manager.removeItem(at: folder)
+            throw error
+        }
     }
 
     private struct Excerpt: Sendable {
@@ -82,13 +131,13 @@ final class AppleSongImport: NSObject, UIDocumentPickerDelegate, UIAdaptivePrese
         let channels: Int
     }
 
-    nonisolated private static func readDocument(_ url: URL) throws -> Excerpt {
+    nonisolated private static func readDocument<T>(_ url: URL, read: (URL) throws -> T) throws -> T {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         var coordinationError: NSError?
-        var result: Result<Excerpt, Error>?
+        var result: Result<T, Error>?
         NSFileCoordinator(filePresenter: nil).coordinate(readingItemAt: url, options: [], error: &coordinationError) { path in
-            result = Result { try decode(path) }
+            result = Result { try read(path) }
         }
         if let error = coordinationError { throw error }
         guard let decoded = result else { throw SongImportError.decoding }

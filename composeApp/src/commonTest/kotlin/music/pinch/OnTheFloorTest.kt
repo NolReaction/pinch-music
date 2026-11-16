@@ -13,12 +13,13 @@ class OnTheFloorTest {
     private val chart = requireNotNull(onTheFloorSong.bundled)
     private fun time(tick: Int) = (tick * 15_000.0 / chart.bpm).roundToLong()
     private fun tick(atMs: Long) = (atMs * chart.bpm / 15_000.0).roundToInt()
-    private fun notesInBar(bar: Int) = chart.notes.filter { tick(it.atMs) / 16 == bar }
+    private fun downbeat(bar: Int) = 4 + bar * 16
+    private fun notesInBar(bar: Int) = chart.notes.filter { tick(it.atMs) in downbeat(bar) until downbeat(bar + 1) }
 
     @Test fun everyMelodicAttackHasOneLandingAndUsesTheMasterGrid() {
         assertEquals("backing/on-the-floor.m4a", onTheFloorSong.backingAsset)
         assertEquals(130, chart.bpm)
-        assertEquals(time(124 * 16) + 800, chart.durationMs)
+        assertEquals(time(downbeat(124)) + 800, chart.durationMs)
         assertEquals(chart.durationMs, onTheFloorSong.bundledDurationMs)
         assertEquals(chart.notes, chart.cascadeChart().notes)
         assertTrue(chart.notes.all { it.playable })
@@ -27,23 +28,41 @@ class OnTheFloorTest {
             assertEquals(time(tick(note.atMs)), note.atMs)
         }
         assertEquals(0L, chart.notes.first().atMs)
-        assertEquals(time(123 * 16 + 8), chart.notes.last().atMs)
+        assertEquals(time(downbeat(123) + 8), chart.notes.last().atMs)
     }
 
-    @Test fun theHookReturnsAfterTheVerseAndTheBreakContainsOnlyAccompaniment() {
+    @Test fun theOpeningPickupLeadsIntoTheDownbeatAndTheAnswerHoldsItsLastPitch() {
+        val pickup = chart.notes.first()
         val hook = notesInBar(0)
-        assertEquals(hook.map { it.midi }, notesInBar(48).map { it.midi })
-        assertEquals(hook.map { tick(it.atMs) }, notesInBar(88).map { tick(it.atMs) - 88 * 16 })
-        assertEquals(listOf(58, 70, 68, 66, 65, 63), hook.map { it.midi })
-        assertTrue(notesInBar(16).map { it.midi } != notesInBar(40).map { it.midi })
-        val soundChanges = listOf(0, 8, 16, 48, 96, 104, 112).map { floorLeadVoiceAt(time(it * 16)) }
-        assertEquals(listOf(FloorLeadVoice.Reed, FloorLeadVoice.Pluck, FloorLeadVoice.Vocal,
-            FloorLeadVoice.Reed, FloorLeadVoice.Pluck, FloorLeadVoice.Brass, FloorLeadVoice.Reed), soundChanges)
+        assertEquals(58, pickup.midi)
+        assertEquals(70, hook.first().midi)
+        assertEquals(time(4), hook.first().atMs)
+        assertTrue(chart.accompaniment.none { it.atMs < hook.first().atMs })
+        assertEquals(listOf(0, 6, 8, 10, 12), hook.map { tick(it.atMs) - downbeat(0) })
+        val eighths = notesInBar(1)
+        assertEquals((0..14 step 2).toList(), eighths.map { tick(it.atMs) - downbeat(1) })
+        val cadence = notesInBar(2)
+        assertEquals(listOf(0, 3, 4), cadence.map { tick(it.atMs) - downbeat(2) })
+        assertEquals(listOf(58, 56, 58), cadence.map { it.midi })
+        assertTrue(cadence.last().durationMs > time(11))
+        assertTrue(chart.hasGuideAfter(chart.notes.indexOf(cadence.last())))
+    }
 
-        val restBar = 99
+    @Test fun theSungChorusAndInstrumentalRepriseShareTheHook() {
+        fun phrase(bar: Int) = (bar until bar + 3).flatMap(::notesInBar).map {
+            tick(it.atMs) - downbeat(bar) to it.midi
+        }
+        for (bar in listOf(4, 44, 54, 82, 92, 110, 114, 118)) assertEquals(phrase(0), phrase(bar))
+        assertTrue(notesInBar(24).map { it.midi } != notesInBar(44).map { it.midi })
+        val soundChanges = listOf(0, 8, 24, 44, 54, 100, 108, 110).map { floorLeadVoiceAt(time(downbeat(it))) }
+        assertEquals(listOf(FloorLeadVoice.Reed, FloorLeadVoice.Pluck, FloorLeadVoice.Vocal,
+            FloorLeadVoice.Vocal, FloorLeadVoice.Reed, FloorLeadVoice.Pluck, FloorLeadVoice.Brass,
+            FloorLeadVoice.Reed), soundChanges)
+
+        val restBar = 103
         assertTrue(notesInBar(restBar).isEmpty())
-        assertTrue(chart.accompaniment.any { tick(it.atMs) / 16 == restBar })
-        val lastNoteBeforeBreak = chart.notes.indexOfLast { it.atMs < time(restBar * 16) }
+        assertTrue(chart.accompaniment.any { tick(it.atMs) in downbeat(restBar) until downbeat(restBar + 1) })
+        val lastNoteBeforeBreak = chart.notes.indexOfLast { it.atMs < time(downbeat(restBar)) }
         assertTrue(chart.hasGuideAfter(lastNoteBeforeBreak))
     }
 
@@ -53,8 +72,8 @@ class OnTheFloorTest {
         assertEquals(band.size, band.distinctBy { Triple(it.voice, it.atMs, it.midi) }.size)
         assertEquals(setOf(42, 46, 70), band.filter { it.voice == BackingVoice.Hat }.map { it.midi }.toSet())
         assertEquals(setOf(37, 39), band.filter { it.voice == BackingVoice.Snare }.map { it.midi }.toSet())
-        val chorus = band.filter { it.atMs in time(40 * 16) until time(48 * 16) }
-        val breakdown = band.filter { it.atMs in time(96 * 16) until time(104 * 16) }
+        val chorus = band.filter { it.atMs in time(downbeat(44)) until time(downbeat(52)) }
+        val breakdown = band.filter { it.atMs in time(downbeat(100)) until time(downbeat(108)) }
         assertTrue(chorus.count { it.voice == BackingVoice.Kick } > breakdown.count { it.voice == BackingVoice.Kick })
     }
 }

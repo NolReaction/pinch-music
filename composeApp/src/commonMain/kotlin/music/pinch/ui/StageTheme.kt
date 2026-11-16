@@ -1,15 +1,18 @@
 package music.pinch.ui
 
 /** 24-bit sRGB shared by Compose and the native stage, in catalogue order. */
-internal enum class StageTheme(val wall: Int, val light: Int, val panel: Int, val accent: Int) {
-    Floor(0xA89F9A, 0xECE4DD, 0xABA19A, 0xF46D48),
-    Stereo(0x99A7A5, 0xE4EBE4, 0x91A2A5, 0x13C3AA),
-    Gypsy(0xB1A393, 0xEFE6D3, 0xB2A184, 0xEAA52F),
-    Levels(0x9BA5AE, 0xE2E9ED, 0x96A2B3, 0x577FE0),
-    Stay(0xACA2A6, 0xECE5E4, 0xAE9CA7, 0xB85B9F),
-    TurnDown(0xA39B92, 0xE8E2D5, 0xA29381, 0xF27628),
-    Yeah(0x9FA99F, 0xE2E9D9, 0x99A68F, 0x78B62D),
-    Countdown(0x9FA3AF, 0xE7E7EC, 0x9D9EAF, 0x8267C8),
+internal enum class StageTheme(
+    val wall: Int, val light: Int, val panel: Int, val accent: Int,
+    val cornerFraction: Float, val cutCorners: Boolean,
+) {
+    Floor(0xA89F9A, 0xECE4DD, 0x472A34, 0xF48852, .52f, true),
+    Stereo(0x99A7A5, 0xE4EBE4, 0x8EA9AB, 0x13C3AA, .36f, false),
+    Gypsy(0xB1A393, 0xEFE6D3, 0xAA743C, 0xEAA52F, .58f, false),
+    Levels(0x9BA5AE, 0xE2E9ED, 0x31578A, 0x6A9AFF, .84f, true),
+    Stay(0xACA2A6, 0xECE5E4, 0xCEABC3, 0xB85B9F, .94f, false),
+    TurnDown(0xA39B92, 0xE8E2D5, 0x393941, 0xF27628, .24f, true),
+    Yeah(0x9FA99F, 0xE2E9D9, 0x758A43, 0x78B62D, .74f, false),
+    Countdown(0x9FA3AF, 0xE7E7EC, 0x645687, 0x8267C8, .66f, true),
 }
 
 internal fun stageTheme(songId: String): StageTheme = when (songId) {

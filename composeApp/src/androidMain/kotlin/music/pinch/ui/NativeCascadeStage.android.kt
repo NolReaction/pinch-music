@@ -22,6 +22,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlin.math.roundToInt
 
+internal actual val supportsPanelMesh: Boolean get() = android.os.Build.VERSION.SDK_INT >= 29
+
 private object CascadeGL {
     init { System.loadLibrary("pinch_stage") }
     external fun create(): Long

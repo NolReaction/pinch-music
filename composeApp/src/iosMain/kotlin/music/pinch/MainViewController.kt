@@ -13,11 +13,13 @@ import platform.UIKit.UISelectionFeedbackGenerator
 import platform.UIKit.UIViewController
 
 interface AppleMediaFactoryProtocol {
+    fun firstMenuFrame()
     fun playLaunchSound(volume: Float)
     fun stopLaunchSound()
     fun createCascade(): AppleCascadeSurface
     fun createMedia(instrument: String, observer: AppleInterruptListener): AppleMediaSession
     fun pickAudio(listener: AppleAudioImportListener)
+    fun pickReference(directory: String, listener: AppleReferenceListener)
 }
 
 interface AppleInterruptListener {
@@ -25,6 +27,7 @@ interface AppleInterruptListener {
 }
 
 interface AppleMediaSession {
+    fun startAt(positionMs: Long)
     fun includeSample(midi: Int, root: Int)
     fun prepare(backingAsset: String?, arrangementPath: String?, includeStrike: Boolean)
     fun setBackingVolume(gain: Float)
@@ -33,6 +36,7 @@ interface AppleMediaSession {
     val backingPlaying: Boolean
     val backingEnded: Boolean
     val failure: String?
+    fun scheduleStart(delayMs: Long)
     fun activate(): Boolean
     fun silence()
     fun note(midi: Int, gain: Float, durationMs: Int)
@@ -52,7 +56,7 @@ fun MainViewController(factory: AppleMediaFactoryProtocol): UIViewController {
 
 private class IosPlatform(private val factory: AppleMediaFactoryProtocol) : Platform {
     private val defaults = NSUserDefaults.standardUserDefaults
-    private val selectionFeedback = UISelectionFeedbackGenerator()
+    private val selectionFeedback by lazy { UISelectionFeedbackGenerator() }
 
     override suspend fun saveImportAudio(id: String, audio: PickedAudio): Boolean {
         val recording = audio.recording ?: return false
@@ -62,6 +66,9 @@ private class IosPlatform(private val factory: AppleMediaFactoryProtocol) : Plat
     override fun importAudioTrack(id: String) = AppleRecordings.track(id)
     override fun removeImportAudio(id: String) = AppleRecordings.remove(id)
     override suspend fun pickAudio() = pickLocalSong(factory::pickAudio)
+    override suspend fun pickReferenceRecording(id: String) = AppleRecordings.pickReference(id, factory)
+    override fun referenceFile(id: String, suffix: String) = AppleRecordings.referenceFile(id, suffix)
+    override fun removeReferenceRecording(id: String) = AppleRecordings.removeReference(id)
     override suspend fun arrangementTrack(chart: Chart, bundledId: String?, previewInstrument: Instrument?) =
         appleArrangementTrack(chart, bundledId, previewInstrument)
     override fun readValue(key: String): String? = defaults.stringForKey(key)
@@ -77,11 +84,14 @@ private class IosPlatform(private val factory: AppleMediaFactoryProtocol) : Plat
         get() = defaults.boolForKey("haptics")
         set(value) = defaults.setBool(value, forKey = "haptics")
 
+    override fun firstMenuFrame() = factory.firstMenuFrame()
     override fun playLaunchSound(volume: Float) = factory.playLaunchSound(volume)
     override fun stopLaunchSound() = factory.stopLaunchSound()
     override fun feedback() = selectionFeedback.selectionChanged()
-    override fun newMedia(durationMs: Long, instrument: Instrument): GameMedia =
-        IosMedia(factory, durationMs, instrument)
+    override fun newMedia(durationMs: Long, instrument: Instrument): GameMedia {
+        if (haptics) selectionFeedback.prepare()
+        return IosMedia(factory, durationMs, instrument)
+    }
 }
 
 private class IosMedia(factory: AppleMediaFactoryProtocol, private val durationMs: Long, instrument: Instrument) :
@@ -103,6 +113,11 @@ private class IosMedia(factory: AppleMediaFactoryProtocol, private val durationM
         if (closed) return
         pause()
         onInterrupted?.invoke()
+    }
+
+    override fun startAt(positionMs: Long) {
+        check(!preparationRequested && !closed)
+        session.startAt(positionMs.coerceIn(0L, (durationMs - 1L).coerceAtLeast(0L)))
     }
 
     override fun prepare(pitches: Set<Int>, backingAsset: String?, arrangement: ArrangementTrack?, includeStrike: Boolean) {
@@ -138,6 +153,10 @@ private class IosMedia(factory: AppleMediaFactoryProtocol, private val durationM
             val position = session.backingPositionMs.coerceIn(0L, durationMs)
             Playback(true, playing, false, position, now + (uptimeMs() - now) / 2)
         }
+    }
+
+    override fun scheduleStart(atUptimeMs: Long) {
+        if (!closed && hasTrack && session.ready) session.scheduleStart((atUptimeMs - uptimeMs()).coerceAtLeast(0))
     }
 
     override fun play() {

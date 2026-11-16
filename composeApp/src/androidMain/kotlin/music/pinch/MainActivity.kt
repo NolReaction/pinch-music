@@ -72,6 +72,9 @@ private class AndroidPlatform(private val activity: MainActivity) : Platform {
     override fun removeImportAudio(id: String) = recordings.remove(id)
 
     override suspend fun pickAudio() = songImport.pickAudio()
+    override suspend fun pickReferenceRecording(id: String) = songImport.pickReference(id)
+    override fun referenceFile(id: String, suffix: String) = songImport.referenceFile(id, suffix)
+    override fun removeReferenceRecording(id: String) = songImport.removeReference(id)
     override suspend fun arrangementTrack(chart: Chart, bundledId: String?, previewInstrument: Instrument?) =
         AndroidAccompaniment.track(activity, chart, bundledId, previewInstrument)
     override fun readValue(key: String): String? = settings.getString(key, null)

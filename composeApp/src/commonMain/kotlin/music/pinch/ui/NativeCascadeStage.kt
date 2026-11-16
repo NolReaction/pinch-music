@@ -9,6 +9,8 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 
+internal expect val supportsPanelMesh: Boolean
+
 /** The GL drawable can be smaller than the native-resolution Compose interface around it. */
 object CascadeRaster {
     fun scale(width: Double, height: Double, nativeScale: Double): Double {

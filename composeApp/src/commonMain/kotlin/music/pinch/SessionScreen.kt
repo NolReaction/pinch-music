@@ -4,7 +4,7 @@ import music.pinch.core.FORGIVING_WINDOW_MS
 import music.pinch.core.Chart
 import music.pinch.core.GameStats
 
-enum class Scene { Menu, Loading, CountIn, Playing, Paused, Resuming, Result, Error }
+enum class Scene { Menu, Reference, Loading, CountIn, Playing, Paused, Resuming, Result, Error }
 enum class StageMode(val label: String) { Orbit("Орбита"), Planar("Каскад X/Y") }
 data class PanelFeedback(val noteAtMs: Long, val shownAtMs: Long, val hit: Boolean, val effectsVisible: Boolean = true)
 
@@ -18,6 +18,7 @@ data class ScreenState(
     val availableIds: Set<String> = emptySet(),
     val importing: Boolean = false,
     val notice: String? = null,
+    val reference: ReferenceState? = null,
     val scene: Scene = Scene.Menu,
     val preview: Boolean = false,
     val stats: GameStats? = null,
@@ -35,6 +36,8 @@ data class ScreenState(
 ) {
     val backingAsset: String? get() = selectedSong.backingAsset.takeUnless { selectedSong.id in importedIds }
     val needsSourceFile: Boolean get() = selectedSong.id in importedIds && selectedSong.id !in recordedImportIds
+    val canChooseReference: Boolean get() = selectedSong.id == "stereo-love" || selectedSong.id == "on-the-floor"
+    val canMeasure: Boolean get() = canPlay
     val canPlay: Boolean get() = selectedSong.id in availableIds
     val title: String get() = selectedSong.title
     val bpm: Int get() = chart?.bpm ?: selectedSong.bundledBpm.takeUnless { selectedSong.id in importedIds } ?: 0
@@ -49,6 +52,14 @@ interface Actions {
     fun toggleFavorite(id: String)
     fun restoreRecording()
     fun importAudio()
+    fun openReference()
+    fun chooseReferenceRecording()
+    fun useReferenceRecording(file: Boolean)
+    fun removeReferenceRecording()
+    fun adjustReference(take: TapTake, offsetMs: Long)
+    fun recordReference(startMs: Long, offsetMs: Long = 0)
+    fun markReference(uptimeMs: Long?)
+    fun stopReference()
     fun dismissNotice()
     fun stagePresented(attempt: Long)
     fun start(preview: Boolean)

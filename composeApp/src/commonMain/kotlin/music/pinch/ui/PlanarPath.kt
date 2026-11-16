@@ -4,6 +4,7 @@ import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.hypot
 import kotlin.math.min
+import kotlin.math.sign
 import kotlin.math.sqrt
 import music.pinch.core.Chart
 import music.pinch.core.Note
@@ -133,51 +134,6 @@ private class CascadeRail(
     }
 }
 
-/** A silent starter chute releases from rest. Solve its incline from the time
- * available before the first strike. A very long intro can wait on its cradle. */
-private class CascadeEntry(
-    firstMs: Long, private val startMs: Long, private val direction: Int, private val target: StagePoint,
-) {
-    private val first = (firstMs - startMs) / 1000.0
-    private val guided = first >= .64
-    private val air = if (guided) .32 else first
-    private val roll = if (guided) min(first - air, 2.24) else 0.0
-    private val release = first - air - roll
-    private val lipSpeed = if (guided) 2.10 else 0.0
-    private val acceleration = if (guided) lipSpeed / roll else 0.0
-    private val sine = acceleration / RollingGravity
-    private val cosine = sqrt(1 - sine * sine)
-    val vx = direction * cosine * lipSpeed
-    val arrivalVy = sine * lipSpeed + CascadeGravity * air
-    private val carried = lipSpeed * (.5 * roll + air)
-    private val start = StagePoint((target.x - direction * cosine * carried).toFloat(),
-        (target.y - sine * carried - .5 * CascadeGravity * air * air).toFloat(), 0f)
-
-    private fun onRail(s: Double) = StagePoint((start.x + direction * cosine * s).toFloat(),
-        (start.y + sine * s).toFloat(), 0f)
-
-    val samples: List<StagePoint> = if (!guided) emptyList() else {
-        val length = .5 * lipSpeed * roll
-        val count = ceil(length / .22).toInt().coerceAtLeast(2)
-        List(count + 1) { i -> onRail(length * i / count) }
-    }
-
-    fun position(time: Long): StagePoint {
-        val t = ((time - startMs) / 1000.0 - release).coerceIn(0.0, roll + air)
-        if (t <= roll) return onRail(.5 * acceleration * t * t)
-        val remaining = roll + air - t
-        return StagePoint((target.x - vx * remaining).toFloat(),
-            (target.y - remaining * (arrivalVy - .5 * CascadeGravity * remaining)).toFloat(), 0f)
-    }
-
-    fun angle(time: Long): Float {
-        val t = ((time - startMs) / 1000.0 - release).coerceIn(0.0, roll + air)
-        val supported = min(t, roll)
-        return (direction * (.5 * acceleration * supported * supported + lipSpeed * (t - supported)) /
-            MarbleRadius).toFloat()
-    }
-}
-
 private class PlanarSpan(
     val start: StagePoint, val rail: CascadeRail?, val launchVy: Double, val vx: Double,
     val initialSpin: Float, val seconds: Double,
@@ -264,7 +220,7 @@ internal class PlanarPath(chart: Chart, contactChart: Chart = chart.cascadeChart
     private val spans: List<PlanarSpan>
     private val endSpin: Float
     private val origin: StagePoint
-    private val entry: CascadeEntry
+    private val entry: StarterChute
     val entryRail: List<StagePoint> get() = entry.samples
 
     init {
@@ -275,10 +231,10 @@ internal class PlanarPath(chart: Chart, contactChart: Chart = chart.cascadeChart
         val beat = 60_000.0 / contactChart.bpm
         var direction = if (phraseDirection(notes, 0, beat) < 0) -1 else 1
         origin = StagePoint(0f, -MarbleRadius, 0f)
-        entry = CascadeEntry(notes.first().atMs, startMs, direction, origin)
+        entry = StarterChute(notes.first().atMs, startMs, StagePoint(direction.toFloat(), 0f, 0f), origin, CascadeGravity, .32)
         var center = origin
         var runSteps = 0
-        var spin = entry.angle(notes.first().atMs) % 6.2831855f
+        var spin = direction * entry.spin(1f) % 6.2831855f
         for ((i, note) in notes.withIndex()) {
             strikes += PlanarAttack(note.atMs, i, center.x, note.midi, note.playable)
             val next = notes.getOrNull(i + 1)
@@ -290,7 +246,7 @@ internal class PlanarPath(chart: Chart, contactChart: Chart = chart.cascadeChart
             val seconds = gap / 1000.0
             val interval = next.midi - note.midi
             val previous = sections.lastOrNull()
-            val incomingX = previous?.vx ?: entry.vx
+            val incomingX = previous?.vx ?: entry.arrivalVx
             val incomingY = previous?.arrivalVy ?: entry.arrivalVy
             val guide = contactChart.hasGuideAfter(i)
             val previousInterval = if (i > 0) note.midi - notes[i - 1].midi else 0
@@ -432,7 +388,7 @@ internal class PlanarPath(chart: Chart, contactChart: Chart = chart.cascadeChart
         val i = attackIndex(time)
         if (i < 0) {
             // Keep the release and the first real key in the same opening shot.
-            val ball = entry.position(time)
+            val ball = entry.ball(entry.progress(time))
             return StagePoint((ball.x + origin.x) * .5f, (ball.y + origin.y) * .5f, 0f)
         }
         val span = spans.getOrNull(i) ?: return spans.lastOrNull()?.end ?: origin
@@ -464,7 +420,8 @@ internal class PlanarPath(chart: Chart, contactChart: Chart = chart.cascadeChart
         val cameraY = coordinate(a.y, b.y, c.y, d.y)
         val travel = hypot(speed(a.x, b.x, c.x, d.x), speed(a.y, b.y, c.y, d.y))
         if (index < 0) {
-            return PlanarFrame(entry.position(time), cameraY, entry.angle(time), -1, null, cameraX, travel)
+            val t = entry.progress(time)
+            return PlanarFrame(entry.ball(t), cameraY, entry.spin(t) * entry.launchDirection().x.sign, -1, null, cameraX, travel)
         }
         val span = spans.getOrNull(index)
         if (span == null) {

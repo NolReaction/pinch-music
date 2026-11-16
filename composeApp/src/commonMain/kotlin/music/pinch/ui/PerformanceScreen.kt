@@ -146,9 +146,12 @@ private fun SessionHeader(state: ScreenState, actions: Actions, positionMs: () -
                 val seconds by remember(positionMs, duration) {
                     derivedStateOf { positionMs().coerceIn(0L, duration) / 1_000L }
                 }
-                val subtitle = if (state.preview) "Прослушивание · " else ""
-                Text("$subtitle${clock(seconds)} / ${durationClock(duration)}", color = StudioIvory.copy(alpha = .84f),
-                    fontSize = 12.sp, lineHeight = 16.sp, fontFamily = FontFamily.Monospace, maxLines = 1)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("${clock(seconds)} / ${durationClock(duration)}", color = StudioIvory.copy(alpha = .84f),
+                        fontSize = 12.sp, lineHeight = 16.sp, fontFamily = FontFamily.Monospace, maxLines = 1)
+                    if (state.preview) Text("Прослушивание", color = StudioIvory.copy(alpha = .74f),
+                        fontSize = 12.sp, lineHeight = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
             }
             if (state.preview) {
                 IconButton(onClick = actions::menu, modifier = Modifier.size(48.dp)

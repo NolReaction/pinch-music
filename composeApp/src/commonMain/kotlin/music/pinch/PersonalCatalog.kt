@@ -74,7 +74,7 @@ internal class PersonalCatalog(private val platform: Platform, private val built
         }
         val migrated = Index(existing)
         // A damaged index is not an empty library. Keep both copies untouched on launch.
-        if (platform.readValue(key) == null && platform.readValue(recoveryKey) == null) {
+        if (existing.isNotEmpty() && platform.readValue(key) == null && platform.readValue(recoveryKey) == null) {
             existing.find { it.legacyId == selected }?.let { platform.writeValue("selected.song", it.id) }
             persist(migrated)
         }

@@ -22,20 +22,23 @@ struct Buffer {
         b.vbo = b.ibo = 0;
         b.count = 0;
     }
-    ~Buffer() {
+    ~Buffer() { release(); }
+    void release() {
         if (vbo)
             glDeleteBuffers(1, &vbo);
         if (ibo)
             glDeleteBuffers(1, &ibo);
+        vbo = ibo = 0;
+        count = 0;
     }
     void upload(const Mesh& mesh) {
         count = static_cast<GLsizei>(mesh.indices.size());
         if (!count)
             return;
-        glGenBuffers(1, &vbo);
+        if (!vbo) glGenBuffers(1, &vbo);
         glBindBuffer(GL_ARRAY_BUFFER, vbo);
         glBufferData(GL_ARRAY_BUFFER, mesh.verts.size() * sizeof(Vertex), mesh.verts.data(), GL_STATIC_DRAW);
-        glGenBuffers(1, &ibo);
+        if (!ibo) glGenBuffers(1, &ibo);
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, mesh.indices.size() * sizeof(uint16_t), mesh.indices.data(),
                      GL_STATIC_DRAW);
@@ -70,7 +73,7 @@ static GLuint compile(GLenum kind, const char* source) {
 }
 struct Program {
     GLuint id = 0;
-    GLint lens = -1, offset = -1, tilt = -1, key = -1, ball = -1, spin = -1, paint = -1, accent = -1, phase = -1, decals = -1, shadowAxes = -1;
+    GLint finish = -1, lens = -1, offset = -1, tilt = -1, key = -1, ball = -1, spin = -1, paint = -1, accent = -1, phase = -1, decals = -1, shadowAxes = -1;
     ~Program() {
         if (id)
             glDeleteProgram(id);
@@ -101,6 +104,7 @@ struct Program {
             }
             return false;
         }
+        finish = glGetUniformLocation(id, "uFinish");
         lens = glGetUniformLocation(id, "uLens");
         offset = glGetUniformLocation(id, "uOffset");
         tilt = glGetUniformLocation(id, "uTilt");
@@ -123,7 +127,11 @@ struct Piece {
     float x = 0, y = 0, side = 0, style = 0, slope = 0, tiltCos = 1, tiltSin = 0;
     std::vector<V> route;
     V routeMin{}, routeMax{};
+    V keyCenter{}, keyHalf{};
     Buffer rail;
+    int shape() const {
+        return (route.size() >= 2 ? 4 : 0) + (side > 0 ? 2 : 0) + (style == 1.f ? 1 : 0);
+    }
 };
 struct Stage {
     Program scene, wall, shadows, cues;
@@ -133,8 +141,73 @@ struct Stage {
     GLsizei backdropIndices = 0, shadowIndices = 0;
     GLuint relief = 0;
     int reliefMotif = -1;
+    std::array<bool, 8> usedKeys{};
+    int keyMotif = -1;
+    bool warmedCues = false;
+    bool streamRails = false;
+    std::vector<int> railRows;
+    static constexpr size_t maxResidentRails = 48;
+    std::vector<size_t> residentRails;
     ~Stage() {
         if (relief) glDeleteTextures(1, &relief);
+    }
+    void prepareKeys(int motif) {
+        if (keyMotif == motif) return;
+        const auto& design = keyDesign(motif);
+        std::array<V, 8> centers{}, extents{};
+        for (int i = 0; i < 8; ++i) {
+            if (!usedKeys[i]) continue;
+            auto mesh = keyMesh(i & 4, (i & 2) ? 1.f : -1.f, i & 1, design);
+            V low = mesh.verts.front().p, high = low;
+            for (const auto& vertex : mesh.verts) {
+                const V pos = vertex.p;
+                low = {std::min(low.x, pos.x), std::min(low.y, pos.y), std::min(low.z, pos.z)};
+                high = {std::max(high.x, pos.x), std::max(high.y, pos.y + .09f * vertex.detail),
+                        std::max(high.z, pos.z)};
+            }
+            centers[i] = (low + high) * .5f;
+            extents[i] = (high - low) * .5f + V{.01f, .01f, .01f};
+            keys[i].upload(mesh);
+        }
+        // Rotate the actual body and bracket bounds once, including spring travel.
+        for (auto& p : pieces) {
+            if (p.style < 0.f) continue;
+            const V c = centers[p.shape()], h = extents[p.shape()];
+            const float cs = p.tiltCos, sn = p.tiltSin;
+            p.keyCenter = {c.x * cs - c.y * sn, c.y * cs + c.x * sn, c.z};
+            p.keyHalf = {h.x * cs + h.y * std::abs(sn), h.y * cs + h.x * std::abs(sn), h.z};
+        }
+        keyMotif = motif;
+    }
+    void uploadRail(size_t row) {
+        Piece& p = pieces[railRows[row]];
+        p.rail.upload(railMesh(p.route, p.style < 0.f));
+    }
+    void streamRailWindow(size_t begin, size_t end, size_t focus) {
+        // A seek can move the window by an arbitrary distance. Bound both uploads
+        // and retirement, always on the owning GL thread before the first draw.
+        int retired = 0;
+        for (size_t i = 0; i < residentRails.size() && retired < 2;) {
+            const size_t row = residentRails[i];
+            if (row >= begin && row < end) {
+                ++i;
+                continue;
+            }
+            pieces[railRows[row]].rail.release();
+            residentRails[i] = residentRails.back();
+            residentRails.pop_back();
+            ++retired;
+        }
+        if (residentRails.size() >= maxResidentRails) return;
+        size_t closest = end;
+        for (size_t i = begin; i < end; ++i) {
+            if (pieces[railRows[i]].rail.count) continue;
+            if (closest == end || std::abs(int(i) - int(focus)) < std::abs(int(closest) - int(focus))) closest = i;
+        }
+        if (closest != end) {
+            uploadRail(closest);
+            residentRails.push_back(closest);
+        }
     }
     void bindWallRelief(int motif) {
         glActiveTexture(GL_TEXTURE0);
@@ -178,7 +251,8 @@ struct Stage {
             return false;
         Mesh w;
         // Interpolate the wall lighting on a coarse grid and the shadow penumbrae on rings.
-        constexpr int columns = 16, rows = 24, segments = 16, rings = 5;
+        constexpr int columns = 16, rows = 24, segments = 16;
+        constexpr float shadowRadii[] = {.40f, .60f, .80f, 1.f};
         for (int y = 0; y <= rows; ++y)
             for (int x = 0; x <= columns; ++x)
                 w.point({2.f * x / columns - 1, 2.f * y / rows - 1, 0}, {0, 0, 1}, Face);
@@ -190,8 +264,8 @@ struct Stage {
         backdropIndices = static_cast<GLsizei>(w.indices.size());
         for (int slot = 0; slot < 16; ++slot) {
             int center = w.point({0, 0, 0}, {1, 0, 0}, Skirt, slot);
-            for (int j = 1; j <= rings; ++j) {
-                float r = static_cast<float>(j) / rings;
+            for (int j = 0; j < 4; ++j) {
+                float r = shadowRadii[j];
                 float t = std::max(0.f, (r - .40f) / .60f);
                 float opacity = 1 - t * t * (3 - 2 * t);
                 for (int k = 0; k < segments; ++k) {
@@ -201,9 +275,9 @@ struct Stage {
                     w.point({r * x, r * y, r}, {opacity, x / side, y / side}, Skirt, slot);
                 }
                 for (int k = 0; k < segments; ++k) {
-                    int a = center + 1 + (j - 1) * segments + k,
-                        b = center + 1 + (j - 1) * segments + (k + 1) % segments;
-                    if (j == 1)
+                    int a = center + 1 + j * segments + k,
+                        b = center + 1 + j * segments + (k + 1) % segments;
+                    if (j == 0)
                         w.tri(center, a, b);
                     else
                         w.quad(a - segments, b - segments, b, a);
@@ -212,8 +286,6 @@ struct Stage {
         }
         shadowIndices = (static_cast<GLsizei>(w.indices.size()) - backdropIndices) / 16;
         wallMesh.upload(w);
-        for (int i = 0; i < 8; ++i)
-            keys[i].upload(keyMesh(i & 4, (i & 2) ? 1.f : -1.f, i & 1));
         Mesh ball;
         ellipsoid(ball, {0, 0, 0}, {BallRadius, BallRadius, BallRadius}, Glass, 36, 24);
         marble.upload(ball);
@@ -223,6 +295,10 @@ struct Stage {
     }
     void course(const float* key, int count, const float* rails, int nr) {
         pieces.clear();
+        railRows.clear();
+        residentRails.clear();
+        usedKeys.fill(false);
+        keyMotif = -1;
         if (!key || count <= 0)
             return;
         pieces.resize(count);
@@ -248,6 +324,21 @@ struct Stage {
             p.routeMin.y = std::min(p.routeMin.y, point.y);
             p.routeMax.x = std::max(p.routeMax.x, point.x);
             p.routeMax.y = std::max(p.routeMax.y, point.y);
+        }
+        for (int i = 0; i < count; ++i) {
+            const Piece& p = pieces[i];
+            if (p.style >= 0.f) usedKeys[p.shape()] = true;
+            if (p.route.size() >= 2) railRows.push_back(i);
+        }
+        // A station expands into both runners, the spine and mountings. Preload
+        // ordinary charts; bound resident geometry on long user-authored courses.
+        streamRails = nr > 4096;
+        const size_t openingEnd = std::lower_bound(railRows.begin(), railRows.end(), 48) - railRows.begin();
+        const size_t initial = streamRails ? openingEnd : railRows.size();
+        residentRails.reserve(maxResidentRails);
+        for (size_t i = 0; i < initial; ++i) {
+            uploadRail(i);
+            if (streamRails) residentRails.push_back(i);
         }
     }
     void frame(int width, int height, const float* f) {
@@ -297,13 +388,23 @@ struct Stage {
             }
             return true;
         };
+        if (streamRails) {
+            const auto begin = std::lower_bound(railRows.begin(), railRows.end(), int(lo - pieces.begin()) - 8);
+            const auto end = std::lower_bound(begin, railRows.end(), int(hi - pieces.begin()) + 24);
+            const size_t focus = std::lower_bound(begin, end, active) - railRows.begin();
+            const size_t left = std::max(size_t(begin - railRows.begin()), focus - std::min(focus, maxResidentRails / 2));
+            const size_t rightEdge = std::min(size_t(end - railRows.begin()), left + maxResidentRails);
+            streamRailWindow(left, rightEdge, focus);
+        }
+        prepareKeys(static_cast<int>(f[11]));
         glViewport(0, 0, width, height);
         glDisable(GL_SCISSOR_TEST);
         glDisable(GL_CULL_FACE);
         glDisable(GL_BLEND);
         glDepthMask(GL_TRUE);
         glDisable(GL_DEPTH_TEST);
-        glClear(GL_DEPTH_BUFFER_BIT);
+        // Both attachments are redrawn. Mobile tile renderers can skip loading their old contents.
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         for (GLuint i = 0; i < 3; ++i)
             glEnableVertexAttribArray(i);
         glUseProgram(wall.id);
@@ -382,6 +483,8 @@ struct Stage {
         glEnable(GL_CULL_FACE);
         glDepthFunc(GL_LEQUAL);
         glUseProgram(scene.id);
+        const auto& design = keyDesign(keyMotif);
+        glUniform4f(scene.finish, design.lacquer, design.reflection, design.grainX, design.grainZ);
         colour(scene.paint, f[15]);
         colour(scene.accent, f[16]);
         glUniform4f(scene.lens, lensX, lensY, .20f, 45.f);
@@ -390,11 +493,10 @@ struct Stage {
         for (auto it = lo; it != hi; ++it) {
             Piece& p = *it;
             int i = static_cast<int>(it - pieces.begin());
-            bool guided = p.route.size() >= 2;
             const V origin{p.x - cameraX, p.y - cameraY, 0};
-            if (p.style >= 0.f && visible(origin + V{0, .22f, -.55f}, {.83f, .91f, .83f})) {
+            if (p.style >= 0.f && visible(origin + p.keyCenter, p.keyHalf)) {
                 glUniform3f(scene.offset, origin.x, origin.y, 0);
-                int shape = (guided ? 4 : 0) + (p.side > 0 ? 2 : 0) + (p.style == 1.f ? 1 : 0);
+                const int shape = p.shape();
                 float impact = i == active ? strength : 0.f;
                 bool upcoming = i == next;
                 float score = 0.f;
@@ -411,10 +513,8 @@ struct Stage {
             }
             const V mid = (p.routeMax + p.routeMin) * .5f;
             const V half = (p.routeMax - p.routeMin) * .5f;
-            if (guided && visible(origin + mid + V{0, .22f, -.32f}, half + V{.83f, .91f, 1.06f})) {
+            if (p.rail.count && visible(origin + mid + V{0, .22f, -.32f}, half + V{.83f, .91f, 1.06f})) {
                 glUniform3f(scene.offset, origin.x, origin.y, 0);
-                if (!p.rail.count)
-                    p.rail.upload(railMesh(p.route, p.style < 0.f));
                 // Rails are already built in world axes from the physics samples.
                 glUniform4f(scene.key, 0.f, 0.f, 0.f, 0.f);
                 glUniform2f(scene.tilt, 1.f, 0.f);
@@ -429,7 +529,7 @@ struct Stage {
         glDisable(GL_CULL_FACE);
 
         const int target = static_cast<int>(f[25]);
-        if (target < 0 && std::none_of(f + 27, f + 31, [](float age) { return age >= 0.f; }))
+        if (warmedCues && target < 0 && std::none_of(f + 27, f + 31, [](float age) { return age >= 0.f; }))
             return;
         glUseProgram(cues.id);
         glUniform4f(cues.lens, lensX, lensY, .20f, 45.f);
@@ -445,6 +545,16 @@ struct Stage {
             mesh.bind();
             mesh.draw();
         };
+        if (!warmedCues) {
+            // Exercise the same blended program and mesh state used by the first hit.
+            // At age 1 the last ember is fully transparent and depth writes are off.
+            glUniform3f(cues.offset, ball.x, ball.y, ball.z);
+            glUniform2f(cues.tilt, 1.f, 0.f);
+            glUniform4f(cues.key, 1.f, 0.f, 0.f, 0.f);
+            sparks.bind();
+            sparks.draw();
+            warmedCues = true;
+        }
         if (target >= 0) effect(target, f[26], brackets);
         for (int slot = 0; slot < 4; ++slot) {
             const float age = f[27 + slot];

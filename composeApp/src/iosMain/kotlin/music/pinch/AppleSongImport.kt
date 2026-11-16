@@ -27,6 +27,12 @@ interface AppleAudioImportListener {
     fun failed(message: String)
 }
 
+interface AppleReferenceListener {
+    fun copied(displayName: String, durationMs: Long, suffix: String)
+    fun cancelled()
+    fun failed(message: String)
+}
+
 private data class AppleExcerpt(val pcm: NSData, val rate: Int, val channels: Int, val name: String)
 
 internal suspend fun pickLocalSong(open: (AppleAudioImportListener) -> Unit): PickedAudio? {
@@ -57,6 +63,36 @@ internal object AppleRecordings {
         val base = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, true).first() as String
         return "$base/Recordings"
     }
+
+    private fun referenceDir(id: String): String {
+        require(validReferenceId(id))
+        return "$directory/References/$id"
+    }
+
+    fun referenceFile(id: String, suffix: String): ArrangementTrack? {
+        require(validAudioSuffix(suffix))
+        val path = "${referenceDir(id)}/track.$suffix"
+        return if (NSFileManager.defaultManager.fileExistsAtPath(path)) ArrangementTrack(path) else null
+    }
+
+    fun removeReference(id: String) {
+        NSFileManager.defaultManager.removeItemAtPath(referenceDir(id), null)
+    }
+
+    suspend fun pickReference(id: String, factory: AppleMediaFactoryProtocol): ChosenRecording? =
+        suspendCancellableCoroutine { continuation ->
+            factory.pickReference(referenceDir(id), object : AppleReferenceListener {
+                override fun copied(displayName: String, durationMs: Long, suffix: String) {
+                    if (continuation.isActive) continuation.resume(ChosenRecording(displayName, durationMs, suffix))
+                    else removeReference(id)
+                }
+                override fun cancelled() { if (continuation.isActive) continuation.resume(null) }
+                override fun failed(message: String) {
+                    removeReference(id)
+                    if (continuation.isActive) continuation.resumeWithException(IllegalStateException(message))
+                }
+            })
+        }
 
     suspend fun save(id: String, data: ImportRecording) = withContext(Dispatchers.Default) {
         val folder = directory

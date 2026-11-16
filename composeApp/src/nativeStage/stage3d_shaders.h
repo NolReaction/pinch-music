@@ -47,6 +47,7 @@ uniform mediump vec2 uSpin; // cos, sin
 uniform lowp vec3 uPaint;
 uniform lowp vec3 uAccent;
 uniform sampler2D uGrain;
+uniform mediump vec4 uFinish; // pigment, reflected light, direction and scale of brushed grain
 const vec3 eye=vec3(2.80,-4.88,8.20);
 const vec3 L=vec3(.657,-.243,.714);
 float strip(float x,float halfWidth,float blur){
@@ -92,9 +93,9 @@ void main(){
         float top=1.-step(.5,mat);
         float ao=1.-.38*exp(-17.*dot(vPos.xz-uBall.xz,vPos.xz-uBall.xz))*
                      (1.-smoothstep(.22,.64,abs(vPos.y-uBall.y)));
-        float brush=texture2D(uGrain,vFace*vec2(1.05,.14)+vec2(.23,.31)).r-.5;
-        vec3 alloy=mix(vec3(.62,.64,.64),uPaint,.26);
-        vec3 face=env*(.54+.19*edge)+alloy*(.20+.16*nl)+vec3(brush*.12+spec*.21);
+        float brush=texture2D(uGrain,vFace*uFinish.zw+vec2(.23,.31)).r-.5;
+        vec3 alloy=mix(vec3(.62,.64,.64),uPaint,uFinish.x);
+        vec3 face=env*(uFinish.y+.17*edge)+alloy*(.84-uFinish.y+.22*nl)+vec3(brush*.11+spec*.21);
         vec3 under=vec3(.05,.06,.072)+env*(.105+.18*edge)+alloy*.06;
         col=mix(under,face,top)*ao;
         col=mix(col,mix(uAccent,col,.67),preview*top*.63);

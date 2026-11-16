@@ -11,12 +11,16 @@ interface Platform {
     fun writeValue(key: String, value: String)
     fun removeValue(key: String)
     suspend fun pickAudio(): PickedAudio?
+    suspend fun pickReferenceRecording(id: String): ChosenRecording? = null
+    fun referenceFile(id: String, suffix: String): ArrangementTrack? = null
+    fun removeReferenceRecording(id: String) {}
     suspend fun saveImportAudio(id: String, audio: PickedAudio): Boolean = false
     fun removeImportAudio(id: String) {}
     fun importAudioTrack(id: String): ArrangementTrack? = null
     suspend fun arrangementTrack(chart: Chart, bundledId: String?, previewInstrument: Instrument?): ArrangementTrack
     var volume: Float
     var haptics: Boolean
+    fun firstMenuFrame() {}
     fun playLaunchSound(volume: Float) {}
     fun stopLaunchSound() {}
     fun feedback()
@@ -36,6 +40,8 @@ data class Playback(
 )
 
 interface GameMedia {
+    /** Set the absolute starting point before the first prepare. Snapshots keep the same file timeline. */
+    fun startAt(positionMs: Long)
     /** A backing asset or an arrangement starts at the same time as the chart. */
     fun prepare(pitches: Set<Int>, backingAsset: String?, arrangement: ArrangementTrack? = null, includeStrike: Boolean = false)
     /** Rebuild interrupted hardware when the user asks to resume. */
@@ -43,6 +49,8 @@ interface GameMedia {
     fun setBackingVolume(volume: Float)
     fun uptimeMs(): Long
     fun snapshot(): Playback
+    /** Platforms that support sample-clock scheduling can arm the recording during the run-up. */
+    fun scheduleStart(atUptimeMs: Long) {}
     fun play()
     fun pause()
     fun note(midi: Int, gain: Float, durationMs: Int)

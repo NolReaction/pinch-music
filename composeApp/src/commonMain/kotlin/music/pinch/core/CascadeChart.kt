@@ -65,9 +65,11 @@ private fun Chart.fitLandings(beatMs: Double, minFlightMs: Long): Chart {
     return copy(notes = landings)
 }
 
-/** Give an immediate downbeat two visible count-in beats before the audio clock starts. */
-internal fun Chart.cascadePreRollMs(): Long = if (notes.first().atMs >= 600L) 0L
-    else (120_000.0 / bpm).roundToLong().coerceIn(1000L, 1800L)
+/** Give the marble a full approach. Silence already present in the recording counts towards it. */
+internal fun Chart.cascadePreRollMs(): Long {
+    val approachMs = (300_000.0 / bpm).roundToLong().coerceIn(2400L, 3200L)
+    return (approachMs - notes.first().atMs).coerceAtLeast(0L)
+}
 
 /** Sustains and longer breaks can support a passive crossing between actual
  * strikes. Ordinary attacks within the beat pattern keep an airborne transfer. */

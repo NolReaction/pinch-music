@@ -18,6 +18,8 @@ import platform.Foundation.NSData
 import platform.Foundation.create
 import platform.UIKit.UIView
 
+internal actual val supportsPanelMesh: Boolean get() = true
+
 /** Implemented by the application's GLKit surface, on the same main thread as Compose. */
 interface AppleCascadeSurface {
     val view: UIView

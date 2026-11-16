@@ -24,7 +24,7 @@ class SongLibraryTest {
             assertEquals(bpms[song.id], chart.bpm)
             val targets = chart.notes.filter { it.playable }
             assertEquals(0L, targets.first().atMs, song.title)
-            val minimumGap = if (song == stereoLoveSong) 15_000L / chart.bpm else 225L
+            val minimumGap = if (song == stereoLoveSong || song == onTheFloorSong) 15_000L / chart.bpm else 225L
             assertTrue(targets.zipWithNext().all { (a, b) -> b.atMs - a.atMs >= minimumGap }, song.title)
         }
     }
