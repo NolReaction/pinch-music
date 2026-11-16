@@ -24,7 +24,7 @@ private enum class FloorPart(val voice: FloorLeadVoice, val drums: Float, val ba
     Hook(FloorLeadVoice.Reed, 1f, .99f, .97f),
     VerseReturn(FloorLeadVoice.Vocal, .82f, .88f, .88f),
     Break(FloorLeadVoice.Pluck, .35f, .52f, .78f),
-    Reentry(FloorLeadVoice.Brass, .86f, .88f, .91f),
+    Reentry(FloorLeadVoice.Pluck, .86f, .88f, .91f),
     Final(FloorLeadVoice.Reed, 1f, .99f, 1f),
     Outro(FloorLeadVoice.Reed, .72f, .82f, .88f),
 }
@@ -64,12 +64,15 @@ internal fun floorLeadVoiceAt(atMs: Long): FloorLeadVoice {
         val next = floorForm.last { it.bar <= bar + 1 }
         if (next.startsRefrainAt(bar + 1)) return next.part.voice
     }
-    val drop = passage.part == FloorPart.Hook || passage.part == FloorPart.Final
-    return if (drop && (bar - passage.bar) % 4 == 3) FloorLeadVoice.Vocal else passage.part.voice
+    val reprise = passage.part == FloorPart.Hook || passage.part == FloorPart.Final
+    val phraseBar = (bar - passage.bar) % 4
+    val answering = phraseBar == 3 || (phraseBar == 2 && tick % 16 >= 6)
+    return if (reprise && answering) FloorLeadVoice.Vocal else passage.part.voice
 }
 
-private data class FloorBar(val tones: List<Pair<Int, Int>>, val gate: Double)
-private fun line(vararg notes: Pair<Int, Int>, gate: Double = .82) = FloorBar(notes.toList(), gate)
+private data class FloorBar(val tones: List<Pair<Int, Int>>, val gate: Double, val restAt: Int?)
+private fun line(vararg notes: Pair<Int, Int>, gate: Double = .92, restAt: Int? = null) =
+    FloorBar(notes.toList(), gate, restAt)
 // Load the written phrases when the player opens the song or the studio renders the master.
 private object FloorPhrases {
     private val rest = line()
@@ -84,61 +87,69 @@ private object FloorPhrases {
         rest,
     )
 
-    // The verse speaks rhythmically around E flat; the second half leans on G flat.
-    // Leave the break between calls exposed instead of playing through every bar.
-    private val verse = listOf(
-        line(0 to 63, 3 to 63, 6 to 63, 8 to 63, 12 to 63, gate = .66),
-        line(0 to 63, 3 to 63, 6 to 63, 8 to 61, 11 to 63, gate = .76),
-        line(3 to 63, 4 to 63, 6 to 63, 9 to 63, 14 to 63, gate = .68),
-        line(0 to 63, 3 to 63, 5 to 63, 9 to 61, 12 to 58, gate = .72),
-        line(0 to 63, 4 to 63, 8 to 63, 12 to 63, gate = .69),
-        line(1 to 61, 3 to 63, 8 to 63, 11 to 63, 14 to 63, gate = .71),
-        line(0 to 63, 3 to 68, 6 to 70, 8 to 63, 10 to 63, 14 to 63, gate = .74),
-        line(3 to 68, 6 to 70, 8 to 63, 10 to 63, 14 to 61, gate = .66),
-    )
+    // The rap is spoken. Play the accompaniment: two bars of E-flat power-chord
+    // pulses, then octaves answering the low syncopation across a genuine beat of rest.
+    private val powerPulse = line(0 to 51, 3 to 51, 6 to 51, 8 to 51, 11 to 51, 14 to 51)
+    private val powerReply = line(0 to 63, 3 to 63, 6 to 63, 8 to 63, 11 to 63, 14 to 63)
+    private val octaveAnswer = line(0 to 63, 3 to 63, 6 to 63, 12 to 75, 14 to 73, restAt = 8)
+    private val fallingAnswer = line(0 to 63, 3 to 63, 6 to 63, 8 to 70, 10 to 69, 12 to 68, 14 to 67)
+    private val turningAnswer = line(0 to 63, 3 to 63, 6 to 63, 8 to 70, 9 to 71, 10 to 73, 12 to 71, 14 to 70)
 
-    private val verseAnswer = listOf(
-        line(0 to 63, 4 to 66, 6 to 66, 8 to 63, 11 to 66, 14 to 63, gate = .74),
-        line(0 to 66, 3 to 66, 6 to 66, 9 to 66, 12 to 68, 14 to 70, gate = .76),
-        line(1 to 63, 4 to 66, 6 to 63, 9 to 66, 12 to 66, gate = .72),
-        line(0 to 63, 4 to 63, 7 to 63, 9 to 61, 13 to 58, gate = .66),
-    )
+    private fun rap(local: Int): FloorBar = when {
+        local == 0 -> powerPulse
+        local == 1 -> powerReply
+        local % 2 == 0 -> octaveAnswer
+        local % 4 == 3 -> fallingAnswer
+        else -> turningAnswer
+    }
 
-    private val calls = listOf(
-        line(1 to 63, 4 to 63, 6 to 58, 9 to 63, 12 to 66, gate = .54),
-        line(0 to 63, 6 to 59, 9 to 63, 14 to 59, gate = .61),
-        line(1 to 66, 4 to 61, 8 to 66, 10 to 68, 13 to 66, gate = .57),
-        line(0 to 65, 4 to 61, 8 to 58, gate = .65),
+    // The voice enters off the downbeat. Dotted eighths, ties and the quarter rest
+    // belong to the response; repeated E flats are separate attacks only where sung.
+    private val verseEntry = line(2 to 61, 4 to 63, 6 to 63, 8 to 63, 10 to 63, 12 to 63, 14 to 63)
+    private val versePickup = line(2 to 63, 4 to 63, 6 to 63, 8 to 63, 10 to 63, 12 to 63, 14 to 63)
+    private val verseClose = line(0 to 63, 3 to 63, 6 to 63, 8 to 63, restAt = 12)
+    private val verseFall = line(0 to 63, 3 to 63, 6 to 63, 8 to 63, 11 to 61, restAt = 13)
+    private val verse = listOf(verseEntry, verseClose, versePickup, verseFall,
+        versePickup, powerReply, versePickup, verseClose)
+    private val verseMiddle = listOf(
+        line(2 to 63, 4 to 66, 6 to 66, 8 to 66, 10 to 66, 12 to 66, 14 to 66),
+        line(0 to 66, 3 to 66, 6 to 66, 8 to 66, restAt = 12),
+        line(4 to 63, 6 to 63, 8 to 63, 10 to 63, 12 to 63, 14 to 63),
+        verseFall,
     )
 
     private val rise = listOf(
-        line(0 to 63, 3 to 63, 5 to 66, 8 to 63, 13 to 66, gate = .69),
-        line(0 to 63, 3 to 63, 6 to 66, 8 to 63, 12 to 58, gate = .72),
-        line(0 to 63, 4 to 63, 6 to 63, 8 to 66, 12 to 68, gate = .73),
-        line(0 to 63, 3 to 63, 6 to 68, 8 to 70, gate = .83),
+        line(0 to 63, 3 to 63, 6 to 63, 8 to 63, 14 to 63),
+        line(0 to 63, 6 to 63, 8 to 63, 10 to 63, restAt = 12),
+        line(0 to 63, 2 to 63, 4 to 63, 6 to 63, 8 to 63, restAt = 10),
+        line(0 to 63, 4 to 63, 6 to 63, 8 to 63, restAt = 10),
     )
 
-    private val dropAnswer = line(0 to 58, 2 to 58, 4 to 61, 6 to 61, 8 to 65, gate = .70)
-
-    private val breakdown = listOf(
-        line(0 to 63, 8 to 58, gate = .94), line(4 to 59, 12 to 63),
-        line(0 to 66, 10 to 61), rest,
-        line(0 to 63, 8 to 66), line(4 to 68, 10 to 66, 14 to 63),
-        line(0 to 66, 8 to 70, 12 to 68), line(0 to 65, 6 to 61, gate = .78),
-    )
+    // On the dance reprise the descending riff overlaps a second vocal entrance.
+    // The lower B flat rings across the start of the answer on the same timeline.
+    private val danceCadence = line(0 to 58, 3 to 56, 4 to 58, 6 to 63, 8 to 63,
+        10 to 63, 12 to 63, 14 to 63)
+    private val danceAnswer = verseClose
     private val coda = line(0 to 63, 5 to 58, 8 to 63, gate = .98)
 
     fun phrase(part: FloorPart, local: Int): FloorBar = when (part) {
         FloorPart.Intro, FloorPart.Chorus -> refrain[local % 4]
-        FloorPart.Hook, FloorPart.Final -> if (local % 4 == 3) dropAnswer else refrain[local % 4]
+        FloorPart.Hook, FloorPart.Final -> when (local % 4) {
+            2 -> danceCadence
+            3 -> danceAnswer
+            else -> refrain[local % 4]
+        }
         FloorPart.Outro -> if (local == 0) refrain[2] else coda
-        FloorPart.Call -> if (local == 7) rise[3] else calls[local % 4]
-        FloorPart.Verse -> if (local < 8) verse[local] else verseAnswer[local % 4]
-        FloorPart.VerseReturn -> if (local < 8) verse[(local + 4) % 8] else verseAnswer[local % 4]
+        FloorPart.Call -> rap(local)
+        FloorPart.Verse, FloorPart.VerseReturn -> when (local) {
+            in 0..7 -> verse[local]
+            in 8..11 -> verseMiddle[local - 8]
+            else -> verse[local - 8]
+        }
         FloorPart.Rise -> rise[local]
-        FloorPart.Turn -> if (local == 0) line(0 to 58, 4 to 61, 8 to 63, gate = .89) else rest
-        FloorPart.Break -> breakdown[local]
-        FloorPart.Reentry -> calls[local]
+        FloorPart.Turn -> powerReply
+        FloorPart.Break -> if (local == 3) rest else rap(local)
+        FloorPart.Reentry -> if (local == 0) octaveAnswer else powerReply
     }
 }
 
@@ -163,7 +174,10 @@ private fun floorChart(): Chart {
             val (offset, midi) = entry
             val next = tones.getOrNull(i + 1)?.first ?: 16
             val onset = floorTime((at + offset).toDouble())
-            val length = floorTime((next - offset) * melody.gate)
+            val release = melody.restAt?.takeIf { it in (offset + 1) until next } ?: next
+            val danceHold = (part == FloorPart.Hook || part == FloorPart.Final) &&
+                local % 4 == 2 && offset == 4
+            val length = if (danceHold) floorTime(8.0) else floorTime((release - offset) * melody.gate)
             val accent = when {
                 i == 0 || next - offset >= 5 -> 1f
                 offset % 4 == 0 -> .93f
@@ -174,19 +188,73 @@ private fun floorChart(): Chart {
 
         val last = bar == floorBars - 1
         val chord = when (part) {
-            FloorPart.Call, FloorPart.Verse, FloorPart.VerseReturn -> tonic
+            FloorPart.Call, FloorPart.Verse, FloorPart.VerseReturn, FloorPart.Turn -> tonic
             else -> if (last) tonic else progression[local % 4]
         }
         fun add(v: BackingVoice, midi: Int, tick: Double, gate: Double, gain: Float) {
             band += BackingNote(floorTime(at + tick), midi, floorTime(gate), gain, v)
         }
-        val thin = part == FloorPart.Break || (part == FloorPart.Intro && local < 2)
-        val drop = part == FloorPart.Hook || part == FloorPart.Final || part == FloorPart.Chorus
+        if (part == FloorPart.Intro && local in 4..7) {
+            // A second voice enters under the repeated introduction. Sustain its D flat
+            // across the bar line. A unison with the foreground needs only one attack.
+            fun response(pitch: Int, tick: Int, duration: Double) {
+                if ((tick to pitch) !in tones) add(BackingVoice.Keys, pitch, tick.toDouble(), duration, .51f)
+            }
+            when (local) {
+                4 -> {
+                    response(63, 12, 1.8)
+                    response(63, 14, 1.8)
+                }
+                5 -> {
+                    for (tick in listOf(0, 3, 6, 8, 12)) response(63, tick, if (tick == 8) 3.7 else 1.9)
+                    response(61, 14, 17.6)
+                }
+                7 -> {
+                    response(61, 6, 1.9)
+                    response(61, 8, 3.7)
+                    response(58, 12, 1.9)
+                    response(58, 14, 1.9)
+                }
+            }
+        }
+        val rap = part == FloorPart.Call || part == FloorPart.Break || part == FloorPart.Reentry
+        if (rap) {
+            // Without a pitched rapper the octave bass carries the riff. Avoid a second
+            // top line or sustained minor triads filling the gaps between its answers.
+            for ((index, tone) in melody.tones.withIndex()) {
+                val (offset, pitch) = tone
+                val next = melody.tones.getOrNull(index + 1)?.first ?: 16
+                val end = melody.restAt?.takeIf { it in (offset + 1) until next } ?: next
+                add(BackingVoice.Bass, pitch - if (pitch < 60) 12 else 24, offset.toDouble(),
+                    (end - offset) * .84, if (offset == 0) .73f else .59f)
+                if (part == FloorPart.Call && local == 1) {
+                    add(BackingVoice.Keys, 58, offset.toDouble(), (end - offset) * .84, .38f)
+                }
+            }
+            for (beat in 0..3) {
+                val tick = beat * 4.0
+                if (beat == 0 || (part != FloorPart.Break && beat == 2)) {
+                    add(BackingVoice.Kick, 36, tick, 1.62, .75f * part.drums)
+                }
+                if (beat % 2 == 1) add(BackingVoice.Snare, 37, tick, .82, .54f * part.drums)
+                if (local >= 2) add(BackingVoice.Hat, 42, tick + 2.0, .62, .29f * part.drums)
+            }
+            continue
+        }
+        val thin = part == FloorPart.Intro && local < 2
+        val drop = part == FloorPart.Hook || part == FloorPart.Final
         val turn = local % 4 == 3
-        val build = part == FloorPart.Rise || part == FloorPart.Reentry
+        val build = part == FloorPart.Rise
         for ((voice, pitch) in chord.inner.withIndex()) {
             val pad = if (thin) .37f else if (drop) .29f else .23f
             add(BackingVoice.Pad, pitch, .055 * voice, if (last) 15.3 else 14.75, pad)
+        }
+        if (part == FloorPart.Chorus || part == FloorPart.Turn) {
+            for (offset in listOf(0, 3, 6, 10, 14)) {
+                add(BackingVoice.Keys, chord.bass + 12, offset.toDouble(), 1.72, .51f)
+            }
+            add(BackingVoice.Bass, chord.bass, 0.0, 14.8, .50f)
+            continue
         }
         if (last) {
             add(BackingVoice.Bass, chord.bass, 0.0, 5.7, .70f)
@@ -201,7 +269,7 @@ private fun floorChart(): Chart {
             build -> .74f + .035f * local
             else -> 1f
         }
-        val leaveSpace = (build && nextPassage != passage) || (part == FloorPart.Break && local == 3)
+        val leaveSpace = build && nextPassage != passage
         for (beat in 0..3) {
             if (leaveSpace && beat >= 2) break
             val tick = beat * 4.0
@@ -254,5 +322,5 @@ private fun floorChart(): Chart {
 internal val onTheFloorSong = Song.arranged(
     id = "on-the-floor", title = "On the Floor", artist = "Jennifer Lopez ft. Pitbull",
     bpm = floorBpm, durationMs = floorTime(floorBars * 16.0 + pickupTicks) + 800,
-    backingAsset = "backing/on-the-floor.m4a", bundledRevision = 5, load = ::floorChart,
+    backingAsset = "backing/on-the-floor.m4a", bundledRevision = 6, load = ::floorChart,
 )

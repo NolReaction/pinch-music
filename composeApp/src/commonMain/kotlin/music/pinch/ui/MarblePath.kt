@@ -218,16 +218,18 @@ internal class MarblePath(chart: Chart) {
         var lastTurn = -4
         var spin = entry.spin(1f) % (2f * kotlin.math.PI.toFloat())
         for (i in 2..times.lastIndex) {
-            val seconds = (times[i] - times[i - 1]) / 1000f
+            val gapMs = times[i] - times[i - 1]
+            val seconds = gapMs / 1000f
             val note = attacks.getOrNull(i - 2)
             val target = attacks.getOrNull(i - 1)
             val interval = if (note != null && target != null) target.midi - note.midi else 0
             // Turn below the old bank after a deep descent. Keep the return and its
             // immediate follow-up airborne arcs short enough to clear the bank above.
+            // An eighth note can start the new phrase. Its onsets are rounded to milliseconds.
             val nextGap = if (i + 1 < times.lastIndex) times[i + 1] - times[i] else 0L
             if (i >= 3 && target != null && i - lastTurn >= 4 &&
                 centers.last().y - centers[centers.lastIndex - 1].y > 1.62f &&
-                seconds * 1000 in (.65 * beatMs)..(1.12 * beatMs) &&
+                gapMs.toDouble() in (.5 * beatMs - 1.0)..(1.12 * beatMs) &&
                 nextGap <= 1.65 * beatMs) {
                 val desired = phraseDirection(attacks, i - 2, beatMs)
                 if (desired != 0 && desired != heading) {

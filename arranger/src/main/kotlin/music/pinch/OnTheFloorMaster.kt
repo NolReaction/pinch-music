@@ -9,6 +9,7 @@ import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sin
+import kotlin.math.sqrt
 import music.pinch.core.BackingNote
 import music.pinch.core.BackingVoice
 import music.pinch.core.Chart
@@ -31,18 +32,11 @@ private fun sample(table: FloatArray, phase: Int): Float {
 
 /** One period per pitch and registration. Leave headroom for harmonics and omit partials above Nyquist. */
 private fun leadTable(voice: FloorLeadVoice, hz: Double): FloatArray {
-    val harmonics = when (voice) {
+    val harmonics = if (voice == FloorLeadVoice.Reed) {
         // The upper octave and fifth carry the accordion hook over the bass and kick.
-        FloorLeadVoice.Reed -> doubleArrayOf(.89, 1.04, 1.01, .47, .45, .28, .19, .14, .09, .055)
-        FloorLeadVoice.Pluck -> doubleArrayOf(1.0, .42, .21, .075, .04, .025)
-        FloorLeadVoice.Brass -> doubleArrayOf(.79, .76, .60, .37, .27, .15, .09, .04)
-        FloorLeadVoice.Vocal -> DoubleArray(14) { index ->
-            val partial = index + 1
-            val f = partial * hz
-            fun formant(center: Double, width: Double) = exp(-((f - center) / width).pow(2))
-            if (partial == 1) .98 else (.80 * formant(705.0, 260.0) + .65 * formant(1310.0, 335.0) +
-                .40 * formant(2570.0, 475.0) + .12) / partial.toDouble().pow(.60)
-        }
+        doubleArrayOf(.89, 1.04, 1.01, .47, .45, .28, .19, .14, .09, .055)
+    } else {
+        doubleArrayOf(.79, .76, .60, .37, .27, .15, .09, .04)
     }
     val table = FloatArray(TableSize + 1)
     for ((i, amplitude) in harmonics.withIndex()) {
@@ -94,33 +88,26 @@ private class FloorStudio(val score: Chart) {
 
     fun lead(note: Note) {
         val voice = floorLeadVoiceAt(note.atMs)
+        // Both the calls and the sung melody are interpreted by the same piano.
+        if (voice == FloorLeadVoice.Pluck || voice == FloorLeadVoice.Vocal) {
+            val mono = piano(note.midi, note.durationMs, note.velocity)
+            placePiano(mono, frames(note.atMs), .88f * note.velocity, -.035)
+            return
+        }
         val hz = frequency(note.midi)
         val tone = tables.getOrPut(voice to note.midi) { leadTable(voice, hz) }
         val gate = frames(note.durationMs)
-        val attackMs = when (voice) {
-            FloorLeadVoice.Pluck -> 3L
-            FloorLeadVoice.Reed -> 7L
-            FloorLeadVoice.Vocal -> 12L
-            FloorLeadVoice.Brass -> 10L
-        }
-        val tailMs = when (voice) {
-            FloorLeadVoice.Pluck -> 100L
-            FloorLeadVoice.Vocal -> 86L
-            else -> 55L
-        }
+        val reed = voice == FloorLeadVoice.Reed
+        val attackMs = if (reed) 7L else 10L
+        val tailMs = 55L
         val mono = FloatArray(gate + frames(tailMs))
-        val reedSides = if (voice == FloorLeadVoice.Reed) FloatArray(mono.size) else null
+        val reedSides = if (reed) FloatArray(mono.size) else null
         val attack = 1f - decay(attackMs * .00040)
         val release = decay(tailMs * .00017)
-        val pluckDecay = decay(.23)
+        val brightnessDecay = decay(.23)
         val scoopDecay = decay(.021)
-        val separation = when (voice) {
-            FloorLeadVoice.Reed -> 1.0048
-            FloorLeadVoice.Vocal -> 1.0014
-            FloorLeadVoice.Pluck -> 1.0022
-            FloorLeadVoice.Brass -> .9970
-        }
-        val vibratoStep = step(if (voice == FloorLeadVoice.Vocal) 5.05 else 5.67)
+        val separation = if (reed) 1.0048 else .9970
+        val vibratoStep = step(5.67)
         val pitchStep = step(hz)
         var centerPhase = 0
         var rankPhase = step(hz * .09)
@@ -131,7 +118,7 @@ private class FloorStudio(val score: Chart) {
         var vibratoPhase = 0
         var pressure = 0f
         var brightness = 1f
-        var scoop = if (voice == FloorLeadVoice.Vocal) .016f else .004f
+        var scoop = .004f
         for (i in mono.indices) {
             pressure = if (i < gate) pressure + attack * (1f - pressure) else pressure * release
             val vibrato = .0030f * min(1f, i / 5300f) * sample(sine, vibratoPhase)
@@ -143,29 +130,22 @@ private class FloorStudio(val score: Chart) {
             val main = sample(tone, centerPhase)
             val rank = sample(tone, rankPhase)
             val fundamental = sample(sine, centerPhase)
-            val colour = when (voice) {
-                FloorLeadVoice.Reed -> {
-                    lowerPhase += (delta * .9956).toInt()
-                    val lower = sample(tone, lowerPhase)
-                    reedSides?.set(i, .43f * (rank - lower) * pressure)
-                    .65f * main + .175f * (rank + lower)
-                }
-                FloorLeadVoice.Pluck -> (.69f * main + .31f * rank) * (.28f + .72f * brightness) +
-                    .16f * brightness * sample(sine, centerPhase * 3)
-                FloorLeadVoice.Vocal -> .76f * main + .24f * rank
-                FloorLeadVoice.Brass -> (.70f * main + .30f * rank) * (1f - .28f * brightness) +
+            val colour = if (reed) {
+                lowerPhase += (delta * .9956).toInt()
+                val lower = sample(tone, lowerPhase)
+                reedSides?.set(i, .43f * (rank - lower) * pressure)
+                .65f * main + .175f * (rank + lower)
+            } else {
+                (.70f * main + .30f * rank) * (1f - .28f * brightness) +
                     fundamental * (.28f * brightness)
             }
-            mono[i] = colour * pressure
-            brightness *= pluckDecay
+            val end = min(1f, (mono.lastIndex - i) / (FloorRate * .006f))
+            mono[i] = colour * pressure * end
+            if (reedSides != null) reedSides[i] *= end
+            brightness *= brightnessDecay
         }
         val start = frames(note.atMs)
-        val gain = note.velocity * when (voice) {
-            FloorLeadVoice.Pluck -> .49f
-            FloorLeadVoice.Brass -> .57f
-            FloorLeadVoice.Reed -> .69f
-            else -> .58f
-        }
+        val gain = note.velocity * if (reed) .69f else .57f
         place(mono, start, gain, -.035)
         if (reedSides != null) {
             place(reedSides, start, gain, -1.0)
@@ -185,12 +165,15 @@ private class FloorStudio(val score: Chart) {
             BackingVoice.Snare -> 105L
             BackingVoice.Hat -> 32L
             BackingVoice.Pad -> 135L
-            BackingVoice.Keys -> 72L
+            BackingVoice.Keys -> 720L
             BackingVoice.Bass -> 30L
         }
         val size = gate + frames(tailMs)
-        val mono = if (voice == BackingVoice.Kick || voice == BackingVoice.Snare || voice == BackingVoice.Hat)
-            drum(note, size) else harmony(note, size)
+        val mono = when (voice) {
+            BackingVoice.Kick, BackingVoice.Snare, BackingVoice.Hat -> drum(note, size)
+            BackingVoice.Keys -> piano(note.midi, note.durationMs, note.velocity)
+            else -> harmony(note, size)
+        }
         val start = frames(note.atMs)
         when (voice) {
             BackingVoice.Kick -> place(mono, start, .75f * note.velocity, 0.0)
@@ -200,13 +183,75 @@ private class FloorStudio(val score: Chart) {
             }
             BackingVoice.Hat -> place(mono, start, .48f * note.velocity, if (note.midi == 70) -.38 else .31)
             BackingVoice.Bass -> place(mono, start, .52f * note.velocity, 0.0, .40f)
-            BackingVoice.Keys, BackingVoice.Pad -> {
+            BackingVoice.Keys -> {
+                val pan = ((note.midi - 60) / 36.0).coerceIn(-.55, .55)
+                placePiano(mono, start, .57f * note.velocity, pan)
+            }
+            BackingVoice.Pad -> {
                 val pan = ((note.midi * 7 % 17) - 8) / 13.0
-                val gain = (if (voice == BackingVoice.Keys) .46f else .28f) * note.velocity
+                val gain = .28f * note.velocity
                 place(mono, start, gain, pan, .31f)
                 place(mono, start + frames(22), gain * .14f, -pan, .31f)
             }
         }
+    }
+
+    /** A struck string loses its bright overtones first; the damper then closes over the body.
+     * Each partial has its own slightly stiff frequency and two nearly unison strings.
+     * This keeps a short written articulation from chopping the waveform at the next key. */
+    private fun piano(midi: Int, durationMs: Long, velocity: Float): FloatArray {
+        val gate = frames(durationMs)
+        val tail = frames(720)
+        val mono = FloatArray(gate + tail)
+        val hz = frequency(midi)
+        val stiffness = .000035 * 2.0.pow((midi - 60) / 18.0)
+        val fundamentalCorrection = sqrt(1.0 + stiffness)
+        val registerDecay = 1.85 * 2.0.pow((60 - midi) / 28.0)
+        val weights = doubleArrayOf(.92, .62, .37, .21, .15, .080, .065, .045, .025, .024, .018, .012)
+        for ((index, weight) in weights.withIndex()) {
+            val partial = index + 1
+            val partialHz = hz * partial * sqrt(1.0 + stiffness * partial * partial) / fundamentalCorrection
+            if (partialHz >= FloorRate * .46) break
+            val inc = step(partialHz)
+            val unisonInc = step(partialHz * 1.00064)
+            val phaseOffset = (.18 * sin(partial * 1.43) * Cycle / (2 * PI)).toInt()
+            var phase = phaseOffset
+            var unisonPhase = phaseOffset
+            val brightness = (.62 + .65 * velocity).pow((partial - 1) * .52)
+            val amplitude = (weight * brightness / 1.72).toFloat()
+            var body = amplitude * .76f
+            var hammer = amplitude * .24f
+            val bodyDecay = decay(registerDecay / partial.toDouble().pow(.68))
+            val hammerDecay = decay(.075 / partial.toDouble().pow(.31))
+            for (i in mono.indices) {
+                phase += inc
+                unisonPhase += unisonInc
+                mono[i] += (.58f * sample(sine, phase) + .42f * sample(sine, unisonPhase)) * (body + hammer)
+                body *= bodyDecay
+                hammer *= hammerDecay
+            }
+        }
+        val attack = 1f - decay(.0017)
+        val damper = decay(.120)
+        var open = 0f
+        var release = 1f
+        for (i in mono.indices) {
+            open += (1f - open) * attack
+            if (i >= gate) release *= damper
+            // The residual is already below -50 dB. Bring the last 10 ms precisely to zero.
+            val end = min(1f, (mono.lastIndex - i) / (FloorRate * .010f))
+            mono[i] *= open * release * end
+        }
+        return mono
+    }
+
+    private fun placePiano(mono: FloatArray, start: Int, gain: Float, pan: Double) {
+        place(mono, start, gain, pan, .12f)
+        // A few quiet, decorrelated room returns preserve the attack and connect the releases.
+        place(mono, start + frames(37), gain * .075f, .65)
+        place(mono, start + frames(61), gain * .055f, -.61)
+        place(mono, start + frames(97), gain * .032f, -.25)
+        place(mono, start + frames(139), gain * .020f, .29)
     }
 
     private fun harmony(note: BackingNote, size: Int): FloatArray {
@@ -217,7 +262,6 @@ private class FloorStudio(val score: Chart) {
         val attack = 1f - decay(if (kind == BackingVoice.Pad) .052 else .0035)
         val release = decay(when (kind) {
             BackingVoice.Pad -> .022
-            BackingVoice.Keys -> .013
             else -> .005
         })
         val damping = decay(if (kind == BackingVoice.Bass) .095 else .14)
@@ -233,8 +277,6 @@ private class FloorStudio(val score: Chart) {
             val sample = when (kind) {
                 BackingVoice.Bass -> .77f * f + (.16f + .08f * bright) * sample(sine, phase * 2) +
                     .095f * bright * sample(sine, phase * 3)
-                BackingVoice.Keys -> (.72f * f + bright * (.31f * sample(sine, phase * 2) +
-                    .22f * sample(sine, phase * 3))) * (.20f + .8f * bright)
                 else -> .51f * f + .32f * sample(sine, rank) + .17f * sample(sine, phase * 3)
             }
             bright *= damping
