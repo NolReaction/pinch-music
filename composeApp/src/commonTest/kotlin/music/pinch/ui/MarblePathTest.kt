@@ -78,6 +78,25 @@ class MarblePathTest {
         }
     }
 
+    @Test fun repeatedPitchPhrasesCanReturnAfterAFullTurnWithoutLosingClearance() {
+        // An organ ostinato can repeat the same chord top through an entire section.
+        // Its long/short articulation supplies safe turnaround gaps, even though
+        // pitch lookahead is always zero and cannot request a new direction.
+        val notes = (0 until 12).flatMap { bar ->
+            listOf(0L, 875L, 1625L).mapIndexed { hit, offset ->
+                Note("ostinato-$bar-$hit", bar * 2000L + offset, 64, 180L, .8f)
+            }
+        }
+        val path = MarblePath(Chart("Repeated organ", 120, 24_500L, notes))
+        fun angle(point: StagePoint) = atan2(point.x / 2.12f, (point.z - .78f) / .94f)
+        val headings = path.spans.drop(1).dropLast(1).map { span ->
+            val delta = angle(span.ball(1f)) - angle(span.ball(0f))
+            atan2(sin(delta), cos(delta)) > 0f
+        }
+        assertTrue(headings.zipWithNext().count { (a, b) -> a != b } >= 2)
+        checkPanelClearance(path)
+    }
+
     @Test fun airborneSegmentsUseGravityAndConstantHorizontalVelocity() {
         val path = MarblePath(chart(listOf(0, 118, 354, 826), 1340L))
         for (run in path.spans.drop(1).dropLast(1).filter { it.durationMs > 0 }) {

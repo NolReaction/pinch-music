@@ -121,5 +121,8 @@ internal object AppleRecordings {
     }
 
     fun remove(id: String) { unlink("$directory/${importFilename(id)}") }
-    fun track(id: String) = ArrangementTrack("$directory/${importFilename(id)}")
+    fun track(id: String): ArrangementTrack? {
+        val path = "$directory/${importFilename(id)}"
+        return if (NSFileManager.defaultManager.fileExistsAtPath(path)) ArrangementTrack(path) else null
+    }
 }

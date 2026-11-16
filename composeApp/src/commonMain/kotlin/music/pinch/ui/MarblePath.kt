@@ -216,28 +216,32 @@ internal class MarblePath(chart: Chart) {
         centers.add(first)
         integratedX[1] = entry.durationMs * (centers[0].x + first.x).toDouble() / 2
         var lastTurn = -4
+        var protectFollowUp = false
         var spin = entry.spin(1f) % (2f * kotlin.math.PI.toFloat())
         for (i in 2..times.lastIndex) {
+            val protectedReturn = protectFollowUp
+            protectFollowUp = false
             val gapMs = times[i] - times[i - 1]
             val seconds = gapMs / 1000f
             val note = attacks.getOrNull(i - 2)
             val target = attacks.getOrNull(i - 1)
             val interval = if (note != null && target != null) target.midi - note.midi else 0
-            // Turn below the old bank after a deep descent. Keep the return and its
-            // immediate follow-up airborne arcs short enough to clear the bank above.
-            // An eighth note can start the new phrase. Its onsets are rounded to milliseconds.
+            // Turn below the old bank after a deep descent. The return itself is
+            // short; a longer following gap gets a supporting rail so it cannot
+            // leap back into the bank above. An eighth note can start the new phrase.
             val nextGap = if (i + 1 < times.lastIndex) times[i + 1] - times[i] else 0L
             if (i >= 3 && target != null && i - lastTurn >= 4 &&
                 centers.last().y - centers[centers.lastIndex - 1].y > 1.62f &&
-                gapMs.toDouble() in (.5 * beatMs - 1.0)..(1.12 * beatMs) &&
-                nextGap <= 1.65 * beatMs) {
+                gapMs.toDouble() in (.5 * beatMs - 1.0)..(1.12 * beatMs)) {
                 val desired = phraseDirection(attacks, i - 2, beatMs)
-                // A repeated contour can start a return once the previous phrase has
-                // wound all the way around the installation.
+                // Repeated chord tops can have no melodic contour at all. After a
+                // complete turn they still need a return phrase; the clearance and
+                // gap guards above remain responsible for making that turn safe.
                 val sweep = abs(angles[i - 1] - angles[maxOf(1, lastTurn - 1)])
-                if (desired != 0 && (desired != heading || sweep >= 2 * kotlin.math.PI)) {
+                if ((desired != 0 && desired != heading) || sweep >= 2 * kotlin.math.PI) {
                     heading = -heading
                     lastTurn = i
+                    protectFollowUp = nextGap > 1.65 * beatMs
                 }
             }
             val reach = min(8, abs(interval)) / 8f
@@ -254,7 +258,7 @@ internal class MarblePath(chart: Chart) {
             val headroom = if (i > 2) previous.y - centers[centers.lastIndex - 1].y else Float.POSITIVE_INFINITY
             val reachesUpperBank = gapMs >= 1.25 * beatMs &&
                 risingHeight > 2f * MarbleRadius && risingHeight + MarbleRadius > headroom
-            val guided = !catcher && (contacts.hasGuideAfter(i - 2) || reachesUpperBank)
+            val guided = !catcher && (protectedReturn || contacts.hasGuideAfter(i - 2) || reachesUpperBank)
             val span = OrbitRun(times[i - 1], times[i], previous, next, angles[i - 1], angles[i], spin, guided)
             sections.add(span)
             spin = span.spin(1f) % (2f * kotlin.math.PI.toFloat())

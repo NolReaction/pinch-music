@@ -15,11 +15,19 @@ import music.pinch.core.Chart
 import music.pinch.core.Note
 
 internal enum class DanceStyle { GypsyWoman, Levels }
-internal enum class DanceLeadVoice { OrganStab, OrganMelody, Piano, Synth }
+internal enum class DanceLeadVoice { OrganStab, ElectricPiano, Mallet, PluckedString, Piano, Synth }
 
 internal fun danceLeadVoice(style: DanceStyle, atMs: Long): DanceLeadVoice = when (style) {
-    DanceStyle.GypsyWoman -> if (gypsyOrganLeadAt(atMs)) DanceLeadVoice.OrganStab else DanceLeadVoice.OrganMelody
-    DanceStyle.Levels -> if (levelsSoftLeadAt(atMs)) DanceLeadVoice.Piano else DanceLeadVoice.Synth
+    DanceStyle.GypsyWoman -> when (gypsyTextureAt(atMs)) {
+        GypsyTexture.Organ -> DanceLeadVoice.OrganStab
+        GypsyTexture.ElectricPiano -> DanceLeadVoice.ElectricPiano
+        GypsyTexture.Mallet -> DanceLeadVoice.Mallet
+    }
+    DanceStyle.Levels -> when {
+        atMs * requireNotNull(levelsSong.bundledBpm) < 16L * 60_000 -> DanceLeadVoice.PluckedString
+        levelsSoftLeadAt(atMs) -> DanceLeadVoice.Piano
+        else -> DanceLeadVoice.Synth
+    }
 }
 
 private const val DanceRate = 32_000
@@ -67,8 +75,10 @@ internal class DanceStudio(chart: Chart, private val style: DanceStyle) {
     }
 
     fun leadSamples(note: Note): FloatArray = when (danceLeadVoice(style, note.atMs)) {
-        DanceLeadVoice.OrganStab -> organ(note.midi, note.durationMs)
-        DanceLeadVoice.OrganMelody -> organ(note.midi, note.durationMs, lyrical = true)
+        DanceLeadVoice.OrganStab -> organ(note.midi, note.durationMs, note.atMs, note.velocity)
+        DanceLeadVoice.ElectricPiano -> studioElectricPiano(note.midi, note.durationMs, note.velocity)
+        DanceLeadVoice.Mallet -> studioMallet(note.midi, note.durationMs, note.velocity)
+        DanceLeadVoice.PluckedString -> studioPluckedString(note.midi, note.durationMs, note.velocity)
         DanceLeadVoice.Piano -> studioPiano(note.midi, note.durationMs, note.velocity)
         DanceLeadVoice.Synth -> levelsSynth(note.midi, note.durationMs)
     }
@@ -77,12 +87,13 @@ internal class DanceStudio(chart: Chart, private val style: DanceStyle) {
         val start = danceFrames(note.atMs)
         val tone = leadSamples(note)
         if (style == DanceStyle.GypsyWoman) {
-            // The verse enters at 8.875 s. Keep it in the organ's family instead of
-            // introducing a bright acoustic piano over the existing house riff.
-            // The sung reduction keeps its own notes, but uses softer drawbars and
-            // a longer breath so it sits inside the same performance.
-            val lyrical = !gypsyOrganLeadAt(note.atMs)
-            val gain = (if (lyrical) .57f else .72f) * note.velocity
+            // The riff remains the foreground throughout. Material changes are
+            // deliberate eight-bar sections, always playing the same harmonic role.
+            val gain = when (gypsyTextureAt(note.atMs)) {
+                GypsyTexture.Organ -> .54f
+                GypsyTexture.ElectricPiano -> .57f
+                GypsyTexture.Mallet -> .79f
+            } * note.velocity
             place(tone, start, gain, -.025, .10f)
             place(tone, start + danceFrames(29), gain * .070f, .58)
             place(tone, start + danceFrames(53), gain * .045f, -.58)
@@ -103,15 +114,38 @@ internal class DanceStudio(chart: Chart, private val style: DanceStyle) {
         when (note.voice) {
             BackingVoice.Keys -> {
                 val pan = ((note.midi - 60) / 34.0).coerceIn(-.50, .50)
-                place(chordVoice(note.midi, note.durationMs), start, .37f * note.velocity, pan, .10f)
+                val tone = if (style == DanceStyle.GypsyWoman) when (gypsyTextureAt(note.atMs)) {
+                    GypsyTexture.Organ -> organ(note.midi, note.durationMs, note.atMs, note.velocity)
+                    GypsyTexture.ElectricPiano, GypsyTexture.Mallet ->
+                        studioElectricPiano(note.midi, note.durationMs, note.velocity)
+                } else chordVoice(note.midi, note.durationMs)
+                val gain = if (style == DanceStyle.GypsyWoman) when (gypsyTextureAt(note.atMs)) {
+                    GypsyTexture.ElectricPiano -> .31f
+                    GypsyTexture.Mallet -> .36f
+                    GypsyTexture.Organ -> .39f
+                } else .39f
+                place(tone, start, gain * note.velocity, pan, .10f)
+                place(tone, start + danceFrames(37), .022f * note.velocity, -pan, .10f)
             }
             BackingVoice.Pad -> {
-                val tone = pad(note.midi, note.durationMs)
+                val colour = if (style == DanceStyle.GypsyWoman) gypsyColourAt(note.atMs) else GypsyColour.Strings
+                val tone = when (colour) {
+                    GypsyColour.Plucked -> studioPluckedString(note.midi, note.durationMs, note.velocity)
+                    GypsyColour.Mallet -> studioMallet(note.midi, note.durationMs, note.velocity)
+                    GypsyColour.Strings -> pad(note.midi, note.durationMs)
+                }
                 val pan = ((note.midi * 7 % 17) - 8) / 15.0
-                place(tone, start, .27f * note.velocity, pan, .20f)
+                place(tone, start, (if (colour == GypsyColour.Strings) .27f else .60f) * note.velocity, pan, .20f)
                 place(tone, start + danceFrames(31), .035f * note.velocity, -pan)
             }
-            BackingVoice.Bass -> place(bass(note), start, .69f * note.velocity, 0.0, .39f)
+            BackingVoice.Bass -> {
+                place(bass(note), start, .66f * note.velocity, 0.0, .39f)
+                if (style == DanceStyle.GypsyWoman) {
+                    // A small upper-octave string body keeps the bass legible on a phone speaker.
+                    place(studioPluckedString(note.midi + 12, note.durationMs, note.velocity),
+                        start, .11f * note.velocity, 0.0, .39f)
+                }
+            }
             BackingVoice.Kick -> place(drum(note), start, .79f * note.velocity)
             BackingVoice.Snare -> {
                 val tone = drum(note)
@@ -130,30 +164,40 @@ internal class DanceStudio(chart: Chart, private val style: DanceStyle) {
         DanceStyle.Levels -> levelsSynth(midi, durationMs)
     }
 
-    private fun organ(midi: Int, durationMs: Long, lyrical: Boolean = false): FloatArray {
+    private fun organ(midi: Int, durationMs: Long, atMs: Long = 0, velocity: Float = .8f): FloatArray {
         val gate = danceFrames(durationMs)
-        val result = FloatArray(gate + danceFrames(if (lyrical) 440 else 300))
+        val result = FloatArray(gate + danceFrames(380))
         val inc = danceStep(danceHz(midi))
-        var phase = 0
+        // Free-running tonewheels and a restrained chorus keep repeated stabs from
+        // being identical phase-reset beeps, while the written attack stays exact.
+        var phase = (danceFrames(atMs).toLong() * inc).toInt()
+        val rankInc = danceStep(danceHz(midi) * 1.0009)
+        var rank = phase + 0x18000000
+        val rotorStep = danceStep(3.15)
+        var rotor = (danceFrames(atMs).toLong() * rotorStep).toInt()
         var key = 1f
         var body = 1f
         var envelope = 0f
-        val keyDecay = danceDecay(.065)
-        val bodyDecay = danceDecay(if (lyrical) 2.8 else 1.15)
-        val attack = 1f - danceDecay(if (lyrical) .0065 else .0025)
-        val release = danceDecay(if (lyrical) .072 else .049)
+        val keyDecay = danceDecay(.038)
+        val bodyDecay = danceDecay(.83)
+        val attack = 1f - danceDecay(.0027)
+        val release = danceDecay(.061)
         val hz = danceHz(midi)
+        val touch = .55f + .45f * velocity
         for (i in result.indices) {
             phase += inc
+            rank += rankInc
+            rotor += rotorStep
             envelope = if (i < gate) envelope + attack * (1f - envelope) else envelope * release
-            var tone = (if (lyrical) .88f else .78f) * danceSample(danceSine, phase)
-            if (hz * 2 < DanceRate * .46) tone += (if (lyrical) .25f + .10f * key else .34f + .27f * key) *
-                danceSample(danceSine, phase * 2)
-            if (hz * 3 < DanceRate * .46) tone += (if (lyrical) .08f else .19f) * key * danceSample(danceSine, phase * 3)
-            if (hz * 4 < DanceRate * .46) tone += (if (lyrical) .035f else .10f + .15f * key) *
-                danceSample(danceSine, phase * 4)
-            if (hz * 6 < DanceRate * .46) tone += (if (lyrical) .012f else .055f) * key * danceSample(danceSine, phase * 6)
-            result[i] = tone * envelope * (.22f + .78f * body) * .72f * endFade(i, result.size)
+            val main = .85f * danceSample(danceSine, phase) + .15f * danceSample(danceSine, rank)
+            var tone = .86f * main
+            if (hz * 2 < DanceRate * .46) tone += (.34f + .23f * key * touch) * danceSample(danceSine, phase * 2)
+            if (hz * 3 < DanceRate * .46) tone += (.095f + .075f * key * touch) * danceSample(danceSine, phase * 3)
+            if (hz * 4 < DanceRate * .46) tone += (.065f + .09f * key * touch) * danceSample(danceSine, phase * 4)
+            if (hz * 6 < DanceRate * .46) tone += .035f * key * danceSample(danceSine, phase * 6)
+            val rounded = tone / (1f + .16f * abs(tone))
+            val motion = .97f + .03f * danceSample(danceSine, rotor)
+            result[i] = rounded * envelope * (.28f + .72f * body) * motion * .82f * endFade(i, result.size)
             key *= keyDecay
             body *= bodyDecay
         }
@@ -252,10 +296,12 @@ internal class DanceStudio(chart: Chart, private val style: DanceStyle) {
     private fun drum(note: BackingNote): FloatArray {
         val kick = note.voice == BackingVoice.Kick
         val snare = note.voice == BackingVoice.Snare
+        val rim = snare && note.midi == 37
         val open = note.midi == 46
         val shaker = note.midi == 70
         val size = danceFrames(when {
             kick -> 390L
+            rim -> 165L
             snare -> 300L
             open -> 410L
             else -> 160L
@@ -263,6 +309,7 @@ internal class DanceStudio(chart: Chart, private val style: DanceStyle) {
         val result = FloatArray(size)
         val decay = danceDecay(when {
             kick -> .095
+            rim -> .021
             snare -> .048
             open -> .066
             shaker -> .029
@@ -276,7 +323,7 @@ internal class DanceStudio(chart: Chart, private val style: DanceStyle) {
         var random = note.atMs.toInt() * 1103515245 + note.midi * 7919
         var phase = 0
         var sweep = danceStep(112.0).toFloat()
-        val base = danceStep(if (kick) 49.0 else 185.0)
+        val base = danceStep(when { kick -> 49.0; rim -> 760.0; else -> 185.0 })
         var envelope = 1f
         var click = 1f
         var slap = 1f
@@ -291,6 +338,7 @@ internal class DanceStudio(chart: Chart, private val style: DanceStyle) {
             phase += base + if (kick) sweep.toInt() else 0
             val tone = when {
                 kick -> danceSample(danceSine, phase) + .17f * click * high
+                rim -> .61f * danceSample(danceSine, phase) + .18f * danceSample(danceSine, phase * 2) + .16f * click * high
                 snare -> {
                     if (i == clapTwo || i == clapThree) slap = .94f
                     (.76f * air + .44f * high) * (.58f + .66f * slap) + .13f * danceSample(danceSine, phase)

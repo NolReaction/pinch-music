@@ -55,11 +55,28 @@ final class AppleCascadeDisplay: NSObject, @preconcurrency AppleCascadeSurface, 
         canvas.isOpaque = true
         canvas.drawableDepthFormat = .format16
         canvas.drawableColorFormat = .RGBA8888
+        // GLKView owns the multisample buffers, resolve and resize lifecycle.
+        // Keep the bounded raster size: MSAA improves edges without rendering
+        // the expensive material shader at the screen's full 3× resolution.
+        canvas.drawableMultisample = Self.multisampling(for: context)
         canvas.enableSetNeedsDisplay = true
         let center = NotificationCenter.default
         center.addObserver(self, selector: #selector(suspendStage), name: UIApplication.willResignActiveNotification, object: nil)
         center.addObserver(self, selector: #selector(releaseStage), name: UIApplication.didEnterBackgroundNotification, object: nil)
         center.addObserver(self, selector: #selector(resumeStage), name: UIApplication.didBecomeActiveNotification, object: nil)
+    }
+
+    private static func multisampling(for context: EAGLContext) -> GLKViewDrawableMultisample {
+        let previous = EAGLContext.current()
+        guard EAGLContext.setCurrent(context) else { return .multisampleNone }
+        defer { EAGLContext.setCurrent(previous) }
+        guard let bytes = glGetString(GLenum(GL_EXTENSIONS)),
+              String(cString: bytes).split(separator: " ").contains("GL_APPLE_framebuffer_multisample") else {
+            return .multisampleNone
+        }
+        var samples: GLint = 0
+        glGetIntegerv(GLenum(GL_MAX_SAMPLES_APPLE), &samples)
+        return samples >= 4 ? .multisample4X : .multisampleNone
     }
 
     func setCourse(keys: Data, rails: Data, onPresented: @escaping () -> Void) {

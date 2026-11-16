@@ -1,6 +1,8 @@
 package music.pinch
 
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -29,9 +31,12 @@ internal class Session(
     private companion object {
         // One UI-thread writer per legacy file, including across application windows.
         val restoring = mutableSetOf<String>()
+        val instrumentalWriter = Mutex()
+        val instrumentalWrites = mutableMapOf<String, Int>()
     }
     private val catalog = PersonalCatalog(platform, songs)
-    private class Selection(val source: Chart, val landings: Chart, val importHash: Int? = null)
+    private class Selection(val source: Chart, val landings: Chart, val importHash: Int? = null,
+        val mode: ImportMode = ImportMode.Original)
     private val selections = mutableMapOf<String, Selection>()
     private var loadingScore: Job? = null
     private var importingSong: Job? = null
@@ -97,6 +102,8 @@ internal class Session(
         val recorded = catalog.entries.filter { it.hasRecording }.mapTo(mutableSetOf()) { it.id }
         return state.copy(songs = tracks, importedIds = personal, favoriteIds = catalog.favorites,
             recordedImportIds = recorded,
+            importMode = selections[state.selectedSong.id]?.mode
+                ?: catalog.entries.find { it.id == state.selectedSong.id }?.mode ?: ImportMode.Original,
             availableIds = tracks.filter { it.hasBundled && it.backingAsset != null }.mapTo(recorded.toMutableSet()) { it.id })
     }
 
@@ -105,13 +112,13 @@ internal class Session(
         courseTask?.cancel()
         courseTask = null
         val song = state.selectedSong
-        val cached = selections[song.id]
+        val entry = catalog.entries.find { it.id == song.id }
+        val cached = selections[song.id]?.takeIf { entry == null || it.mode == entry.mode }
         if (cached != null) {
             installSelection(song, cached)
             return
         }
         state = menuAvailability().copy(chart = null, bestScore = null)
-        val entry = catalog.entries.find { it.id == song.id }
         if (entry == null && song.id !in state.availableIds) return
         val eager = song.suppliedChart
         if (entry == null && eager != null) {
@@ -126,9 +133,12 @@ internal class Session(
                         Selection(source, source.cascadeChart())
                     } else {
                         val raw = requireNotNull(platform.readValue(entry.chartKey))
-                        val source = decodeChart(raw, song.title)
-                        Selection(source, source.cascadeChart(), encodeChart(source).hashCode())
+                        importedSelection(decodeChart(raw, song.title), entry.mode)
                     }
+                }
+                if (entry != null) {
+                    check(platform.readValue(entry.chartKey) != null) { "Запись удалена из каталога." }
+                    if (entry.mode == ImportMode.Instrumental) ensureInstrumentalRecording(entry.id, selection.source)
                 }
                 installSelection(song, selection)
             } catch (e: CancellationException) {
@@ -153,7 +163,7 @@ internal class Session(
         val entry = catalog.entries.find { it.id == song.id }
         val recordOwner = entry?.storageId ?: song.id
         recordKey = "record.landings.v1.${mode.name}.$recordOwner.$arrangement"
-        val previousRecord = entry?.takeIf { it.sameTargets }?.previousHash?.let {
+        val previousRecord = entry?.takeIf { it.sameTargets && it.mode == ImportMode.Original }?.previousHash?.let {
             platform.readValue("record.landings.v1.${mode.name}.$recordOwner.import.$it")?.toIntOrNull()
         }
         val bestScore = listOfNotNull(platform.readValue(recordKey)?.toIntOrNull(), previousRecord).maxOrNull()
@@ -197,13 +207,28 @@ internal class Session(
         if (state.scene != Scene.Menu) return
         catalog.toggleFavorite(id)
         state = menuAvailability()
+        // Another window may have changed this recording's mode. Adopt it together
+        // with its chart/course, never by switching only the audio path.
+        val selectedEntry = catalog.entries.find { it.id == state.selectedSong.id }
+        if (selectedEntry != null && selections[selectedEntry.id]?.mode != selectedEntry.mode) {
+            selections.remove(selectedEntry.id)
+            state = state.copy(selectedSong = selectedEntry.asSong())
+            refreshSong()
+        }
     }
 
     override fun removeImport(id: String) {
         if (state.scene != Scene.Menu || state.importing) return
+        if (id in restoring || id in instrumentalWrites) {
+            state = state.copy(notice = "Эта запись сейчас готовится в другом окне.")
+            return
+        }
         val entry = catalog.entries.find { it.id == id } ?: return
-        val activeHash = selections[id]?.importHash ?: platform.readValue(entry.chartKey)?.hashCode()
-        val hashes = setOfNotNull(activeHash, entry.previousHash)
+        val raw = platform.readValue(entry.chartKey)
+        val source = raw?.let { runCatching { decodeChart(it, entry.title) }.getOrNull() }
+        val hashes = setOfNotNull(selections[id]?.importHash, entry.previousHash,
+            source?.let { importedSelection(it, ImportMode.Original).importHash },
+            source?.let { importedSelection(it, ImportMode.Instrumental).importHash })
         catalog.remove(entry)
         platform.removeValue("tap.references.v1.$id")
         for (hash in hashes) for (mode in StageMode.entries) {
@@ -217,16 +242,82 @@ internal class Session(
             refreshSong()
         } else state = menuAvailability()
         if (entry.hasRecording) platform.removeImportAudio(id)
+        platform.removeImportAudio(instrumentalRecordingId(id))
     }
 
     override fun importAudio() = pickRecording(null)
+
+    override fun importInstrumentalAudio() = pickRecording(null, ImportMode.Instrumental)
+
+    private fun importedSelection(source: Chart, mode: ImportMode): Selection {
+        val chart = if (mode == ImportMode.Instrumental) adaptImportedChart(source).chart else source
+        val raw = encodeChart(chart)
+        val hash = if (mode == ImportMode.Instrumental) "instrumental.$IMPORT_ARRANGEMENT_REVISION.$raw".hashCode()
+            else raw.hashCode()
+        return Selection(chart, chart.cascadeChart(), hash, mode)
+    }
+
+    private suspend fun ensureInstrumentalRecording(id: String, chart: Chart) {
+        // Protect queued requests too: another window must not remove their source
+        // while a different recording is holding the shared writer.
+        instrumentalWrites[id] = (instrumentalWrites[id] ?: 0) + 1
+        try {
+            instrumentalWriter.withLock {
+                val recordingId = instrumentalRecordingId(id)
+                if (platform.importAudioTrack(recordingId) == null) {
+                    try {
+                        val recording = withContext(courseDispatcher) { renderImportedArrangement(chart) }
+                        check(platform.saveImportAudio(recordingId, PickedAudio(chart.title, FloatArray(0), recording))) {
+                            "Не удалось сохранить инструментальную версию."
+                        }
+                        currentCoroutineContext().ensureActive()
+                    } catch (failure: Exception) {
+                        platform.removeImportAudio(recordingId)
+                        throw failure
+                    }
+                }
+            }
+        } finally {
+            val remaining = requireNotNull(instrumentalWrites[id]) - 1
+            if (remaining == 0) instrumentalWrites.remove(id) else instrumentalWrites[id] = remaining
+        }
+    }
+
+    override fun selectImportMode(mode: ImportMode) {
+        if (state.scene != Scene.Menu || state.importing) return
+        val entry = catalog.entries.find { it.id == state.selectedSong.id && it.hasRecording } ?: return
+        if (state.importMode == mode) return
+        loadingScore?.cancel()
+        state = state.copy(importing = true, notice = null)
+        importingSong = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                val selection = withContext(courseDispatcher) {
+                    val raw = requireNotNull(platform.readValue(entry.chartKey))
+                    importedSelection(decodeChart(raw, entry.title), mode)
+                }
+                check(platform.readValue(entry.chartKey) != null) { "Запись удалена из каталога." }
+                if (mode == ImportMode.Instrumental) ensureInstrumentalRecording(entry.id, selection.source)
+                currentCoroutineContext().ensureActive()
+                val updated = catalog.setMode(entry.id, mode)
+                selections[entry.id] = selection
+                state = state.copy(selectedSong = updated.asSong())
+                refreshSong()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                state = state.copy(notice = e.message ?: "Не удалось подготовить инструментальную версию.")
+            } finally {
+                state = state.copy(importing = false)
+            }
+        }
+    }
 
     override fun restoreRecording() {
         val entry = catalog.entries.find { it.id == state.selectedSong.id && !it.hasRecording } ?: return
         pickRecording(entry)
     }
 
-    private fun pickRecording(previous: PersonalSong?) {
+    private fun pickRecording(previous: PersonalSong?, mode: ImportMode = ImportMode.Original) {
         if (state.importing || state.scene != Scene.Menu) return
         if (previous != null && !restoring.add(previous.id)) return
         state = state.copy(importing = true, notice = null)
@@ -238,7 +329,7 @@ internal class Session(
                 val (entry, raw, selection) = withContext(courseDispatcher) {
                     val chart = extractLeadChart(audio.samples, 11_025, pending.title)
                     val raw = encodeChart(chart)
-                    val selection = Selection(chart, chart.cascadeChart(), raw.hashCode())
+                    val selection = importedSelection(chart, mode)
                     val original = previous?.let { old ->
                         cached ?: platform.readValue(old.chartKey)?.let { text ->
                             val source = decodeChart(text, old.title)
@@ -247,7 +338,7 @@ internal class Session(
                     }
                     // Earlier importers shifted all onsets by a count-in. Reanalyse the actual file
                     // and keep the original chart even if the new transcription differs.
-                    val restored = pending.copy(hasRecording = true,
+                    val restored = pending.copy(hasRecording = true, mode = mode,
                         previousHash = previous?.let { original?.importHash ?: raw.hashCode() },
                         sameTargets = original != null && sameTargets(original.landings, selection.landings))
                     Triple(restored, raw, selection)
@@ -258,11 +349,13 @@ internal class Session(
                 }
                 try {
                     check(platform.saveImportAudio(entry.id, audio)) { "Не удалось сохранить фонограмму записи." }
+                    if (entry.mode == ImportMode.Instrumental) ensureInstrumentalRecording(entry.id, selection.source)
                     currentCoroutineContext().ensureActive()
                     check(previous == null || catalog.awaitingFile(previous.id)) { "Запись удалена из каталога." }
                     catalog.saveRecording(entry, raw)
                 } catch (failure: Exception) {
                     platform.removeImportAudio(entry.id)
+                    platform.removeImportAudio(instrumentalRecordingId(entry.id))
                     platform.removeValue(entry.chartKey)
                     throw failure
                 }
@@ -346,7 +439,10 @@ internal class Session(
 
     private fun prepareSoundtrack(player: GameMedia, includeStrike: Boolean) {
         val imported = if (state.selectedSong.id in state.recordedImportIds)
-            requireNotNull(platform.importAudioTrack(state.selectedSong.id)) { "Не удалось открыть файл записи." }
+            requireNotNull(platform.importAudioTrack(if (state.importMode == ImportMode.Instrumental)
+                instrumentalRecordingId(state.selectedSong.id) else state.selectedSong.id)) {
+                "Не удалось открыть файл записи."
+            }
         else null
         player.setBackingVolume(state.volume)
         player.prepare(emptySet(), state.backingAsset, imported, includeStrike = includeStrike)

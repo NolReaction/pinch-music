@@ -37,8 +37,9 @@ import androidx.compose.ui.unit.sp
 import music.pinch.Actions
 import music.pinch.ScreenState
 import music.pinch.StageMode
+import music.pinch.ImportMode
 
-private enum class StudioPage { Catalog, Favorites, Settings, Profile }
+private enum class StudioPage { Catalog, Favorites, Settings, Profile, Import }
 private val CardShape = RoundedCornerShape(15.dp)
 private val ControlShape = RoundedCornerShape(12.dp)
 
@@ -65,7 +66,7 @@ internal fun StudioMenu(state: ScreenState, actions: Actions) {
             state.importing -> Row(Modifier.fillMaxWidth().heightIn(min = 54.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                 CircularProgressIndicator(Modifier.size(20.dp), color = StudioCoral, strokeWidth = 2.dp)
-                Text("Разбираем мелодию…", color = StudioIvory)
+                Text("Готовим музыку…", color = StudioIvory)
             }
             state.canPlay -> PlaybackActions(actions)
             state.needsSourceFile -> {
@@ -76,6 +77,21 @@ internal fun StudioMenu(state: ScreenState, actions: Actions) {
             else -> Caption("Фонограмма готовится")
         }
         if (!state.importing) {
+            if (state.selectedSong.id in state.recordedImportIds) {
+                Spacer(Modifier.height(10.dp))
+                Row(Modifier.fillMaxWidth().selectableGroup(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                    for (mode in ImportMode.entries) {
+                        StageChoice(mode.label, mode == state.importMode, Modifier.weight(1f),
+                            if (mode == ImportMode.Instrumental) StudioIcon.Cascade else StudioIcon.Headphones) {
+                            actions.selectImportMode(mode)
+                        }
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+                Caption(if (state.importMode == ImportMode.Instrumental)
+                    "Новая аранжировка без слов. Оригинал сохранён."
+                else "Исходная запись, включая голос.")
+            }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = { page = StudioPage.Favorites }) {
@@ -102,7 +118,7 @@ internal fun StudioMenu(state: ScreenState, actions: Actions) {
         Rule()
         if (!state.importing) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Row(Modifier.weight(1f).clip(ControlShape).clickable(role = Role.Button, onClick = actions::importAudio)
+                Row(Modifier.weight(1f).clip(ControlShape).clickable(role = Role.Button, onClick = { page = StudioPage.Import })
                     .heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
                     StudioGlyph(StudioIcon.Import, Muted, Modifier.size(17.dp))
                     Spacer(Modifier.width(8.dp))
@@ -113,12 +129,14 @@ internal fun StudioMenu(state: ScreenState, actions: Actions) {
         }
     }
     when (page) {
-        StudioPage.Catalog, StudioPage.Favorites -> StudioCatalog(state, actions, close, favorites = page == StudioPage.Favorites) { song ->
+        StudioPage.Catalog, StudioPage.Favorites -> StudioCatalog(state, actions, close,
+            importAudio = { page = StudioPage.Import }, favorites = page == StudioPage.Favorites) { song ->
             close()
             if (song.id != state.selectedSong.id) actions.selectSong(song.id)
         }
         StudioPage.Settings -> StudioSettings(state, actions, close)
         StudioPage.Profile -> StudioProfile(state, close)
+        StudioPage.Import -> StudioImport(actions, close)
         null -> Unit
     }
     state.notice?.let { notice ->
@@ -127,6 +145,23 @@ internal fun StudioMenu(state: ScreenState, actions: Actions) {
             Spacer(Modifier.height(16.dp))
             ActionButton("Понятно", actions::dismissNotice)
         }
+    }
+}
+
+@Composable
+private fun StudioImport(actions: Actions, dismiss: () -> Unit) {
+    StudioDialog("Своя музыка", dismiss) {
+        Text("Как будет звучать песня?", color = StudioIvory, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(14.dp))
+        ActionButton("Инструментальная версия", { dismiss(); actions.importInstrumentalAudio() }, accent = StudioCoral)
+        Spacer(Modifier.height(8.dp))
+        Caption("Переиграем мелодию без слов и подровняем ритм. Это новая аранжировка: она может отличаться от песни.")
+        Spacer(Modifier.height(18.dp))
+        ActionButton("Оригинальная запись", { dismiss(); actions.importAudio() }, primary = false)
+        Spacer(Modifier.height(8.dp))
+        Caption("Сохраним звучание исходного файла вместе с голосом.")
+        Spacer(Modifier.height(18.dp))
+        Caption("Фрагмент до 30 секунд. В длинной записи участок выбирается автоматически. Версию можно переключить в меню.")
     }
 }
 

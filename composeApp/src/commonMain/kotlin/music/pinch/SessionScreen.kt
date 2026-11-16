@@ -17,6 +17,7 @@ data class ScreenState(
     val recordedImportIds: Set<String> = emptySet(),
     val availableIds: Set<String> = emptySet(),
     val importing: Boolean = false,
+    val importMode: ImportMode = ImportMode.Original,
     val notice: String? = null,
     val reference: ReferenceState? = null,
     val scene: Scene = Scene.Menu,
@@ -52,6 +53,8 @@ interface Actions {
     fun toggleFavorite(id: String)
     fun restoreRecording()
     fun importAudio()
+    fun importInstrumentalAudio() = importAudio()
+    fun selectImportMode(mode: ImportMode) {}
     fun openReference()
     fun chooseReferenceRecording()
     fun useReferenceRecording(file: Boolean)

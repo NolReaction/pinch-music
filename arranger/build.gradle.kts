@@ -11,7 +11,7 @@ kotlin {
             "music/pinch/OnTheFloorMaster.kt", "music/pinch/OnTheFloor.kt", "music/pinch/ArrangementScore.kt",
             "music/pinch/core/Chart.kt", "music/pinch/StereoLove.kt", "music/pinch/StereoLoveBand.kt",
             "music/pinch/WaveHeader.kt", "music/pinch/GypsyWoman.kt", "music/pinch/Levels.kt",
-            "music/pinch/DanceMaster.kt", "music/pinch/StudioPiano.kt",
+            "music/pinch/DanceMaster.kt", "music/pinch/StudioPiano.kt", "music/pinch/StudioInstruments.kt",
         )
     }
 }

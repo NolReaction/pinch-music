@@ -64,6 +64,7 @@ private enum class CatalogTab(val label: String) { All("Все"), Favorites("И�
 
 @Composable
 internal fun StudioCatalog(state: ScreenState, actions: Actions, dismiss: () -> Unit,
+    importAudio: () -> Unit = actions::importAudio,
     favorites: Boolean = false, select: (Song) -> Unit) {
     var tab by rememberSaveable { mutableStateOf(if (favorites) CatalogTab.Favorites else CatalogTab.All) }
     var deleting by rememberSaveable { mutableStateOf<String?>(null) }
@@ -152,7 +153,7 @@ internal fun StudioCatalog(state: ScreenState, actions: Actions, dismiss: () -> 
         }
         if (tab == CatalogTab.Personal) {
             Spacer(Modifier.height(8.dp))
-            ActionButton("Добавить запись", { dismiss(); actions.importAudio() }, primary = false)
+            ActionButton("Добавить запись", { dismiss(); importAudio() }, primary = false)
         }
     }
 }

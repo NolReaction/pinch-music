@@ -10,7 +10,6 @@ import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.exp
 import kotlin.math.min
-import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 import kotlin.math.sin
@@ -61,17 +60,16 @@ private class EndingReplies(chart: Chart, rate: Double) {
             val anchor = melody.getValue("stereo-${reply.bar * 16 + reply.tick}")
             val offset = (anchor.atMs * rate / 1000).roundToInt() - start
             val count = (reply.length * tickFrames).roundToInt()
-            val hz = 440 * 2.0.pow((reply.midi - 69) / 12.0)
             val upper = reply.bar >= 86
-            for (i in 0 until count) {
+            // The existing answers acquire a tine/pickup body instead of a bare
+            // sine pad. Their pitches and the score-aligned entrances stay intact.
+            val tine = studioElectricPiano(reply.midi, (count * 1000.0 / rate).roundToLong(), .48f, rate.roundToInt())
+            for (i in 0 until min(count, tine.size)) {
                 val t = i / rate
-                val rise = min(1.0, t / if (upper) .14 else .19)
+                val rise = min(1.0, t / if (upper) .035 else .045)
                 val fall = min(1.0, (count - 1 - i) / (.21 * rate))
                 val envelope = .25 * (1 - cos(PI * rise)) * (1 - cos(PI * fall))
-                val phase = 2 * PI * hz * t + .11 * rise * sin(2 * PI * 4.8 * t)
-                val tone = if (upper) .87 * sin(phase) + .23 * sin(2 * phase) + .09 * sin(3 * phase)
-                    else .77 * sin(phase) + .31 * sin(2 * phase) + .19 * sin(3 * phase)
-                samples[offset + i] = (envelope * tone * if (upper) .061 else .080).toFloat()
+                samples[offset + i] = (envelope * tine[i] * if (upper) .088 else .104).toFloat()
             }
         }
     }
@@ -92,6 +90,7 @@ internal fun masterStereoLove(decoded: File, mastered: File, chart: Chart) {
         val lowMid = Bandpass(360.0, .83, rate)
         val presence = Bandpass(1290.0, .82, rate)
         val reed = Bandpass(815.0, .60, rate)
+        val edge = Bandpass(3_150.0, .75, rate)
         val ending = EndingReplies(chart, rate)
         val codaLength = 2 * 4 * 60 * rate / chart.bpm
         val lowRate = 1 - exp(-2 * PI * 145 / rate)
@@ -105,7 +104,14 @@ internal fun masterStereoLove(decoded: File, mastered: File, chart: Chart) {
         fun read(offset: Int): Double =
             ((pcm[offset + 1].toInt() shl 8) or (pcm[offset].toInt() and 255)) / 32768.0
         fun write(offset: Int, value: Double) {
-            val word = (value * 32768).roundToInt().coerceIn(-32768, 32767)
+            // Preserve everyday dynamics and round only exceptional peaks; avoid
+            // the old hard PCM clamp when a recorded transient meets a room return.
+            val excess = abs(value) - .80
+            val limited = if (excess <= 0) value else {
+                val magnitude = .80 + .16 * excess / (.16 + excess)
+                if (value < 0) -magnitude else magnitude
+            }
+            val word = (limited * .96 * 32768).roundToInt().coerceIn(-32768, 32767)
             pcm[offset] = word.toByte()
             pcm[offset + 1] = (word shr 8).toByte()
         }
@@ -122,9 +128,9 @@ internal fun masterStereoLove(decoded: File, mastered: File, chart: Chart) {
             val mid = .5 * (left + right)
             // Give the repeated reed a front edge. Between notes, ease off its boxed-in
             // low mids. Only the centered signal is shaped; the stereo room retains its tail.
-            val clear = mid - .23 * lowMid.sample(mid) + .12 * presence.sample(mid) +
-                (.44 * articulation - .035) * reed.sample(mid)
-            val side = .5 * (left - right) * (1.04 - .20 * articulation)
+            val clear = mid - .20 * lowMid.sample(mid) + .08 * presence.sample(mid) - .10 * edge.sample(mid) +
+                (.30 * articulation - .025) * reed.sample(mid)
+            val side = .5 * (left - right) * (1.03 - .13 * articulation)
             val reply = ending.sample(frame) * (1 - .30 * articulation)
             // Leave the closing accordion and the right-panned bell exposed as the bass recedes.
             var body = clear

@@ -32,8 +32,8 @@ private fun sample(table: FloatArray, phase: Int): Float {
 /** One period per pitch and registration. Leave headroom for harmonics and omit partials above Nyquist. */
 private fun leadTable(voice: FloorLeadVoice, hz: Double): FloatArray {
     val harmonics = if (voice == FloorLeadVoice.Reed) {
-        // The upper octave and fifth carry the accordion hook over the bass and kick.
-        doubleArrayOf(.89, 1.04, 1.01, .47, .45, .28, .19, .14, .09, .055)
+        // The fundamental anchors the reed while the octave/fifth keep its accordion colour.
+        doubleArrayOf(1.04, .91, .79, .39, .31, .19, .13, .090, .055, .035)
     } else {
         doubleArrayOf(.79, .76, .60, .37, .27, .15, .09, .04)
     }
@@ -87,10 +87,16 @@ private class FloorStudio(val score: Chart) {
 
     fun lead(note: Note) {
         val voice = floorLeadVoiceAt(note.atMs)
-        // Both the calls and the sung melody are interpreted by the same piano.
-        if (voice == FloorLeadVoice.Pluck || voice == FloorLeadVoice.Vocal) {
-            val mono = studioPiano(note.midi, note.durationMs, note.velocity)
-            placePiano(mono, frames(note.atMs), .88f * note.velocity, -.035)
+        // Distinct gestures get distinct materials: a muted string for the rhythmic
+        // calls, then a rounded tine piano for the melodic response. Neither adds notes.
+        if (voice == FloorLeadVoice.Pluck) {
+            val mono = studioPluckedString(note.midi, note.durationMs, note.velocity)
+            placePiano(mono, frames(note.atMs), .80f * note.velocity, -.045)
+            return
+        }
+        if (voice == FloorLeadVoice.Vocal) {
+            val mono = studioElectricPiano(note.midi, note.durationMs, note.velocity)
+            placePiano(mono, frames(note.atMs), .72f * note.velocity, -.025)
             return
         }
         val hz = frequency(note.midi)
@@ -98,14 +104,14 @@ private class FloorStudio(val score: Chart) {
         val gate = frames(note.durationMs)
         val reed = voice == FloorLeadVoice.Reed
         val attackMs = if (reed) 7L else 10L
-        val tailMs = 55L
+        val tailMs = 95L
         val mono = FloatArray(gate + frames(tailMs))
         val reedSides = if (reed) FloatArray(mono.size) else null
         val attack = 1f - decay(attackMs * .00040)
         val release = decay(tailMs * .00017)
         val brightnessDecay = decay(.23)
         val scoopDecay = decay(.021)
-        val separation = if (reed) 1.0048 else .9970
+        val separation = if (reed) 1.0030 else .9970
         val vibratoStep = step(5.67)
         val pitchStep = step(hz)
         var centerPhase = 0
@@ -120,7 +126,7 @@ private class FloorStudio(val score: Chart) {
         var scoop = .004f
         for (i in mono.indices) {
             pressure = if (i < gate) pressure + attack * (1f - pressure) else pressure * release
-            val vibrato = .0030f * min(1f, i / 5300f) * sample(sine, vibratoPhase)
+            val vibrato = .0019f * min(1f, i / 5300f) * sample(sine, vibratoPhase)
             val delta = (pitchStep * (1.0 + vibrato - scoop)).toInt()
             centerPhase += delta
             rankPhase += (delta * separation).toInt()
@@ -130,10 +136,10 @@ private class FloorStudio(val score: Chart) {
             val rank = sample(tone, rankPhase)
             val fundamental = sample(sine, centerPhase)
             val colour = if (reed) {
-                lowerPhase += (delta * .9956).toInt()
+                lowerPhase += (delta * .9972).toInt()
                 val lower = sample(tone, lowerPhase)
-                reedSides?.set(i, .43f * (rank - lower) * pressure)
-                .65f * main + .175f * (rank + lower)
+                reedSides?.set(i, .31f * (rank - lower) * pressure)
+                .70f * main + .15f * (rank + lower)
             } else {
                 (.70f * main + .30f * rank) * (1f - .28f * brightness) +
                     fundamental * (.28f * brightness)
@@ -144,7 +150,7 @@ private class FloorStudio(val score: Chart) {
             brightness *= brightnessDecay
         }
         val start = frames(note.atMs)
-        val gain = note.velocity * if (reed) .69f else .57f
+        val gain = note.velocity * if (reed) .64f else .57f
         place(mono, start, gain, -.035)
         if (reedSides != null) {
             place(reedSides, start, gain, -1.0)
@@ -168,9 +174,11 @@ private class FloorStudio(val score: Chart) {
             BackingVoice.Bass -> 30L
         }
         val size = gate + frames(tailMs)
+        val marimba = voice == BackingVoice.Keys && floorLeadVoiceAt(note.atMs) == FloorLeadVoice.Reed
         val mono = when (voice) {
             BackingVoice.Kick, BackingVoice.Snare, BackingVoice.Hat -> drum(note, size)
-            BackingVoice.Keys -> studioPiano(note.midi, note.durationMs, note.velocity)
+            BackingVoice.Keys -> if (marimba) studioMallet(note.midi, note.durationMs, note.velocity)
+                else studioPiano(note.midi, note.durationMs, note.velocity)
             else -> harmony(note, size)
         }
         val start = frames(note.atMs)
@@ -184,7 +192,7 @@ private class FloorStudio(val score: Chart) {
             BackingVoice.Bass -> place(mono, start, .52f * note.velocity, 0.0, .40f)
             BackingVoice.Keys -> {
                 val pan = ((note.midi - 60) / 36.0).coerceIn(-.55, .55)
-                placePiano(mono, start, .57f * note.velocity, pan)
+                placePiano(mono, start, (if (marimba) .49f else .51f) * note.velocity, pan)
             }
             BackingVoice.Pad -> {
                 val pan = ((note.midi * 7 % 17) - 8) / 13.0
@@ -211,7 +219,7 @@ private class FloorStudio(val score: Chart) {
         val rankInc = (inc * 1.0039).toInt()
         val attack = 1f - decay(if (kind == BackingVoice.Pad) .052 else .0035)
         val release = decay(when (kind) {
-            BackingVoice.Pad -> .022
+            BackingVoice.Pad -> .030
             else -> .005
         })
         val damping = decay(if (kind == BackingVoice.Bass) .095 else .14)
@@ -287,7 +295,7 @@ private class FloorStudio(val score: Chart) {
                     }
                 }
                 else -> if (shaker) (.58f * high + .39f * air) * min(1f, i / 180f)
-                    else (.90f * high + .17f * (white - air)) * (.80f + .20f * sample(sine, metal))
+                    else (.78f * high + .17f * (white - air)) * (.85f + .15f * sample(sine, metal))
             }
             val end = min(1f, (size - 1 - i) / 240f)
             val out = sound * level * min(1f, i / 30f) * end
@@ -312,7 +320,7 @@ private class FloorStudio(val score: Chart) {
                     if (value < 0f) -compressed else compressed
                 }
                 // Match the catalog's Stereo Love master at about -14 LUFS and leave room for AAC peaks.
-                val word = (limited * .80f * fade * 32767).roundToInt()
+                val word = (limited * .78f * fade * 32767).roundToInt()
                 bytes[byte] = word.toByte()
                 bytes[byte + 1] = (word shr 8).toByte()
             }

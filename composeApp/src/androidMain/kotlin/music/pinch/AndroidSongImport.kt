@@ -301,5 +301,6 @@ internal class AndroidRecordings(context: Context) {
     }
 
     fun remove(id: String) { file(id).delete() }
-    fun track(id: String) = ArrangementTrack(file(id).absolutePath)
+    fun track(id: String): ArrangementTrack? = file(id).takeIf { it.isFile && it.length() > 44 }
+        ?.let { ArrangementTrack(it.absolutePath) }
 }

@@ -46,6 +46,7 @@ uniform mediump vec4 uBall;
 uniform mediump vec2 uSpin; // cos, sin
 uniform lowp vec3 uPaint;
 uniform lowp vec3 uAccent;
+uniform lowp vec3 uRoom; // transmitted studio wall, shared with the backdrop palette
 uniform sampler2D uGrain;
 uniform mediump vec4 uFinish; // pigment, reflected light, direction and scale of brushed grain
 const vec3 eye=vec3(2.80,-4.88,8.20);
@@ -56,44 +57,59 @@ float strip(float x,float halfWidth,float blur){
 // Large softboxes, a dark flag and the lit plaster floor remain fixed in the
 // reflection. A change of key pitch therefore changes the finish visibly.
 vec3 studio(vec3 r){
-    float ceiling=smoothstep(-.42,.73,-r.y);
-    vec3 room=mix(vec3(.29,.30,.32),vec3(.81,.83,.84),ceiling);
-    float flag=strip(r.x+.19*r.z-.13,.14,.19)*smoothstep(-.38,.18,-r.z);
-    room*=1.-.73*flag;
-    float window=strip(r.x+.48+.18*r.y,.17,.12)*smoothstep(-.38,.36,r.z);
-    float bar=strip(r.y+.53+.24*r.x,.045,.055);
-    return room+vec3(.46,.45,.42)*window+vec3(.55,.58,.63)*bar;
+    float ceiling=smoothstep(-.58,.76,-r.y);
+    vec3 room=mix(vec3(.31,.37,.41),vec3(.89,.92,.91),ceiling);
+    // Broad studio flags give chrome a continuous tonal gradient instead of
+    // narrow, clipped bands that shimmer on a moving rail.
+    float flag=strip(r.x+.17*r.z-.16,.20,.27)*smoothstep(-.55,.22,-r.z);
+    room*=1.-.48*flag;
+    float window=strip(r.x+.43+.15*r.y,.24,.19)*strip(r.y+.25,.45,.23)*smoothstep(-.35,.38,r.z);
+    float rim=strip(r.x-.72+.09*r.y,.07,.13)*strip(r.y+.10,.58,.24);
+    return room+vec3(.34,.33,.30)*window+vec3(.21,.25,.28)*rim;
 }
+
 void main(){
     vec3 n=normalize(vN), v=normalize(eye-vPos), r=reflect(-v,n);
     float mat=vMat.x;
     if(mat>7.5 && mat<8.5) {
-        // Clear, cool glass around three suspended coloured ribbons. Reflections
-        // belong to the outer skin; only the inclusions follow the rolling spin.
-        vec3 bn=vec3(n.x*uSpin.x+n.y*uSpin.y,-n.x*uSpin.y+n.y*uSpin.x,n.z);
+        // Snell's law through the outer shell, then intersect a smaller inner
+        // sphere. The ribbons live inside that sphere, leaving a truly clear
+        // annulus rather than a swirl painted across the entire outer surface.
         float facing=max(0.,dot(n,v));
-        float edge=pow(1.-facing,2.);
-        vec3 refracted=refract(-v,n,.67);
-        vec3 clear=mix(vec3(.63,.78,.81),vec3(.88,.92,.86),.5+.5*bn.z);
-        clear*=.78+.26*max(0.,-refracted.y);
-        float bend=bn.x+.31*sin(3.4*bn.y+2.6*bn.z);
-        float ribbon=1.-smoothstep(.12,.28,abs(bend));
-        float curl=bn.y-.24*sin(4.3*bn.z-1.7*bn.x)-.22;
-        float amber=(1.-smoothstep(.07,.15,abs(curl)))*smoothstep(-.62,.15,bn.x);
-        float blue=1.-smoothstep(.11,.26,abs(bend+.43+.17*bn.y));
-        vec3 core=mix(vec3(.035,.22,.64),vec3(.025,.70,.63),smoothstep(-.40,.52,bn.y));
-        vec3 body=mix(clear,core,ribbon*.88);
-        body=mix(body,vec3(.30,.075,.64),blue*.77);
-        body=mix(body,vec3(.98,.69,.08),amber*.87);
-        body*=.75+.25*max(0.,dot(n,L));
-        body=mix(body,vec3(.17,.32,.39),edge*.31);
-        float fres=.055+.82*pow(1.-facing,5.);
-        vec3 color=mix(body,studio(r),fres);
-        float highlight=pow(max(dot(reflect(-L,n),v),0.),132.);
-        color+=vec3(.99,.98,.91)*highlight*.88;
-        color+=vec3(.32,.35,.36)*strip(r.y+.55+.24*r.x,.014,.034);
-        color+=vec3(.12,.22,.22)*pow(max(0.,dot(n,normalize(vec3(-.35,.60,.72)))),10.);
-        gl_FragColor=vec4(color,1.); return;
+        vec3 ray=refract(-v,n,1./1.52);
+        float approach=dot(n,ray);
+        float discriminant=approach*approach-(1.-.52*.52);
+        float entry=-approach-sqrt(max(0.,discriminant));
+        vec3 inner=n+entry*ray;
+        vec3 bn=vec3(inner.x*uSpin.x+inner.y*uSpin.y,-inner.x*uSpin.y+inner.y*uSpin.x,inner.z);
+        float coreMask=smoothstep(-.015,.028,discriminant);
+        vec3 transmission=mix(uRoom,vec3(.64,.78,.81),.17);
+        transmission*=.94+.06*smoothstep(-.85,.65,-ray.y);
+        float twist=bn.x+.24*sin(4.3*bn.y+3.0*bn.z);
+        float ribbon=(1.-smoothstep(.060,.115,abs(twist)))*coreMask;
+        float folded=(1.-smoothstep(.045,.095,abs(twist+.27-.16*bn.y)))*coreMask;
+        float seam=bn.y-.19*sin(4.8*bn.z-2.0*bn.x)-.13;
+        float gold=(1.-smoothstep(.035,.075,abs(seam)))*smoothstep(-.40,.15,bn.x)*coreMask;
+        vec3 cobalt=mix(vec3(.032,.22,.54),vec3(.035,.61,.54),smoothstep(-.42,.46,bn.y));
+        vec3 body=mix(transmission,cobalt,ribbon*.93);
+        body=mix(body,vec3(.26,.16,.49),folded*.80);
+        body=mix(body,vec3(.93,.62,.16),gold*.90);
+        // A faint thickness line follows the internal ribbon, not the sphere rim.
+        float edgeLine=(1.-smoothstep(.008,.023,abs(abs(twist)-.062)))*coreMask;
+        body=mix(body,vec3(.43,.77,.73),edgeLine*.27);
+        float fres=.042+.958*pow(1.-facing,5.);
+        body=mix(body,vec3(.55,.70,.73),pow(1.-facing,2.)*.15);
+        vec3 color=mix(body,studio(r),fres*.86);
+        float softbox=strip(r.x+.43+.15*r.y,.18,.08)*strip(r.y+.25,.35,.12)*smoothstep(-.20,.40,r.z);
+        color=mix(color,vec3(.99,.99,.96),softbox*(.15+.55*fres));
+        float highlight=pow(max(dot(reflect(-L,n),v),0.),110.);
+        color+=vec3(.70,.72,.70)*highlight;
+        float caustic=pow(max(0.,dot(n,normalize(vec3(-.30,.63,.72)))),14.);
+        color+=vec3(.075,.13,.13)*caustic*(1.-coreMask*.5);
+        float coreOpacity=max(ribbon*.95,max(folded*.86,gold*.95));
+        float shellOpacity=max(fres,max(softbox*.55,highlight*.80));
+        float opacity=.34+.66*max(coreOpacity,shellOpacity);
+        gl_FragColor=vec4(color,opacity); return;
     }
     vec3 env=studio(r);
     float nl=max(0.,dot(n,L)), nv=max(0.,dot(n,v));
@@ -124,39 +140,44 @@ void main(){
         col=mix(mix(vec3(.060,.069,.075),accent,.27),accent,min(1.,impact+preview*.98));
     } else if(mat<3.5 || (mat>4.5 && mat<5.5) || (mat>6.5 && mat<7.5)) {
         float polished=mat<3.5 ? .93 : (mat<5.5 ? 1.12 : .88);
-        col=vec3(.032,.041,.050)+env*polished+vec3(.23,.24,.25)*spec;
+        col=vec3(.046,.058,.065)+env*(polished*.83)+vec3(.13,.15,.16)*spec;
         if(mat>6.5) {
             float nearBall=1.-smoothstep(.25,.56,length(vPos-uBall.xyz));
             col=mix(col,vec3(.42,.24,.40),nearBall*.30);
         }
     } else if(mat<4.5) {
-        col=vec3(.032,.039,.047)+env*.26;
+        col=vec3(.065,.075,.084)+env*.24;
     } else if(mat<6.5) {
         col=mix(vec3(.13,.14,.145),accent,min(1.,.48+preview*.52+impact));
     } else if(mat<11.5) {
         col=vec3(.22,.085,.037)+env*vec3(.75,.38,.20)+vec3(.34,.18,.093)*spec;
     } else if(mat<12.5) {
-        // Satin ivory has a broad porcelain highlight and a darker edge under
-        // the cap. It reads as a key even when the song's accent is saturated.
-        float sheen=pow(max(0.,dot(reflect(-L,n),v)),30.);
-        col=vec3(.89,.86,.77)*(.71+.26*nl)+env*(.08+.17*edge)+vec3(.13*sheen);
+        // Ceramic-like ivory: bright broad faces, a satin highlight and just
+        // enough Fresnel reflection for a curved lip to read at phone size.
+        vec3 halfVector=normalize(L+v);
+        float sheen=pow(max(0.,dot(n,halfVector)),42.);
+        float ambient=.83+.14*max(0.,-n.y)+.08*nl;
+        float fres=.028+.16*edge;
+        vec3 ivory=mix(vec3(.97,.968,.942),uPaint,.14);
+        col=ivory*ambient*(1.-fres)+env*fres+vec3(.085*sheen);
     } else if(mat<13.5) {
-        // Polished ebony retains a visible reflected window without turning grey.
-        col=vec3(.024,.030,.037)+env*(.075+.28*edge)+vec3(.16,.17,.18)*spec;
+        // Softer satin ebony shows its sculpted edges without chrome-like glitter.
+        float sheen=pow(max(0.,dot(n,normalize(L+v))),34.);
+        col=vec3(.027,.034,.041)*(.85+.18*nl)+env*(.10+.20*edge)+vec3(.065,.075,.085)*sheen;
     } else if(mat<14.5) {
         // Fine lengthwise fibres live in local key coordinates, so neither
         // camera travel nor the short key recoil can make the wood swim.
         float grain=texture2D(uGrain,vFace*vec2(.72,.15)+vec2(.19,.43)).r;
-        float fibre=.5+.5*sin(vFace.x*182.+sin(vFace.y*9.)*1.7+grain*8.);
-        vec3 wood=mix(vec3(.32,.145,.064),vec3(.61,.345,.155),grain);
-        wood*=.94+.075*fibre;
+        float fibre=.5+.5*sin(vFace.x*31.+sin(vFace.y*6.)*.65+grain*1.8);
+        vec3 wood=mix(vec3(.43,.265,.15),vec3(.57,.37,.22),grain);
+        wood*=.98+.025*fibre;
         col=wood*(.72+.38*nl)+env*(.035+.13*edge)+vec3(.08,.059,.033)*spec;
     } else if(mat<15.5) {
         // Lacquered resonator tubes have a soft body reflection and a narrow
         // clear-coat highlight. Their inner lip uses a separate dark material.
         vec3 plastic=mix(vec3(.22,.12,.70),uAccent,.72);
-        float sheen=pow(max(0.,dot(reflect(-L,n),v)),78.);
-        col=plastic*(.46+.51*nl)+env*(.075+.24*edge)+vec3(.42,.40,.46)*sheen;
+        float sheen=pow(max(0.,dot(n,normalize(L+v))),42.);
+        col=plastic*(.62+.32*nl)+env*(.055+.20*edge)+vec3(.20,.22,.25)*sheen;
     } else {
         col=mix(vec3(.031,.020,.074),uAccent*.11,.52)*(.67+.30*nl)+env*.025;
     }
@@ -166,7 +187,7 @@ void main(){
         col*=ao;
         // A narrow warm response leaves the instrument material visible.
         float pulse=impact*impact;
-        col=mix(col,accent*(.66+.22*nl)+env*.10,pulse*.70+preview*.075);
+        col=mix(col,accent*(.66+.22*nl)+env*.10,pulse*.42+preview*.045);
     }
     // A judgement is attached to its scored cap only, even if the marble has moved on.
     if(mat<2.5 || (mat>5.5 && mat<6.5) || (mat>11.5 && mat<15.5)) {
@@ -291,7 +312,8 @@ varying mediump vec2 vReliefUV;
 #endif
 uniform sampler2D uRelief;
 void main(){
-    vec3 col=vColor.rgb*(.988+.024*texture2D(uRelief,vReliefUV).r);
+    // Broad studio plaster stays clean in motion; subpixel grain shimmer is absent.
+    vec3 col=vColor.rgb;
     gl_FragColor=vec4(col,1.);
 }
 )GL";

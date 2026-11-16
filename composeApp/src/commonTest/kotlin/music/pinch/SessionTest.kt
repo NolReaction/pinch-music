@@ -808,6 +808,106 @@ class SessionTest {
         assertTrue(session(host).state.importedIds.isEmpty())
     }
 
+    @Test fun instrumentalImportKeepsTheOriginalAndUsesTheMatchingChartAndRecordingAfterRestart() {
+        val host = Host()
+        host.picked = pickedMelody()
+        val game = session(host)
+        game.importInstrumentalAudio()
+        val id = game.state.selectedSong.id
+        val instrumentalId = instrumentalRecordingId(id)
+        assertEquals(ImportMode.Instrumental, game.state.importMode)
+        assertEquals(setOf(id, instrumentalId), host.recordings)
+        val original = decodeChart(requireNotNull(host.readValue("chart.$id")), game.state.title)
+        val adapted = adaptImportedChart(original).chart.cascadeChart()
+        assertEquals(encodeChart(adapted), encodeChart(requireNotNull(game.state.chart)))
+
+        val reopened = session(host)
+        assertEquals(ImportMode.Instrumental, reopened.state.importMode)
+        assertEquals(adapted, reopened.state.chart)
+        reopened.start(true)
+        assertEquals("/user/$instrumentalId.wav", host.player.generated)
+        reopened.menu()
+        reopened.selectImportMode(ImportMode.Original)
+        assertEquals(ImportMode.Original, reopened.state.importMode)
+        assertEquals(original.cascadeChart(), reopened.state.chart)
+        reopened.start(false)
+        assertEquals("/user/$id.wav", host.player.generated)
+        reopened.menu()
+        reopened.selectImportMode(ImportMode.Instrumental)
+        assertEquals(adapted, reopened.state.chart)
+        reopened.removeImport(id)
+        assertTrue(host.recordings.isEmpty())
+        assertFalse(id in session(host).state.importedIds)
+    }
+
+    @Test fun aMissingInstrumentalCacheIsRebuiltFromSavedNotesWithoutRepickingTheOriginal() {
+        val host = Host()
+        host.picked = pickedMelody()
+        val game = session(host)
+        game.importInstrumentalAudio()
+        val id = game.state.selectedSong.id
+        host.recordings.remove(instrumentalRecordingId(id))
+        host.picked = null
+        val reopened = session(host)
+        assertNull(reopened.state.notice)
+        assertEquals(ImportMode.Instrumental, reopened.state.importMode)
+        assertEquals(setOf(id, instrumentalRecordingId(id)), host.recordings)
+        reopened.start(true)
+        assertEquals("/user/${instrumentalRecordingId(id)}.wav", host.player.generated)
+    }
+
+    @Test fun cancellingInstrumentalConversionKeepsOriginalCatalogMode() {
+        val host = Host()
+        host.picked = pickedMelody()
+        val game = session(host)
+        game.importAudio()
+        val id = game.state.selectedSong.id
+        host.saveGate = kotlinx.coroutines.CompletableDeferred()
+        game.selectImportMode(ImportMode.Instrumental)
+        assertTrue(game.state.importing)
+        game.dispose()
+        val reopened = session(host)
+        assertEquals(ImportMode.Original, reopened.state.importMode)
+        assertTrue(id in host.recordings)
+        reopened.start(true)
+        assertEquals("/user/$id.wav", host.player.generated)
+    }
+
+    @Test fun aModeChangeInAnotherWindowReloadsChartAndAudioTogetherOnCatalogRefresh() {
+        val host = Host()
+        host.picked = pickedMelody()
+        val first = session(host)
+        first.importAudio()
+        val id = first.state.selectedSong.id
+        val second = session(host)
+        second.selectImportMode(ImportMode.Instrumental)
+        first.toggleFavorite(id)
+        assertEquals(ImportMode.Instrumental, first.state.importMode)
+        assertEquals(second.state.chart, first.state.chart)
+        first.start(true)
+        assertEquals("/user/${instrumentalRecordingId(id)}.wav", host.player.generated)
+    }
+
+    @Test fun concurrentConversionsDoNotDeleteEachOthersRecordingWhenOneWindowCloses() {
+        val host = Host()
+        host.picked = pickedMelody()
+        val first = session(host)
+        first.importAudio()
+        val id = first.state.selectedSong.id
+        val second = session(host)
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        host.saveGate = gate
+        first.selectImportMode(ImportMode.Instrumental)
+        second.selectImportMode(ImportMode.Instrumental)
+        assertTrue(first.state.importing && second.state.importing)
+        first.dispose()
+        gate.complete(Unit)
+        assertEquals(ImportMode.Instrumental, second.state.importMode)
+        assertEquals(setOf(id, instrumentalRecordingId(id)), host.recordings)
+        second.start(true)
+        assertEquals("/user/${instrumentalRecordingId(id)}.wav", host.player.generated)
+    }
+
     @Test fun damagedMetadataUsesTheMirrorWithoutRewritingItOnLaunch() {
         val host = Host()
         val game = session(host)

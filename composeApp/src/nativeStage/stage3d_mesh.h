@@ -174,12 +174,13 @@ struct KeyDesign {
     Surface rim, band;
     float lacquer, reflection, grainX, grainZ;
     int instrument; // 0: wood bar, 1: ivory/ebony keyboard, 2: hollow percussion tube
+    int keyCount = 3;
 };
 inline const KeyDesign& keyDesign(int motif) {
     static constexpr KeyDesign designs[] = {
-        {3, .058f, Wood, Wood, .92f, .26f, .14f, 2.7f, 0}, // Floor: rosewood marimba
+        {4, .050f, Ivory, Chrome, .34f, .63f, 1.05f, .14f, 1}, // Floor: sculpted ivory keys
         {4, .050f, Ivory, Chrome, .34f, .63f, 1.05f, .14f, 1}, // Stereo: ivory keyboard
-        {4, .050f, Ivory, Chrome, .83f, .24f, .14f, 2.7f, 1}, // Gypsy: organ keys
+        {4, .050f, Ivory, Chrome, .83f, .24f, .14f, 2.7f, 1, 2}, // Gypsy: broad organ levers
         {3, .080f, Chrome, Accent, .82f, .44f, 1.4f, 1.4f, 2}, // Levels: blue pipes
         {4, .050f, Ivory, Chrome, .65f, .46f, .35f, .35f, 1}, // Stay: ivory keyboard
         {3, .054f, Chrome, Accent, .86f, .29f, 2.1f, .21f, 2}, // Turn Down: violet pipes
@@ -190,7 +191,84 @@ inline const KeyDesign& keyDesign(int motif) {
 }
 
 inline float keyCenterX(bool shortKey, float side) {
-    return side * (shortKey ? .23f : .22f);
+    return side * (shortKey ? .218f : .22f);
+}
+
+inline float keyDepth(const KeyDesign& design, bool accented) {
+    return design.instrument == 1 ? (accented ? .088f : .075f) :
+           design.instrument == 2 ? .206f : (accented ? .15f : .115f);
+}
+
+// A small bevel carries the broad studio light across every key edge. Separate
+// top/side vertices prevent a key's planar playing face from shading like a pillow.
+inline void sculptedSlab(Mesh& m, float cx, float cz, float width, float length,
+                         float y, float depth, float corner, Surface surface) {
+    constexpr int steps=5, ring=steps*4;
+    struct Slice { float y, inset, slope; };
+    const Slice slices[]={{0,.005f,1},{.005f,0,.58f},{depth-.006f,0,0},{depth,.006f,-.64f}};
+    auto point=[&](Slice slice,int i) {
+        const int q=i/steps;
+        const float angle=(q+(i%steps)/float(steps-1))*Pi*.5f;
+        const float r=corner-slice.inset;
+        return V{cx+(q==0||q==3 ? 1.f:-1.f)*(width*.5f-corner)+r*std::cos(angle),
+                 y+slice.y,cz+(q<2 ? 1.f:-1.f)*(length*.5f-corner)+r*std::sin(angle)};
+    };
+    const int face=m.point({cx,y,cz},{0,-1,0},surface);
+    for(int i=0;i<ring;++i) m.point(point(slices[0],i),{0,-1,0},surface);
+    for(int i=0;i<ring;++i) m.tri(face,face+1+i,face+1+(i+1)%ring);
+    for(int slice=0;slice<3;++slice) {
+        const int begin=static_cast<int>(m.verts.size());
+        for(int level=0;level<2;++level) for(int i=0;i<ring;++i) {
+            const Slice sl=slices[slice+level];
+            const float angle=(i/steps+(i%steps)/float(steps-1))*Pi*.5f;
+            const float side=std::sqrt(1-sl.slope*sl.slope);
+            m.point(point(sl,i),{std::cos(angle)*side,-sl.slope,std::sin(angle)*side},surface);
+        }
+        for(int i=0;i<ring;++i) m.quad(begin+i,begin+(i+1)%ring,begin+ring+(i+1)%ring,begin+ring+i);
+    }
+    const int bottom=m.point({cx,y+depth,cz},{0,1,0},surface);
+    for(int i=0;i<ring;++i) m.point(point(slices[3],i),{0,1,0},surface);
+    for(int i=0;i<ring;++i) m.tri(bottom,bottom+1+i,bottom+1+(i+1)%ring);
+}
+
+inline Mesh keyboardMesh(bool shortKey, float side, bool accented, const KeyDesign& design) {
+    Mesh m;
+    const float width=shortKey ? .46f:.70f, cx=keyCenterX(shortKey,side);
+    const float front=.25f, back=shortKey ? -.585f:-.66f;
+    const float length=front-back, cz=(front+back)*.5f, depth=keyDepth(design,accented);
+    constexpr float gap=.009f;
+    const int keyCount=design.keyCount;
+    const float spacing=width/keyCount, keyWidth=spacing-gap;
+    // Individual floating ivory levers, with real gaps and rounded front lips.
+    // The inward key still covers the exact x=0,z=0 impact tangent.
+    for(int k=0;k<keyCount;++k) {
+        const float x=cx+(k-(keyCount-1)*.5f)*spacing;
+        sculptedSlab(m,x,cz,keyWidth,length,0,depth,.021f,Ivory);
+    }
+    // Raised ebony levers sit behind the rolling lane. Their softened edges
+    // reflect a long softbox instead of the hard rectangular glitter of cubes.
+    for(int k=0;k<keyCount-1;++k) {
+        const float x=cx+(k-(keyCount-2)*.5f)*spacing;
+        sculptedSlab(m,x,(back-.305f)*.5f,spacing*.40f,-.305f-back,
+                     -.062f,.060f,.014f,Ebony);
+    }
+    // Open nickel carrier: no solid black box beneath the ivory keyboard.
+    const float railY=depth+.017f;
+    for(float x : {cx-width*.36f,cx+width*.36f})
+        rod(m,{x,railY,back+.09f},{x,railY,front-.06f},.013f,Chrome,10);
+    rod(m,{cx-width*.39f,railY,back+.115f},{cx+width*.39f,railY,back+.115f},.018f,Iron,10);
+    for(auto& vertex:m.verts)
+        vertex.detail=shortKey ? std::min(1.f,std::abs(vertex.p.x)/width) : 1.f;
+    const float mountY=depth+.082f;
+    // One delicate forked wall mounting supports the three sprung levers.
+    ellipsoid(m,{cx,mountY,WallZ+.035f},{.061f,.061f,.030f},Chrome,14,7);
+    rod(m,{cx,mountY,WallZ+.055f},{cx,mountY,-.43f},.023f,Chrome,12);
+    rod(m,{cx-width*.29f,mountY,-.43f},{cx+width*.29f,mountY,-.43f},.021f,Chrome,10);
+    for(float dx : {-width*.29f,width*.29f}) {
+        rod(m,{cx+dx,railY,-.43f},{cx+dx,mountY,-.43f},.016f,Chrome,10);
+        ellipsoid(m,{cx+dx,railY,-.43f},{.022f,.020f,.022f},Bolt,10,5);
+    }
+    return m;
 }
 
 // Small physical keyboard caps and rails use independent face normals, so their
@@ -260,6 +338,7 @@ inline Mesh percussionTube(bool shortKey, float side) {
 // The two fasteners sit inside recessed ferrules on the playing face.
 inline Mesh keyMesh(bool shortKey, float side, bool accented, const KeyDesign& design) {
     if (design.instrument == 2) return percussionTube(shortKey,side);
+    if (design.instrument == 1) return keyboardMesh(shortKey,side,accented,design);
     Mesh m;
     const Surface playing = design.instrument == 1 ? Ivory : Wood;
     float width = shortKey ? .46f : .70f;
@@ -268,7 +347,7 @@ inline Mesh keyMesh(bool shortKey, float side, bool accented, const KeyDesign& d
     float cx = keyCenterX(shortKey, side);
     float frontZ = .25f, backZ = shortKey ? -.585f : -.66f;
     float length = frontZ - backZ, cz = (frontZ + backZ) * .5f;
-    const float depth = design.instrument == 1 ? (accented ? .18f : .13f) : (accented ? .15f : .115f);
+    const float depth = keyDepth(design,accented);
     const float corner = design.corner;
     const int perCorner = design.cornerSteps, ring = 4 * perCorner;
     struct Level {
@@ -277,8 +356,8 @@ inline Mesh keyMesh(bool shortKey, float side, bool accented, const KeyDesign& d
     };
     // A broad face, two cuts around the polished bevel, a narrow polymer
     // gasket, and the recessed gunmetal underbody are all inside the key bounds.
-    const Level levels[] = {{0, .033f, 1, playing},
-                            {.010f, .016f, .82f, design.rim},
+    const Level levels[] = {{0, .010f, 1, playing},
+                            {.010f, .006f, .82f, design.rim},
                             {.024f, .002f, .41f, design.rim},
                             {.040f, 0, 0, playing},
                             {.052f, 0, 0, design.band},

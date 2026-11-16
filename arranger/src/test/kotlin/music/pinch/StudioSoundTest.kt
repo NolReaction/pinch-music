@@ -16,28 +16,29 @@ class StudioSoundTest {
     private val probe = Note("probe", 0, 65, 700, .9f)
     private val chart = Chart("Sound check", 120, 2000, listOf(probe))
 
-    @Test fun gypsyVerseAndRefrainStayInTheOrganFamily() {
+    @Test fun gypsyRiffKeepsItsRoleAndChangesMaterialOnlyAtWrittenSections() {
         val song = requireNotNull(gypsyWomanSong.bundled)
-        val firstVerse = song.notes.first { it.atMs >= 8000 }
-        assertEquals(8875L, firstVerse.atMs)
         assertEquals(DanceLeadVoice.OrganStab, danceLeadVoice(DanceStyle.GypsyWoman, 0))
-        assertEquals(DanceLeadVoice.OrganMelody, danceLeadVoice(DanceStyle.GypsyWoman, firstVerse.atMs))
-        assertEquals(DanceLeadVoice.OrganMelody, danceLeadVoice(DanceStyle.GypsyWoman, 36_000))
+        assertEquals(DanceLeadVoice.OrganStab, danceLeadVoice(DanceStyle.GypsyWoman, 8_875))
+        assertEquals(DanceLeadVoice.OrganStab, danceLeadVoice(DanceStyle.GypsyWoman, 36_000))
+        assertEquals(DanceLeadVoice.ElectricPiano, danceLeadVoice(DanceStyle.GypsyWoman, 80_000))
+        assertEquals(DanceLeadVoice.Mallet, danceLeadVoice(DanceStyle.GypsyWoman, 128_000))
+        assertEquals(DanceLeadVoice.OrganStab, danceLeadVoice(DanceStyle.GypsyWoman, 144_000))
         assertTrue(song.notes.none { danceLeadVoice(DanceStyle.GypsyWoman, it.atMs) == DanceLeadVoice.Piano })
 
         val studio = DanceStudio(chart, DanceStyle.GypsyWoman)
-        val verse = studio.leadSamples(probe.copy(atMs = firstVerse.atMs))
-        // A sustained organ body stays present after its small percussive edge.
-        assertTrue(rms(verse, 300, 500) > rms(verse, 40, 140) * .65)
-        // The third drawbar decays away; a bright struck-piano substitute fails this.
+        val organ = studio.leadSamples(probe.copy(atMs = 8_875))
+        // Tonewheel body retains the sustain and audible drawbars, without metallic piano overtones.
+        assertTrue(rms(organ, 300, 500) > rms(organ, 40, 140) * .55)
         val hz = 440.0 * 2.0.pow((probe.midi - 69) / 12.0)
-        assertTrue(partial(verse, hz * 3, 100, 300) < partial(verse, hz, 100, 300) * .06)
+        val third = partial(organ, hz * 3, 100, 300) / partial(organ, hz, 100, 300)
+        assertTrue(third in .025.. .18)
     }
 
     @Test fun synthesizedVoicesKeepTheirAttackAndReleaseClickFree() {
         for (style in DanceStyle.entries) {
             val studio = DanceStudio(chart, style)
-            for (at in listOf(0L, 8_875L, 36_000L, 96_000L)) {
+            for (at in listOf(0L, 8_875L, 36_000L, 80_000L, 96_000L, 128_000L)) {
                 for (midi in listOf(45, 60, 74, 84)) {
                     val samples = studio.leadSamples(probe.copy(atMs = at, midi = midi))
                     assertTrue(samples.all { it.isFinite() })
@@ -53,6 +54,9 @@ class StudioSoundTest {
     }
 
     @Test fun pianoDynamicsChangeBrightnessWithoutHarshUpperPartials() {
+        assertEquals(DanceLeadVoice.PluckedString, danceLeadVoice(DanceStyle.Levels, 0))
+        assertEquals(DanceLeadVoice.Synth, danceLeadVoice(DanceStyle.Levels, 8000))
+        assertEquals(DanceLeadVoice.Piano, danceLeadVoice(DanceStyle.Levels, 96_000))
         val soft = studioPiano(65, 700, .35f)
         val firm = studioPiano(65, 700, .95f)
         val hz = 440.0 * 2.0.pow((65 - 69) / 12.0)

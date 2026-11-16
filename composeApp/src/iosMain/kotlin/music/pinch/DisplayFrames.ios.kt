@@ -13,6 +13,8 @@ import platform.Foundation.NSRunLoopCommonModes
 import platform.Foundation.NSSelectorFromString
 import platform.QuartzCore.CACurrentMediaTime
 import platform.QuartzCore.CADisplayLink
+import platform.QuartzCore.CAFrameRateRangeMake
+import platform.UIKit.UIScreen
 import platform.darwin.NSObject
 import kotlin.math.roundToLong
 
@@ -31,6 +33,10 @@ internal actual fun PlaybackFrames(onFrame: (presentationUptimeMs: Long) -> Unit
     DisposableEffect(Unit) {
         val target = DisplayTick { latest(it) }
         val link = CADisplayLink.displayLinkWithTarget(target, NSSelectorFromString("nextFrame:"))
+        // Request ProMotion while playing; iOS still controls thermal/low-power
+        // limits. The pose follows targetTimestamp at every actual refresh rate.
+        val maximum = UIScreen.mainScreen.maximumFramesPerSecond.toFloat().coerceAtLeast(60f)
+        link.preferredFrameRateRange = CAFrameRateRangeMake(60f, maximum, maximum)
         link.addToRunLoop(NSRunLoop.mainRunLoop, forMode = NSRunLoopCommonModes)
         onDispose { link.invalidate() }
     }

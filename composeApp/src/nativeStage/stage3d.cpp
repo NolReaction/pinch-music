@@ -73,7 +73,7 @@ static GLuint compile(GLenum kind, const char* source) {
 }
 struct Program {
     GLuint id = 0;
-    GLint finish = -1, lens = -1, offset = -1, tilt = -1, key = -1, ball = -1, spin = -1, paint = -1, accent = -1, phase = -1, decals = -1, shadowAxes = -1;
+    GLint finish = -1, lens = -1, offset = -1, tilt = -1, key = -1, ball = -1, spin = -1, paint = -1, accent = -1, room = -1, phase = -1, decals = -1, shadowAxes = -1;
     ~Program() {
         if (id)
             glDeleteProgram(id);
@@ -113,6 +113,7 @@ struct Program {
         spin = glGetUniformLocation(id, "uSpin");
         paint = glGetUniformLocation(id, "uPaint");
         accent = glGetUniformLocation(id, "uAccent");
+        room = glGetUniformLocation(id, "uRoom");
         phase = glGetUniformLocation(id, "uPhase");
         decals = glGetUniformLocation(id, "uDecals[0]");
         shadowAxes = glGetUniformLocation(id, "uShadowAxes[0]");
@@ -122,6 +123,11 @@ struct Program {
 static void colour(GLint location, float packed) {
     const auto rgb = static_cast<unsigned>(packed);
     glUniform3f(location, ((rgb >> 16) & 255) / 255.f, ((rgb >> 8) & 255) / 255.f, (rgb & 255) / 255.f);
+}
+static void roomColour(GLint location, float lightPacked, float wallPacked) {
+    const auto light = static_cast<unsigned>(lightPacked), wall = static_cast<unsigned>(wallPacked);
+    auto channel = [&](int shift) { return (.55f * ((light >> shift) & 255) + .45f * ((wall >> shift) & 255)) / 255.f; };
+    glUniform3f(location, channel(16), channel(8), channel(0));
 }
 struct Piece {
     float x = 0, y = 0, side = 0, style = 0, slope = 0, tiltCos = 1, tiltSin = 0;
@@ -456,7 +462,7 @@ struct Stage {
                 const float w = guided ? .23f : .35f, center = keyCenterX(guided, it->side);
                 const float cs = it->tiltCos, sn = it->tiltSin;
                 const bool accented = it->style > .5f;
-                const float depth = design.instrument == 1 ? (accented ? .18f : .13f) : (accented ? .15f : .115f);
+                const float depth = keyDepth(design, accented);
                 const float back = guided ? -.585f : -.66f, zLength = .25f - back;
                 if (design.instrument == 2) {
                     // Hollow pipes have a narrow cylindrical silhouette. Project
@@ -503,6 +509,7 @@ struct Stage {
         glUniform4f(scene.finish, design.lacquer, design.reflection, design.grainX, design.grainZ);
         colour(scene.paint, f[15]);
         colour(scene.accent, f[16]);
+        roomColour(scene.room, f[13], f[14]);
         glUniform4f(scene.lens, lensX, lensY, .20f, 45.f);
         glUniform4f(scene.ball, ball.x, ball.y, ball.z, strength);
         glUniform2f(scene.spin, std::cos(f[4]), std::sin(f[4]));
@@ -540,8 +547,13 @@ struct Stage {
         }
         glUniform3f(scene.offset, ball.x, ball.y, ball.z);
         glUniform2f(scene.tilt, 1.f, 0.f);
+        // Opaque instruments are already drawn. The glass shell can transmit
+        // their actual image while retaining depth for the later cue pass.
+        glEnable(GL_BLEND);
+        glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
         marble.bind();
         marble.draw();
+        glDisable(GL_BLEND);
         glDisable(GL_CULL_FACE);
 
         const int target = static_cast<int>(f[25]);

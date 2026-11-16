@@ -7,10 +7,11 @@ import kotlin.uuid.Uuid
 /** Old imports were stored against a built-in song. Keep the original chart and record keys
  * for those entries, but give them their own selectable identity. */
 internal data class PersonalSong(val id: String, val title: String, val legacyId: String? = null,
-    val hasRecording: Boolean = false, val previousHash: Int? = null, val sameTargets: Boolean = false) {
+    val hasRecording: Boolean = false, val previousHash: Int? = null, val sameTargets: Boolean = false,
+    val mode: ImportMode = ImportMode.Original) {
     val storageId get() = legacyId ?: id
     val chartKey get() = if (previousHash == null) "chart.$storageId" else "chart.restored.$id"
-    fun asSong() = Song(id, title, "Своя запись")
+    fun asSong() = Song(id, title, if (mode == ImportMode.Instrumental) "Своя инструментальная версия" else "Своя запись")
 }
 
 internal class PersonalCatalog(private val platform: Platform, private val builtIns: List<Song>) {
@@ -48,6 +49,14 @@ internal class PersonalCatalog(private val platform: Platform, private val built
         val updated = current.entries.toMutableList()
         if (existing < 0) updated.add(entry) else updated[existing] = entry
         save(current.copy(entries = updated))
+    }
+
+    fun setMode(id: String, mode: ImportMode): PersonalSong {
+        val current = readIndex() ?: index
+        val entry = requireNotNull(current.entries.find { it.id == id && it.hasRecording })
+        val updated = entry.copy(mode = mode)
+        save(current.copy(entries = current.entries.map { if (it.id == id) updated else it }))
+        return updated
     }
 
     fun remove(entry: PersonalSong) {
@@ -95,7 +104,9 @@ internal class PersonalCatalog(private val platform: Platform, private val built
             val item = el.jsonObject
             PersonalSong(item.getValue("id").jsonPrimitive.content, item.getValue("title").jsonPrimitive.content,
                 item["legacy"]?.jsonPrimitive?.content, item["recording"]?.jsonPrimitive?.boolean == true,
-                item["previousHash"]?.jsonPrimitive?.int, item["sameTargets"]?.jsonPrimitive?.boolean == true)
+                item["previousHash"]?.jsonPrimitive?.int, item["sameTargets"]?.jsonPrimitive?.boolean == true,
+                item["mode"]?.jsonPrimitive?.content?.let { name -> ImportMode.entries.find { it.name == name } }
+                    ?: ImportMode.Original)
         }
         return Index(entries, json.getValue("favorites").jsonArray.mapTo(linkedSetOf()) { it.jsonPrimitive.content })
     }
@@ -115,6 +126,7 @@ internal class PersonalCatalog(private val platform: Platform, private val built
                     if (song.hasRecording) put("recording", true)
                     song.previousHash?.let { put("previousHash", it) }
                     if (song.sameTargets) put("sameTargets", true)
+                    put("mode", song.mode.name)
                 })
             }
             putJsonArray("favorites") { value.favorites.forEach { add(it) } }

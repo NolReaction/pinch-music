@@ -44,7 +44,14 @@ internal actual fun NativeCascadeStage(
         onPresented()
     }
     val display = remember(context) { CascadeTexture(context) { notifyPresented() } }
-    AndroidView(factory = { display }, modifier = modifier, onRelease = { it.release() })
+    AndroidView(factory = { display }, modifier = modifier, onRelease = { it.release() }, update = {
+        if (android.os.Build.VERSION.SDK_INT >= 35) {
+            // Vote for fluid motion only while the scene is moving; the system
+            // retains control of adaptive refresh and power-saving limits.
+            it.requestedFrameRate = if (animate) View.REQUESTED_FRAME_RATE_CATEGORY_HIGH
+                else View.REQUESTED_FRAME_RATE_CATEGORY_DEFAULT
+        }
+    })
     CascadeFrameClock(display, course, frame, animate || !presented.value)
 }
 
@@ -226,23 +233,53 @@ private class CascadeEgl {
         display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
         val version = IntArray(2)
         if (display == EGL14.EGL_NO_DISPLAY || !EGL14.eglInitialize(display, version, 0, version, 1)) return false
+        // Smooth the thin rails and bevel silhouettes without increasing fragment
+        // shading resolution. Some ES2 drivers expose MSAA configs but cannot
+        // create a TextureView surface from them, so retry the complete setup.
+        for (samples in intArrayOf(4, 2, 0)) {
+            val config = chooseConfig(samples) ?: continue
+            context = EGL14.eglCreateContext(display, config, EGL14.EGL_NO_CONTEXT,
+                intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE), 0)
+            if (context == EGL14.EGL_NO_CONTEXT) continue
+            surface = EGL14.eglCreateWindowSurface(display, config, texture, intArrayOf(EGL14.EGL_NONE), 0)
+            if (surface != EGL14.EGL_NO_SURFACE && EGL14.eglMakeCurrent(display, surface, surface, context)) {
+                EGL14.eglSwapInterval(display, 1)
+                stage = CascadeGL.create()
+                return stage != 0L
+            }
+            releaseDrawable()
+        }
+        return false
+    }
+
+    private fun chooseConfig(samples: Int): EGLConfig? {
         val attributes = intArrayOf(
             EGL14.EGL_SURFACE_TYPE, EGL14.EGL_WINDOW_BIT,
             EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
             EGL14.EGL_RED_SIZE, 8, EGL14.EGL_GREEN_SIZE, 8, EGL14.EGL_BLUE_SIZE, 8,
-            EGL14.EGL_DEPTH_SIZE, 16, EGL14.EGL_NONE
+            EGL14.EGL_DEPTH_SIZE, 16,
+            EGL14.EGL_SAMPLE_BUFFERS, if (samples > 0) 1 else 0,
+            EGL14.EGL_SAMPLES, samples,
+            EGL14.EGL_NONE
         )
-        val configs = arrayOfNulls<EGLConfig>(1)
         val count = IntArray(1)
-        if (!EGL14.eglChooseConfig(display, attributes, 0, configs, 0, 1, count, 0) || count[0] == 0) return false
-        val config = configs[0] ?: return false
-        context = EGL14.eglCreateContext(display, config, EGL14.EGL_NO_CONTEXT,
-            intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE), 0)
-        if (context == EGL14.EGL_NO_CONTEXT) return false
-        surface = EGL14.eglCreateWindowSurface(display, config, texture, intArrayOf(EGL14.EGL_NONE), 0)
-        if (surface == EGL14.EGL_NO_SURFACE || !EGL14.eglMakeCurrent(display, surface, surface, context)) return false
-        stage = CascadeGL.create()
-        return stage != 0L
+        if (!EGL14.eglChooseConfig(display, attributes, 0, null, 0, 0, count, 0) || count[0] == 0) return null
+        val configs = arrayOfNulls<EGLConfig>(count[0])
+        if (!EGL14.eglChooseConfig(display, attributes, 0, configs, 0, configs.size, count, 0)) return null
+        val actual = IntArray(1)
+        // EGL_SAMPLES is a minimum, not an exact match. Never select an 8×
+        // config for 4×, nor pick the same failed 4× config on the 0× retry.
+        return configs.firstOrNull { config ->
+            config != null && EGL14.eglGetConfigAttrib(display, config, EGL14.EGL_SAMPLES, actual, 0) && actual[0] == samples
+        }
+    }
+
+    private fun releaseDrawable() {
+        EGL14.eglMakeCurrent(display, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
+        if (surface != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(display, surface)
+        if (context != EGL14.EGL_NO_CONTEXT) EGL14.eglDestroyContext(display, context)
+        surface = EGL14.EGL_NO_SURFACE
+        context = EGL14.EGL_NO_CONTEXT
     }
 
     fun render(texture: SurfaceTexture, course: CascadeGpuCourse, frame: FloatArray, w: Int, h: Int): Boolean {
@@ -274,9 +311,7 @@ private class CascadeEgl {
     fun close() {
         if (display != EGL14.EGL_NO_DISPLAY) {
             if (stage != 0L) CascadeGL.destroy(stage)
-            EGL14.eglMakeCurrent(display, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
-            if (surface != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(display, surface)
-            if (context != EGL14.EGL_NO_CONTEXT) EGL14.eglDestroyContext(display, context)
+            releaseDrawable()
             EGL14.eglTerminate(display)
             EGL14.eglReleaseThread()
         }

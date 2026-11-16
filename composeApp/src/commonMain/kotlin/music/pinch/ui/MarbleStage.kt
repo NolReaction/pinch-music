@@ -148,7 +148,9 @@ private class PanelSides {
 internal class OrbitMaterials(val theme: StageTheme) {
     private val pigment = stageColor(theme.panel)
     private val light = stageColor(theme.light)
-    val wood = Finish(lerp(Color(0xffa36d43), pigment, .12f), Color(0xffe9bf82))
+    val ivoryBars = theme in setOf(StageTheme.Floor, StageTheme.Stereo, StageTheme.Gypsy, StageTheme.Stay)
+    val wood = if (ivoryBars) Finish(Color(0xffeeeee6), Color(0xfffff7d9))
+        else Finish(lerp(Color(0xffa17c55), pigment, .12f), Color(0xffdfc391))
     val drum = Finish(lerp(pigment, Steel, .32f), lerp(pigment, light, .75f))
     val fork = Finish(lerp(Silver, pigment, .13f), Color(0xfff7f8ed))
     val membrane = Array(LightSteps + 1) { i ->
@@ -174,7 +176,7 @@ private class Room(size: Size, theme: StageTheme) {
         image.prepareToDraw()
     }
     val sheen = Brush.linearGradient(
-        listOf(Color(0x310e151d), Color(0x047c878b), Color(0x3ef8f9f3), Color.Transparent),
+        listOf(Color(0x100e151d), Color(0x047c878b), Color(0x28ffffff), Color.Transparent),
         Offset(0f, size.height*.26f), Offset(size.width, size.height*.49f)
     )
 }
@@ -205,9 +207,9 @@ internal class Bar(val key: StageKey, index: Int, private val materials: OrbitMa
     private val length = key.halfLength
     private val width = key.halfWidth
     val thickness = when (key.shape) {
-        PanelShape.WoodBar -> .105f
-        PanelShape.Drum -> .16f
-        PanelShape.Fork -> .085f
+        PanelShape.WoodBar -> if (materials.ivoryBars) .070f else .090f
+        PanelShape.Drum -> .13f
+        PanelShape.Fork -> .070f
     }
     private val chamfer = min(.030f, width*.22f)
     private val ringHeight = floatArrayOf(0f, chamfer*.68f, thickness-chamfer*.7f, thickness)
@@ -251,7 +253,7 @@ internal class Bar(val key: StageKey, index: Int, private val materials: OrbitMa
     val skin = if (key.shape == PanelShape.Drum) ring(length*.79f, width*.79f) else emptyArray()
     // Fine curved fibers follow the long axis. These world-space paths are
     // prepared with the bar, so neither the grain nor its phase swims on camera moves.
-    val woodGrain = if (key.shape == PanelShape.WoodBar) Array(7) { row ->
+    val woodGrain = if (key.shape == PanelShape.WoodBar && !materials.ivoryBars) Array(5) { row ->
         Array(12) { sample ->
             val t = sample / 11f
             val x = length * (-.80f + 1.60f * t)
@@ -273,7 +275,8 @@ internal class Bar(val key: StageKey, index: Int, private val materials: OrbitMa
     val pins = when (key.shape) {
         PanelShape.Fork -> arrayOf(key.point(-length*.72f, 0f, 0f))
         PanelShape.Drum -> emptyArray()
-        PanelShape.WoodBar -> arrayOf(key.point(-length*.64f, 0f, 0f), key.point(length*.64f, 0f, 0f))
+        PanelShape.WoodBar -> if (materials.ivoryBars) emptyArray()
+            else arrayOf(key.point(-length*.64f, 0f, 0f), key.point(length*.64f, 0f, 0f))
     }
     private val mountSpacing = length * if (key.shape == PanelShape.Fork) .19f else .43f
     private val mountX = if (key.shape == PanelShape.Fork) -length*.27f else 0f
@@ -534,7 +537,8 @@ internal class MarbleScene(private val meshes: OrbitMeshes, private val marbleAt
                     alpha=.38f*(1-gap/.48f))
             }
         }
-        drawPath(outline, accent, alpha = .28f + .64f * incoming, style = Stroke(unit * (.012f + .016f * incoming)))
+        drawPath(outline, lerp(Silver, accent, incoming), alpha = .46f + .36f * incoming,
+            style = Stroke(unit * (.010f + .009f * incoming)))
         result?.let { mark(it, timeMs, unit) }
         val radius = unit*.032f
         for (pin in bar.pins) {
