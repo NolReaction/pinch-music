@@ -7,7 +7,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import music.pinch.core.Chart
 import music.pinch.core.Note
-import music.pinch.core.Grade
 import music.pinch.core.RhythmGame
 import music.pinch.core.TapResult
 import music.pinch.core.cascadeChart
@@ -45,7 +44,7 @@ internal class Session(
         instrument = platform.readValue("instrument")?.let { name -> Instrument.entries.find { it.name == name } } ?: Instrument.Piano,
         solo = platform.readValue("playback.solo") == "true",
         stageMode = platform.readValue("stage.mode")?.let { name -> StageMode.entries.find { it.name == name } } ?: StageMode.Orbit,
-        volume = platform.volume, haptics = platform.haptics))
+        volume = platform.volume, haptics = platform.haptics, profile = storedProfile()))
         private set
     var media by mutableStateOf<GameMedia?>(null)
         private set
@@ -57,7 +56,6 @@ internal class Session(
     private var playRequestedAt = 0L
     private var waitingSince: Long? = null
     private var resumeAt: Long? = null
-    private var reactionUntil = 0L
     private var lead: LeadPart? = null
     private var bandChart: Chart? = null
     private var bandFile: Deferred<Result<ArrangementTrack>>? = null
@@ -84,6 +82,19 @@ internal class Session(
     private var lastMistakeTarget: String? = null
 
     init { refreshSong() }
+
+    private fun storedProfile() = PlayerProfile.restore(platform.readValue(PlayerProfile.storageKey))
+
+    private fun saveReward(reward: RunReward): PlayerProfile {
+        val delta = reward.totalXp - state.runReward.totalXp
+        if (delta <= 0) return state.profile
+        // Sessions use the UI thread. Read the current total in case another window also earned XP.
+        val saved = storedProfile()
+        val base = if (saved.totalXp >= state.profile.totalXp) saved else state.profile
+        val profile = base.add(delta)
+        platform.writeValue(PlayerProfile.storageKey, profile.totalXp.toString())
+        return profile
+    }
 
     private fun menuAvailability() = state.copy(importedIds = savedCharts.keys.toSet(),
         availableIds = state.songs.filter { it.hasBundled || it.id in savedCharts }.mapTo(mutableSetOf()) { it.id })
@@ -266,9 +277,10 @@ internal class Session(
     private fun startAttempt(preview: Boolean) {
         if (state.importing || !state.hasScore) return
         close()
+        val profile = storedProfile()
         state = state.copy(scene = Scene.Loading, attempt = state.attempt + 1, preview = preview, notice = null,
-            countdown = null, reaction = null, error = null, newRecord = false, stats = null, renderingAudio = false,
-            panelFeedback = emptyList())
+            countdown = null, error = null, newRecord = false, stats = null, renderingAudio = false,
+            panelFeedback = emptyList(), profile = profile, runReward = RunReward(startLevel = profile.level))
         if (state.chart == null || courseTask == null) {
             startWhenReady = true
             if (loadingScore?.isActive != true) refreshSong()
@@ -442,19 +454,17 @@ internal class Session(
                 val confirmed = snap.confirmedPositionMs ?: now
                 game?.advance(confirmed - 32)
                 val missed = game?.takeMisses().orEmpty()
-                recordMisses(missed, now)
+                val feedback = feedbackAfter(missed, null, now)
                 game?.takeMissCue(confirmed)?.let { soundMistake(player, it, now, stray = false) }
                 val leadRemaining = (game?.firstTargetMs ?: 0L) - now
                 val beatMs = (60_000L / song.bpm).coerceAtLeast(1)
                 val count = if (!state.preview && leadRemaining in 1..(4 * beatMs))
                     ((leadRemaining + beatMs - 1) / beatMs).toInt() else null
                 positionMs = snap.visualPosition(previousAnchor, positionMs, song.durationMs)
-                val reaction = state.reaction.takeIf { now < reactionUntil }
                 val stats = game?.stats
-                if (stats !== state.stats || count != state.countdown || reaction != state.reaction) {
-                    state = state.copy(stats = stats, countdown = count, reaction = reaction)
+                if (stats !== state.stats || count != state.countdown || feedback !== state.panelFeedback) {
+                    state = state.copy(stats = stats, countdown = count, panelFeedback = feedback)
                 }
-                if (missed.isNotEmpty()) showReaction("Пропуск", now)
             }
             else -> Unit
         }
@@ -503,26 +513,21 @@ internal class Session(
         val nearest = engine.nearestTarget(at)
         if (abs(at - nearest.atMs) > FORGIVING_WINDOW_MS && onRail(at)) return
         val result = engine.tap(at)
-        recordMisses(engine.takeMisses(), feedbackAt)
+        val hit = result as? TapResult.Hit
+        val feedback = feedbackAfter(engine.takeMisses(), hit?.note, feedbackAt)
+        if (state.stats !== engine.stats || feedback !== state.panelFeedback) {
+            val reward = if (hit != null) state.runReward.hit(hit.grade, engine.stats.combo) else state.runReward
+            state = state.copy(stats = engine.stats, panelFeedback = feedback, runReward = reward,
+                profile = saveReward(reward))
+        }
         when (result) {
             is TapResult.Hit -> {
                 if (opening) pendingOpeningNote = result.note else soundHit(player, result.note, feedbackAt)
-                recordFeedback(PanelFeedback(result.note.atMs, feedbackAt, true))
                 if (state.haptics) platform.feedback()
-                val label = when (result.grade) {
-                    Grade.Perfect -> "Идеально"
-                    Grade.Good -> "Хорошо"
-                    Grade.Okay -> if (result.errorMs < 0) "Попал · чуть раньше" else "Попал · чуть позже"
-                }
-                showReaction(label, feedbackAt)
             }
-            TapResult.Stray -> {
-                soundMistake(player, nearest, feedbackAt, stray = true)
-                showReaction("Мимо", feedbackAt)
-            }
+            TapResult.Stray -> soundMistake(player, nearest, feedbackAt, stray = true)
             TapResult.Ignored -> Unit
         }
-        if (state.stats !== engine.stats) state = state.copy(stats = engine.stats)
     }
 
     override fun tapNow() { media?.let { tap(it.uptimeMs()) } }
@@ -533,15 +538,18 @@ internal class Session(
         null -> false
     }
 
-    private fun recordMisses(notes: List<Note>, at: Long) {
-        for (index in (notes.size - 4).coerceAtLeast(0) until notes.size) {
-            recordFeedback(PanelFeedback(notes[index].atMs, at, false))
+    private fun feedbackAfter(missed: List<Note>, hit: Note?, at: Long): List<PanelFeedback> {
+        if (missed.isEmpty() && hit == null) return state.panelFeedback
+        val recent = ArrayList(state.panelFeedback)
+        fun append(note: Note, scored: Boolean) {
+            // Queued input can correct a miss which a display frame already reported.
+            recent.removeAll { it.noteAtMs == note.atMs }
+            if (recent.size == 4) recent.removeAt(0)
+            recent.add(PanelFeedback(note.atMs, at, scored))
         }
-    }
-
-    private fun recordFeedback(event: PanelFeedback) {
-        val recent = state.panelFeedback.filterNot { it.noteAtMs == event.noteAtMs }.takeLast(3)
-        state = state.copy(panelFeedback = recent + event)
+        for (index in (missed.size - 4).coerceAtLeast(0) until missed.size) append(missed[index], false)
+        if (hit != null) append(hit, true)
+        return recent
     }
 
     private fun soundVoice(player: GameMedia, note: Note, at: Long) {
@@ -572,14 +580,12 @@ internal class Session(
         lastMistakeTarget = target.id
     }
 
-    private fun showReaction(text: String, at: Long) {
-        reactionUntil = at + 420
-        state = state.copy(reaction = text, reactionId = state.reactionId + 1)
-    }
-
     override fun pause() {
         if (state.scene !in setOf(Scene.Loading, Scene.CountIn, Scene.Playing, Scene.Resuming)) return
-        state = state.copy(scene = Scene.Paused, countdown = null, reaction = null)
+        // The nearest panel may still be inside its input window when the song resumes.
+        // Keep its judgement so the HUD does not invite a second tap, and retire the transient effects.
+        state = state.copy(scene = Scene.Paused, countdown = null,
+            panelFeedback = state.panelFeedback.map { it.copy(effectsVisible = false) })
         game?.pause()
         media?.pause()
         if (transportStarted) {
@@ -604,21 +610,24 @@ internal class Session(
     private fun finish() {
         if (state.preview) { menu(); return }
         val final = game?.finish() ?: return
+        val reward = state.runReward.finish(final)
         val previous = state.bestScore
         val record = previous == null || final.score > previous
         if (record) platform.writeValue(recordKey, final.score.toString())
+        val profile = saveReward(reward)
         close()
         positionMs = state.durationMs
-        state = state.copy(scene = Scene.Result, reaction = null,
-            countdown = null, stats = final, bestScore = if (record) final.score else previous, newRecord = record)
+        state = state.copy(scene = Scene.Result,
+            countdown = null, stats = final, bestScore = if (record) final.score else previous, newRecord = record,
+            runReward = reward, profile = profile)
     }
 
     override fun menu() {
         close()
         positionMs = 0
         state = state.copy(scene = Scene.Menu, preview = false, stats = null,
-            error = null, countdown = null, reaction = null, newRecord = false,
-            panelFeedback = emptyList())
+            error = null, countdown = null, newRecord = false,
+            panelFeedback = emptyList(), runReward = RunReward(startLevel = state.profile.level))
     }
 
     override fun volume(value: Float) {
@@ -635,7 +644,7 @@ internal class Session(
 
     private fun fail(message: String) {
         close()
-        state = state.copy(scene = Scene.Error, error = message, countdown = null, reaction = null)
+        state = state.copy(scene = Scene.Error, error = message, countdown = null)
     }
 
     fun dispose() {
@@ -675,7 +684,6 @@ internal class Session(
         waitingSince = null
         resumeAt = null
         hasPlayed = false
-        reactionUntil = 0
     }
 }
 

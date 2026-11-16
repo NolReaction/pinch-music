@@ -8,7 +8,9 @@ private struct GameScreen: UIViewControllerRepresentable {
 
     func makeUIViewController(context: Context) -> UIViewController {
         context.coordinator.setSceneActive(phase == .active)
-        return MainViewControllerKt.MainViewController(factory: context.coordinator)
+        let controller = MainViewControllerKt.MainViewController(factory: context.coordinator)
+        controller.view.backgroundColor = UIColor(named: "LaunchInk")
+        return controller
     }
 
     func updateUIViewController(_ controller: UIViewController, context: Context) {
@@ -25,6 +27,7 @@ struct PinchMusicApp: App {
     var body: some SwiftUI.Scene {
         WindowGroup {
             GameScreen()
+                .background(Color("LaunchInk"))
                 .ignoresSafeArea()
                 .preferredColorScheme(.dark)
         }

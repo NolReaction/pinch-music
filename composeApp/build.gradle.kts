@@ -87,14 +87,19 @@ compose.resources {
 }
 
 // The existing Xcode build phase runs embedAndSign before Xcode signs the application.
-val xcodeArrangements = providers.environmentVariable("TARGET_BUILD_DIR")
+val xcodeResources = providers.environmentVariable("TARGET_BUILD_DIR")
     .zip(providers.environmentVariable("UNLOCALIZED_RESOURCES_FOLDER_PATH")) { products, resources ->
-        File(products, resources).resolve("arrangements")
+        File(products, resources)
     }
+val installLaunchSound = tasks.register<Copy>("installLaunchSound") {
+    from(arrangedAudio.elements.map { it.single().asFile.resolve("launch.wav") })
+    into(xcodeResources)
+}
 val installXcodeArrangements = tasks.register<Sync>("installXcodeArrangements") {
+    dependsOn(installLaunchSound)
     from(arrangedAudio.elements.map { it.single().asFile.resolve("arrangements") })
-    into(xcodeArrangements)
+    into(xcodeResources.map { it.resolve("arrangements") })
 }
 tasks.matching { it.name == "embedAndSignAppleFrameworkForXcode" }.configureEach {
-    if (xcodeArrangements.isPresent) dependsOn(installXcodeArrangements)
+    if (xcodeResources.isPresent) dependsOn(installXcodeArrangements)
 }

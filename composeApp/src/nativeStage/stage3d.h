@@ -18,8 +18,10 @@ void stage3d_set_course(void* stage, const float* keys, int keyCount, const floa
 /* Frame: ball XYZ, cameraY, roll, activePanel, impact, capTravel, seatedBallTravel,
  * nextPanel, cameraX, wallMotif, cameraSpeed, four packed 24-bit sRGB colours
  * (wall, light, panel, accent), then four (panel, signed score opacity) pairs.
+ * Next come the currently playable panel and signed tap-window phase [-1,1],
+ * then the four spark ages in matching score-slot order (0..1, -1 if absent).
  * Positive score means a hit, negative a miss. Missing indices are -1. */
-#define STAGE3D_FRAME_SIZE 25
+#define STAGE3D_FRAME_SIZE 31
 void stage3d_draw(void* stage, int width, int height, const float* frame);
 
 #ifdef __cplusplus

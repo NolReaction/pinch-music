@@ -21,6 +21,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge(statusBarStyle = bars, navigationBarStyle = bars)
         volumeControlStream = AudioManager.STREAM_MUSIC
         platform = AndroidPlatform(this)
+        platform.warmLaunchSound()
         setContent {
             App(platform) { enabled, action -> BackHandler(enabled = enabled, onBack = action) }
         }
@@ -33,6 +34,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onPause() {
         platform.foreground = false
+        LaunchPresentation.dismiss()
+        platform.stopLaunchSound()
         platform.active?.interrupt()
         super.onPause()
     }
@@ -51,8 +54,10 @@ private class AndroidPlatform(private val activity: MainActivity) : Platform {
 
     private val songImport = AndroidSongImport(activity)
     private val samples = NoteSampleCache(activity.assets)
+    private val launchSound = AndroidLaunchSound(activity)
 
     fun close() {
+        stopLaunchSound()
         active?.close()
         samples.close()
     }
@@ -73,11 +78,16 @@ private class AndroidPlatform(private val activity: MainActivity) : Platform {
         get() = settings.getBoolean("haptics", false)
         set(value) = settings.edit().putBoolean("haptics", value).apply()
 
+    fun warmLaunchSound() { if (LaunchPresentation.visible && volume > 0f) launchSound.warm() }
+    override fun playLaunchSound(volume: Float) { if (foreground) launchSound.play(volume) }
+    override fun stopLaunchSound() = launchSound.stop()
+
     override fun feedback() {
         activity.window.decorView.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
     }
 
     override fun newMedia(durationMs: Long, instrument: Instrument): GameMedia {
+        stopLaunchSound()
         active?.close()
         return AndroidMedia(activity, durationMs, instrument, samples, { foreground }) { media ->
             if (active === media) active = null

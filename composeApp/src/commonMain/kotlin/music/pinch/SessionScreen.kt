@@ -6,7 +6,7 @@ import music.pinch.core.GameStats
 
 enum class Scene { Menu, Loading, CountIn, Playing, Paused, Resuming, Result, Error }
 enum class StageMode(val label: String) { Orbit("Орбита"), Planar("Каскад X/Y") }
-data class PanelFeedback(val noteAtMs: Long, val shownAtMs: Long, val hit: Boolean)
+data class PanelFeedback(val noteAtMs: Long, val shownAtMs: Long, val hit: Boolean, val effectsVisible: Boolean = true)
 
 data class ScreenState(
     val songs: List<Song>,
@@ -22,8 +22,6 @@ data class ScreenState(
     val scene: Scene = Scene.Menu,
     val preview: Boolean = false,
     val stats: GameStats? = null,
-    val reaction: String? = null,
-    val reactionId: Int = 0,
     val countdown: Int? = null,
     val error: String? = null,
     val bestScore: Int? = null,
@@ -33,6 +31,8 @@ data class ScreenState(
     val attempt: Long = 0,
     val panelFeedback: List<PanelFeedback> = emptyList(),
     val stageMode: StageMode = StageMode.Orbit,
+    val profile: PlayerProfile = PlayerProfile(),
+    val runReward: RunReward = RunReward(startLevel = profile.level),
 ) {
     val recordedAsset: String? get() = selectedSong.backingAsset.takeUnless { selectedSong.id in importedIds }
     val backingAsset: String? get() = recordedAsset.takeUnless { solo }

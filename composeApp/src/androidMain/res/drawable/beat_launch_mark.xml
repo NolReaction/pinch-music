@@ -1,0 +1,13 @@
+<!-- Keep Android's starting window aligned with the first Compose animation frame. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="288dp" android:height="288dp"
+    android:viewportWidth="190" android:viewportHeight="190">
+    <group android:translateX="45" android:translateY="45">
+        <path android:strokeColor="@color/beat_cream" android:strokeWidth="10"
+            android:strokeLineCap="round" android:pathData="M17,30L39,67"/>
+        <path android:strokeColor="@color/beat_coral" android:strokeWidth="10"
+            android:strokeLineCap="round" android:pathData="M47,74L81,30"/>
+        <path android:fillColor="@color/beat_mint"
+            android:pathData="M23,25a8,8 0,1 0,16 0a8,8 0,1 0,-16 0"/>
+    </group>
+</vector>

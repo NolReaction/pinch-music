@@ -59,6 +59,7 @@ fun main(args: Array<String>): Unit = runBlocking {
             current.add(file)
         }
     }
+    writeLaunchSound(File(args[1], "launch.wav"))
     // A removed score or a changed encoder must not leave an old track in the application.
     output.walkBottomUp().filter { it.isFile && it !in current }.forEach { Files.delete(it.toPath()) }
     Files.deleteIfExists(scratch.resolve("track.wav").toPath())

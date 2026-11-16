@@ -7,7 +7,7 @@ kotlin {
     sourceSets.main {
         kotlin.srcDir(rootProject.file("composeApp/src/commonMain/kotlin"))
         kotlin.include(
-            "music/pinch/BuildArrangements.kt", "music/pinch/ArrangementScore.kt",
+            "music/pinch/BuildArrangements.kt", "music/pinch/LaunchSound.kt", "music/pinch/ArrangementScore.kt",
             "music/pinch/core/Chart.kt", "music/pinch/StereoLove.kt", "music/pinch/StereoLoveBand.kt",
             "music/pinch/BandArrangement.kt", "music/pinch/SongLibrary.kt",
             "music/pinch/Accompaniment.kt", "music/pinch/SamplePreview.kt",

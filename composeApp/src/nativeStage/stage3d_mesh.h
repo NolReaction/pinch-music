@@ -30,7 +30,7 @@ inline V unit(V v) {
 inline V cross(V a, V b) {
     return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
 }
-enum Surface { Face, Skirt, Inlay, Chrome, Iron, Bolt, Accent, Rail, Glass, Copper };
+enum Surface { Face, Skirt, Inlay, Chrome, Iron, Bolt, Accent, Rail, Glass, Copper, TimingArc, Ember };
 struct Vertex {
     V p, n;
     float material, detail;
@@ -57,6 +57,48 @@ struct Mesh {
         tri(a, c, d);
     }
 };
+
+// Two fine brackets frame the ball at the target. A dark outer edge separates the
+// pale inlay from a lit metal face, even when the next cap is nearly vertical.
+inline Mesh timingArcs() {
+    Mesh m;
+    constexpr int segments = 16;
+    for (int side = 0; side < 2; ++side) {
+        const int base = static_cast<int>(m.verts.size());
+        for (int step = 0; step <= segments; ++step) {
+            float t = step / static_cast<float>(segments);
+            float angle = side * Pi + (t - .5f) * 1.70f;
+            V radial{std::cos(angle), 0, std::sin(angle)};
+            float taper = .28f + .72f * std::sin(Pi * t);
+            m.point(radial, {-.024f * taper, 0, 0}, TimingArc, 0);
+            m.point(radial, {-.004f * taper, 0, 0}, TimingArc, 1);
+            m.point(radial, {.022f * taper, 0, 0}, TimingArc, .76f);
+            if (step > 0) {
+                int i = base + (step - 1) * 3;
+                m.quad(i, i + 3, i + 4, i + 1);
+                m.quad(i + 1, i + 4, i + 5, i + 2);
+            }
+        }
+    }
+    return m;
+}
+
+// Each triangle fan is a tapered spark, with a luminous centre and a burnt tail.
+// Positions carry distance along/across the shard, normals carry launch velocity.
+inline Mesh contactSparks() {
+    Mesh m;
+    const V directions[] = {{-.92f,-.51f,.21f}, {.57f,-.73f,.45f}, {-.28f,-1.03f,-.13f},
+                            {.94f,-.35f,-.08f}, {-.66f,-.32f,.63f}, {.20f,-.53f,-.61f}};
+    for (V direction : directions) {
+        int i = m.point({.016f, 0, 0}, direction, Ember, 1);
+        m.point({.082f, 0, 0}, direction, Ember, .67f);
+        m.point({0, .027f, 0}, direction, Ember, .55f);
+        m.point({-.115f, 0, 0}, direction, Ember, 0);
+        m.point({0, -.027f, 0}, direction, Ember, .55f);
+        for (int k = 0; k < 4; ++k) m.tri(i, i + 1 + k, i + 1 + (k + 1) % 4);
+    }
+    return m;
+}
 
 // A circular cross section follows the tangent; the cap normals are independent.
 inline void tube(Mesh& m, const std::vector<V>& path, float radius, Surface surface, int sides = 8,

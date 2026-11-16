@@ -13,6 +13,8 @@ interface Platform {
     suspend fun arrangementTrack(chart: Chart, bundledId: String?, previewInstrument: Instrument?): ArrangementTrack
     var volume: Float
     var haptics: Boolean
+    fun playLaunchSound(volume: Float) {}
+    fun stopLaunchSound() {}
     fun feedback()
     fun newMedia(durationMs: Long, instrument: Instrument): GameMedia
 }

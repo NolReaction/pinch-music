@@ -1,0 +1,6 @@
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/beat_ink"/>
+    <foreground>
+        <inset android:drawable="@drawable/beat_mark" android:inset="16%"/>
+    </foreground>
+</adaptive-icon>

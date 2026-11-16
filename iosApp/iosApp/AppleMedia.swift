@@ -7,11 +7,79 @@ final class AppleMediaFactory: NSObject, @preconcurrency AppleMediaFactoryProtoc
     private let songImport = AppleSongImport()
     private weak var current: NativeMedia?
     private var sceneActive = false
+    private var pendingLaunch: (gain: Float, time: TimeInterval)?
+    private var launchTask: Task<Void, Never>?
+    private var launchID: UUID?
+    private var launchObservers = [NSObjectProtocol]()
 
     func setSceneActive(_ active: Bool) {
         guard active != sceneActive else { return }
         sceneActive = active
-        if !active { current?.interrupt() }
+        if active, let pending = pendingLaunch {
+            pendingLaunch = nil
+            if ProcessInfo.processInfo.systemUptime - pending.time <= 0.35 {
+                beginLaunchSound(volume: pending.gain, requestedAt: pending.time)
+            }
+        } else if !active {
+            MainViewControllerKt.dismissLaunchPresentation()
+            stopLaunchSound()
+            current?.interrupt()
+        }
+    }
+
+    func playLaunchSound(volume: Float) {
+        stopLaunchSound()
+        guard volume > 0, current == nil else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        if sceneActive {
+            beginLaunchSound(volume: volume, requestedAt: now)
+        } else if UIApplication.shared.applicationState != .background {
+            // SwiftUI can mount the first Compose frame just before the scene becomes active.
+            pendingLaunch = (volume, now)
+        }
+    }
+
+    private func beginLaunchSound(volume: Float, requestedAt: TimeInterval) {
+        guard let url = Bundle.main.url(forResource: "launch", withExtension: "wav") else { return }
+        let id = UUID()
+        launchID = id
+        for name in [AVAudioSession.interruptionNotification, AVAudioSession.silenceSecondaryAudioHintNotification,
+                     UIApplication.willResignActiveNotification, UIApplication.userDidTakeScreenshotNotification] {
+            launchObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) {
+                [weak self] _ in MainActor.assumeIsolated { self?.stopLaunchSound() }
+            })
+        }
+        launchObservers.append(NotificationCenter.default.addObserver(forName: AVAudioSession.routeChangeNotification,
+            object: nil, queue: .main) { [weak self] event in
+                let reason = (event.userInfo?[AVAudioSessionRouteChangeReasonKey] as? NSNumber)?.uintValue
+                if reason == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue {
+                    MainActor.assumeIsolated { self?.stopLaunchSound() }
+                }
+            })
+        launchTask = Task { [weak self] in
+            do {
+                let started = try await LaunchAudio.shared.play(id: id, url: url, volume: volume, requestedAt: requestedAt) {
+                    [weak self] in
+                    Task { @MainActor in
+                        if self?.launchID == id { self?.stopLaunchSound() }
+                    }
+                }
+                if started { return }
+            } catch { }
+            if !Task.isCancelled, self?.launchID == id { self?.stopLaunchSound() }
+        }
+    }
+
+    func stopLaunchSound() {
+        pendingLaunch = nil
+        launchTask?.cancel()
+        launchTask = nil
+        launchObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        launchObservers.removeAll()
+        if let id = launchID {
+            launchID = nil
+            Task { await LaunchAudio.shared.stop(id: id) }
+        }
     }
 
     func createCascade() -> AppleCascadeSurface { AppleCascadeDisplay() }
@@ -19,12 +87,59 @@ final class AppleMediaFactory: NSObject, @preconcurrency AppleMediaFactoryProtoc
     func pickAudio(listener: AppleAudioImportListener) { songImport.pick(listener) }
 
     func createMedia(instrument: String, observer: AppleInterruptListener) -> AppleMediaSession {
+        stopLaunchSound()
         current?.close()
         let media = NativeMedia(instrument: instrument, observer: observer) { [weak self] in
             self?.sceneActive == true && UIApplication.shared.applicationState == .active
         }
         current = media
         return media
+    }
+}
+
+private final class LaunchCompletion: NSObject, AVAudioPlayerDelegate {
+    private let finished: @Sendable () -> Void
+    init(_ finished: @escaping @Sendable () -> Void) { self.finished = finished }
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) { finished() }
+    func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) { finished() }
+}
+
+// Serial ownership keeps cold audio hardware setup off the UI thread and orders it before game playback.
+private actor LaunchAudio {
+    static let shared = LaunchAudio()
+    private let session = AVAudioSession.sharedInstance()
+    private var owner: UUID?
+    private var player: AVAudioPlayer?
+    private var completion: LaunchCompletion?
+
+    func play(id: UUID, url: URL, volume: Float, requestedAt: TimeInterval,
+              finished: @escaping @Sendable () -> Void) throws -> Bool {
+        guard !Task.isCancelled, session.outputVolume > 0, !session.isOtherAudioPlaying, !session.secondaryAudioShouldBeSilencedHint,
+              ProcessInfo.processInfo.systemUptime - requestedAt <= 0.35 else { return false }
+        // Ambient observes the hardware Silent switch and lock without interrupting other audio.
+        try session.setCategory(.ambient, mode: .default)
+        let effect = try AVAudioPlayer(contentsOf: url)
+        let callback = LaunchCompletion(finished)
+        completion = callback
+        effect.delegate = callback
+        player = effect
+        owner = id
+        effect.volume = min(1, volume)
+        guard effect.prepareToPlay(), !Task.isCancelled, !session.isOtherAudioPlaying,
+              !session.secondaryAudioShouldBeSilencedHint, ProcessInfo.processInfo.systemUptime - requestedAt <= 0.35
+        else { stop(id: id); return false }
+        guard effect.play() else { stop(id: id); return false }
+        return true
+    }
+
+    func stop(id: UUID? = nil) {
+        guard let player, id == nil || owner == id else { return }
+        self.player = nil
+        owner = nil
+        player.delegate = nil
+        completion = nil
+        player.stop()
+        try? session.setActive(false, options: .notifyOthersOnDeactivation)
     }
 }
 
@@ -77,6 +192,8 @@ private final class NativeMedia: NSObject, @preconcurrency AppleMediaSession {
         guard foreground(), mediaServicesAvailable else { interrupt(); return }
         preparation = Task { [weak self, instrument, roots, backingAsset, arrangementPath, savedFrame] in
             do {
+                await LaunchAudio.shared.stop()
+                try Task.checkCancellation()
                 let graph = try await GameAudioLoader.shared.load(instrument, roots: roots, backingAsset: backingAsset, arrangementPath: arrangementPath, from: savedFrame)
                 guard !Task.isCancelled, let self else { return }
                 self.preparation = nil

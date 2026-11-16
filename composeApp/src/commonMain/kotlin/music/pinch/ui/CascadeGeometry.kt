@@ -4,7 +4,7 @@ import kotlin.math.sqrt
 import music.pinch.PanelFeedback
 
 internal const val CascadeKeyStride = 5
-internal const val CascadeFrameSize = 25
+internal const val CascadeFrameSize = 31
 
 private val PlanarAttack.material: Int
     get() = if (playable) 1 else 0
@@ -48,7 +48,7 @@ internal fun PlanarPath.gpuCourse(): CascadeGpuCourse {
 }
 
 internal fun PlanarPath.writeGpuFrame(timeMs: Long, out: FloatArray,
-    feedback: List<PanelFeedback> = emptyList(), theme: StageTheme = StageTheme.Stereo) {
+    feedback: List<PanelFeedback> = emptyList(), theme: StageTheme = StageTheme.Stereo, showWindow: Boolean = false) {
     val pose = frame(timeMs)
     val active = attacks.getOrNull(pose.attackIndex)
     val next = attacks.getOrNull(pose.attackIndex + 1)
@@ -76,14 +76,20 @@ internal fun PlanarPath.writeGpuFrame(timeMs: Long, out: FloatArray,
     out[14] = theme.light.toFloat()
     out[15] = theme.panel.toFloat()
     out[16] = theme.accent.toFloat()
+    val cue = if (showWindow) landingCueIndex(timeMs, pose.attackIndex, attacks.size, feedback) {
+        attacks[it].atMs
+    } else -1
+    out[25] = if (cue >= 0) (attacks[cue].panelIndex + panelOffset).toFloat() else -1f
+    out[26] = if (cue >= 0) landingPhase(timeMs, attacks[cue].atMs) else 0f
     for (slot in 0 until 4) {
         val base = 17 + 2 * slot
         val result = feedback.getOrNull(feedback.lastIndex - slot)
-        val elapsed = if (result != null) timeMs - result.shownAtMs else -1
+        val elapsed = if (result != null && result.effectsVisible) timeMs - result.shownAtMs else -1
         val opacity = feedbackStrength(elapsed)
         val index = if (result != null && opacity > 0f)
             attacks.binarySearchBy(result.noteAtMs) { it.atMs } else -1
         out[base] = if (index >= 0) (attacks[index].panelIndex + panelOffset).toFloat() else -1f
+        out[27 + slot] = if (showWindow && index >= 0 && result != null) sparkPhase(timeMs, result) else -1f
         out[base + 1] = if (index < 0 || result == null) 0f else if (result.hit) opacity else -opacity
     }
 }

@@ -1,0 +1,6 @@
+<resources>
+    <style name="BeatTheme" parent="@style/BeatWindow">
+        <item name="android:windowSplashScreenBackground">@color/beat_ink</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/beat_launch_mark</item>
+    </style>
+</resources>

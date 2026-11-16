@@ -457,7 +457,7 @@ internal class MarbleScene(private val meshes: OrbitMeshes, private val marbleAt
         val intensity = feedbackStrength(timeMs - result.shownAtMs)
         if (intensity <= 0f) return
         val color = if (result.hit) HitColor else MissColor
-        drawPath(outline, color, alpha = .74f * intensity)
+        drawPath(outline, color, alpha = .38f * intensity)
         drawPath(outline, color, alpha = intensity, style = Stroke(unit * .041f))
     }
 
@@ -465,7 +465,7 @@ internal class MarbleScene(private val meshes: OrbitMeshes, private val marbleAt
         drawStudioMarble(marbleAtlas, camera.project(frame.marble), camera.unit(frame.marble) * MarbleRadius, frame.rollAngle)
     }
 
-    fun DrawScope.draw(timeMs: Long, feedback: List<PanelFeedback>) {
+    fun DrawScope.draw(timeMs: Long, feedback: List<PanelFeedback>, showWindow: Boolean = false) {
         if (size.minDimension<1f) return
         if (roomSize!=size) {
             roomSize=size
@@ -475,6 +475,9 @@ internal class MarbleScene(private val meshes: OrbitMeshes, private val marbleAt
         drawImage(settings.background, dstSize=IntSize(size.width.roundToInt(),size.height.roundToInt()))
         val frame = path.frame(timeMs)
         val camera = Camera(size,frame.target)
+        val cue = if (showWindow) landingCueIndex(timeMs, frame.anchor, path.keys.size, feedback) {
+            path.keys[it].atMs
+        } else -1
         val start = max(0,frame.anchor-VisibleLimit/2)
         val end = min(path.keys.lastIndex,frame.anchor+VisibleLimit/2)
         var count = 0
@@ -524,13 +527,18 @@ internal class MarbleScene(private val meshes: OrbitMeshes, private val marbleAt
                 phase*phase
             } else 0f
             val incoming = if (i == frame.next && age in -540..-1) 1f + age / 540f else 0f
-            val result = feedback.lastOrNull { it.noteAtMs == bar.key.atMs }
+            val result = feedback.lastOrNull { it.effectsVisible && it.noteAtMs == bar.key.atMs }
             // The wall mounts are fixed. Only the struck plate travels on its springs.
             val travel = panelCompression(age)
             val face = bar.key.center
             val offset = camera.project(face - bar.key.normal * travel) - camera.project(face)
             translate(offset.x, offset.y) {
                 bar(bar, camera, age, light, incoming, result, timeMs, frame.marble)
+                if (i == cue) drawLandingCue(camera.project(face), camera.unit(face) * MarbleRadius, landingPhase(timeMs, bar.key.atMs))
+                if (showWindow && result != null) {
+                    val progress = sparkPhase(timeMs, result)
+                    if (progress >= 0f) drawLandingSparks(camera.project(face), camera.unit(face) * MarbleRadius, progress)
+                }
             }
         }
         if (!marbleDrawn) marble(camera,frame)
@@ -545,7 +553,7 @@ fun MarbleStage(chart: Chart, positionMs: () -> Long, modifier: Modifier = Modif
 
 @Composable
 internal fun MarbleStage(meshes: OrbitMeshes, positionMs: () -> Long, modifier: Modifier,
-    feedback: List<PanelFeedback>, theme: StageTheme, atlas: ImageBitmap, onPresented: () -> Unit,
+    feedback: List<PanelFeedback>, theme: StageTheme, atlas: ImageBitmap, showWindow: Boolean = false, onPresented: () -> Unit,
 ) {
     val scene = remember(meshes, atlas, theme) { MarbleScene(meshes, atlas, theme) }
     val presented = remember(scene) { CompletableDeferred<Unit>() }
@@ -557,7 +565,7 @@ internal fun MarbleStage(meshes: OrbitMeshes, positionMs: () -> Long, modifier: 
     }
     Canvas(modifier.clipToBounds()) {
         if (size.minDimension >= 1f) {
-            with(scene) { draw(positionMs(), feedback) }
+            with(scene) { draw(positionMs(), feedback, showWindow) }
             if (!presented.isCompleted) presented.complete(Unit)
         }
     }

@@ -13,6 +13,8 @@ import platform.UIKit.UISelectionFeedbackGenerator
 import platform.UIKit.UIViewController
 
 interface AppleMediaFactoryProtocol {
+    fun playLaunchSound(volume: Float)
+    fun stopLaunchSound()
     fun createCascade(): AppleCascadeSurface
     fun createMedia(instrument: String, observer: AppleInterruptListener): AppleMediaSession
     fun pickAudio(listener: AppleAudioImportListener)
@@ -37,6 +39,8 @@ interface AppleMediaSession {
     fun strike(gain: Float)
     fun close()
 }
+
+fun dismissLaunchPresentation() = LaunchPresentation.dismiss()
 
 fun MainViewController(factory: AppleMediaFactoryProtocol): UIViewController {
     val platform = IosPlatform(factory)
@@ -64,6 +68,8 @@ private class IosPlatform(private val factory: AppleMediaFactoryProtocol) : Plat
         get() = defaults.boolForKey("haptics")
         set(value) = defaults.setBool(value, forKey = "haptics")
 
+    override fun playLaunchSound(volume: Float) = factory.playLaunchSound(volume)
+    override fun stopLaunchSound() = factory.stopLaunchSound()
     override fun feedback() = selectionFeedback.selectionChanged()
     override fun newMedia(durationMs: Long, instrument: Instrument): GameMedia =
         IosMedia(factory, durationMs, instrument)

@@ -126,8 +126,8 @@ struct Piece {
     Buffer rail;
 };
 struct Stage {
-    Program scene, wall;
-    Buffer wallMesh, marble;
+    Program scene, wall, cues;
+    Buffer wallMesh, marble, brackets, sparks;
     std::array<Buffer, 8> keys; // short vs full, mount side, accent vs plain
     std::vector<Piece> pieces;
     GLsizei backdropIndices = 0, shadowIndices = 0;
@@ -173,7 +173,7 @@ struct Stage {
         reliefMotif = motif;
     }
     bool init() {
-        if (!scene.link(sceneVS, sceneFS) || !wall.link(wallVS, wallFS))
+        if (!scene.link(sceneVS, sceneFS) || !wall.link(wallVS, wallFS) || !cues.link(cueVS, cueFS))
             return false;
         Mesh w;
         // Interpolate the wall lighting on a coarse grid and the shadow penumbrae on rings.
@@ -214,6 +214,8 @@ struct Stage {
         Mesh ball;
         ellipsoid(ball, {0, 0, 0}, {BallRadius, BallRadius, BallRadius}, Glass, 36, 24);
         marble.upload(ball);
+        brackets.upload(timingArcs());
+        sparks.upload(contactSparks());
         return true;
     }
     void course(const float* key, int count, const float* rails, int nr) {
@@ -391,7 +393,7 @@ struct Stage {
                 float impact = i == active ? strength : 0.f;
                 bool upcoming = i == next;
                 float score = 0.f;
-                for (int slot = 17; slot < STAGE3D_FRAME_SIZE; slot += 2) {
+                for (int slot = 17; slot < 25; slot += 2) {
                     if (i == static_cast<int>(f[slot])) {
                         score = f[slot + 1];
                         break;
@@ -417,6 +419,31 @@ struct Stage {
         marble.bind();
         marble.draw();
         glDisable(GL_CULL_FACE);
+
+        const int target = static_cast<int>(f[25]);
+        if (target < 0 && std::none_of(f + 27, f + 31, [](float age) { return age >= 0.f; }))
+            return;
+        glUseProgram(cues.id);
+        glUniform4f(cues.lens, lensX, lensY, .20f, 45.f);
+        glDepthMask(GL_FALSE);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        auto effect = [&](int index, float phase, const Buffer& mesh) {
+            if (index < 0 || index >= static_cast<int>(pieces.size()) || pieces[index].style < 0.f) return;
+            const Piece& p = pieces[index];
+            glUniform3f(cues.offset, p.x - cameraX, p.y - cameraY, 0);
+            glUniform2f(cues.tilt, p.tiltCos, p.tiltSin);
+            glUniform4f(cues.key, phase, 0, 0, index == active ? f[7] : 0.f);
+            mesh.bind();
+            mesh.draw();
+        };
+        if (target >= 0) effect(target, f[26], brackets);
+        for (int slot = 0; slot < 4; ++slot) {
+            const float age = f[27 + slot];
+            if (age >= 0.f && age < 1.f) effect(static_cast<int>(f[17 + 2 * slot]), age, sparks);
+        }
+        glDisable(GL_BLEND);
+        glDepthMask(GL_TRUE);
     }
 };
 } // namespace cascade

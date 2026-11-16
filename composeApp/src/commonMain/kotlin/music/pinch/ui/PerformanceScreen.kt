@@ -15,15 +15,18 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.StrokeCap
 import music.pinch.resources.Res
 import music.pinch.resources.studio_marble
 import org.jetbrains.compose.resources.imageResource
 import androidx.compose.ui.input.pointer.changedToDown
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick
@@ -37,10 +40,9 @@ import androidx.compose.ui.unit.sp
 import music.pinch.Actions
 import music.pinch.Scene
 import music.pinch.ScreenState
-import music.pinch.stereoLoveSectionAt
 
-private val HeaderShade = Brush.verticalGradient(listOf(Color(0xe3141220), Color(0x00141220)))
-private val FooterShade = Brush.verticalGradient(listOf(Color(0x00141220), Color(0xdf141220)))
+
+private val HeaderShade = Brush.verticalGradient(listOf(Color(0xe6151a1b), Color(0xbb151a1b), Color(0x00151a1b)))
 
 @Composable
 internal fun PerformanceScreen(state: ScreenState, actions: Actions, positionMs: () -> Long, stage: PreparedStage?,
@@ -50,7 +52,12 @@ internal fun PerformanceScreen(state: ScreenState, actions: Actions, positionMs:
         val countingIn = state.scene == Scene.CountIn
         val live = state.scene == Scene.Playing || countingIn
         val theme = stageTheme(state.selectedSong.id)
-        val accent = stageColor(theme.accent)
+        val interactive = live && !state.preview
+        val feedback = when {
+            !interactive -> emptyList()
+            countingIn -> remember(state.panelFeedback) { state.panelFeedback.map { it.copy(effectsVisible = false) } }
+            else -> state.panelFeedback
+        }
         if (stage != null) {
             key(state.attempt) {
                 val attempt = state.attempt
@@ -58,33 +65,25 @@ internal fun PerformanceScreen(state: ScreenState, actions: Actions, positionMs:
                 when (stage) {
                     is PreparedStage.Orbit -> if (orbitAtlas != null) {
                         val atlas = orbitAtlas.getOrNull() ?: imageResource(Res.drawable.studio_marble)
-                        MarbleStage(stage.meshes, positionMs, Modifier.matchParentSize(), feedback = state.panelFeedback,
+                        MarbleStage(stage.meshes, positionMs, Modifier.matchParentSize(), feedback = feedback, showWindow = interactive,
                             theme = theme, atlas = atlas, onPresented = presented)
                     }
                     is PreparedStage.Cascade -> PlanarStage(stage, positionMs, Modifier.matchParentSize(),
-                        animate = live, feedback = state.panelFeedback, theme = theme, onPresented = presented)
+                        animate = live, feedback = feedback, showWindow = interactive, theme = theme, onPresented = presented)
                 }
             }
-            if (live && !state.preview) Box(Modifier.matchParentSize().rhythmInput(actions))
+            if (interactive) Box(Modifier.matchParentSize().rhythmInput(actions))
         }
         if (live) {
-            SessionHeader(state, actions, positionMs, accent)
+            SessionHeader(state, actions, positionMs)
             if (countingIn) Box(Modifier.align(Alignment.TopCenter)
                 .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))
-                .padding(top = 68.dp)) {
-                Countdown(state.countdown, "Начинаем")
+                .padding(top = 77.dp)) {
+                Countdown(state.countdown, "Начало")
             }
-            Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(FooterShade)
-                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom))
-                .padding(start = 18.dp, end = 14.dp, top = 22.dp, bottom = 10.dp)) {
-                if (state.preview) {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Text("Демонстрация · шарик играет сам", modifier = Modifier.weight(1f), color = White,
-                            fontSize = 15.sp, fontWeight = FontWeight.Medium)
-                        TextButton(onClick = actions::menu) { Text("В меню", color = White) }
-                    }
-                } else {
-                    PlayControls(state, positionMs, accent)
+            if (!state.preview && state.scene == Scene.Playing) {
+                Box(Modifier.align(Alignment.BottomCenter).safeDrawingPadding().padding(bottom = 10.dp)) {
+                    ScoreStrip(state, positionMs)
                 }
             }
         } else {
@@ -102,7 +101,7 @@ internal fun PerformanceScreen(state: ScreenState, actions: Actions, positionMs:
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        CircularProgressIndicator(Modifier.size(26.dp), color = Lilac, strokeWidth = 2.dp)
+                        CircularProgressIndicator(Modifier.size(26.dp), color = StudioCoral, strokeWidth = 2.dp)
                         Caption(if (state.renderingAudio) "Готовим аудиодорожку" else "Готовим мелодию", White)
                         TextButton(onClick = actions::menu) { Text("В меню", color = White) }
                     }
@@ -133,47 +132,43 @@ private fun Modifier.rhythmInput(actions: Actions): Modifier =
     }
 
 @Composable
-private fun SessionHeader(state: ScreenState, actions: Actions, positionMs: () -> Long, accent: Color) {
+private fun SessionHeader(state: ScreenState, actions: Actions, positionMs: () -> Long) {
     Column(Modifier.fillMaxWidth().background(HeaderShade)
         .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Top))
-        .padding(start = 18.dp, end = 14.dp, bottom = 16.dp)) {
-        Row(Modifier.fillMaxWidth().heightIn(min = 52.dp), verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        .padding(start = 20.dp, end = 14.dp, bottom = 14.dp)) {
+        Row(Modifier.fillMaxWidth().heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Column(Modifier.weight(1f)) {
-                Text(state.title, color = White, fontSize = 21.sp, lineHeight = 24.sp, fontWeight = FontWeight.Bold,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis)
-                if (state.backingAsset != null && state.selectedSong.id == "stereo-love") {
-                    val section by remember(positionMs) { derivedStateOf { stereoLoveSectionAt(positionMs()) } }
-                    Text(section, color = accent, fontSize = 12.sp, lineHeight = 15.sp, maxLines = 1)
-                } else if (state.recordedAsset != null && state.backingAsset == null) {
-                    Text("${state.instrument.label} · мелодия", color = accent, fontSize = 12.sp,
-                        lineHeight = 15.sp, maxLines = 1)
+                Text(state.title, color = StudioIvory, fontSize = 20.sp, lineHeight = 23.sp,
+                    letterSpacing = (-.5).sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                val duration = state.durationMs
+                val seconds by remember(positionMs, duration) {
+                    derivedStateOf { positionMs().coerceIn(0L, duration) / 1_000L }
+                }
+                val subtitle = if (state.preview) "Прослушивание · " else ""
+                Text("$subtitle${clock(seconds)} / ${durationClock(duration)}", color = StudioIvory.copy(alpha = .84f),
+                    fontSize = 12.sp, lineHeight = 16.sp, fontFamily = FontFamily.Monospace, maxLines = 1)
+            }
+            if (state.preview) {
+                IconButton(onClick = actions::menu, modifier = Modifier.size(48.dp)
+                    .semantics { contentDescription = "В меню" }) {
+                    Canvas(Modifier.size(18.dp)) {
+                        drawLine(StudioIvory, Offset(2f,2f), Offset(size.width-2f,size.height-2f), 2.dp.toPx(), StrokeCap.Round)
+                        drawLine(StudioIvory, Offset(size.width-2f,2f), Offset(2f,size.height-2f), 2.dp.toPx(), StrokeCap.Round)
+                    }
                 }
             }
-            SongTime(state.durationMs, positionMs)
-            IconButton(onClick = actions::pause, modifier = Modifier.size(48.dp)
-                .semantics { contentDescription = "Пауза" }) {
-                Box(Modifier.size(34.dp).background(Ink.copy(alpha = .54f), CircleShape), contentAlignment = Alignment.Center) {
-                    Symbol(IconShape.Pause, White)
-                }
+            IconButton(onClick = actions::pause, modifier = Modifier.size(48.dp).semantics { contentDescription = "Пауза" }) {
+                Box(Modifier.size(38.dp).background(StudioGraphite.copy(alpha = .75f), CircleShape),
+                    contentAlignment = Alignment.Center) { Symbol(IconShape.Pause, StudioIvory) }
             }
         }
-        val duration = state.durationMs.coerceAtLeast(1L)
-        Canvas(Modifier.fillMaxWidth().height(2.dp)) {
-            val ratio = (positionMs().toFloat() / duration).coerceIn(0f, 1f)
-            drawRect(White.copy(alpha = .18f))
-            drawRect(accent, size = Size(size.width * ratio, size.height))
+        Canvas(Modifier.fillMaxWidth().padding(end = 5.dp).height(2.dp)) {
+            val ratio = (positionMs().toFloat() / state.durationMs.coerceAtLeast(1L)).coerceIn(0f, 1f)
+            drawRect(StudioIvory.copy(alpha = .27f))
+            drawRect(StudioCoral, size = Size(size.width * ratio, size.height))
         }
     }
-}
-
-@Composable
-private fun SongTime(durationMs: Long, positionMs: () -> Long) {
-    val seconds by remember(positionMs, durationMs) {
-        derivedStateOf { positionMs().coerceIn(0L, durationMs) / 1_000L }
-    }
-    Text("${clock(seconds)} / ${durationClock(durationMs)}", color = White,
-        fontSize = 12.sp, fontFamily = FontFamily.Monospace, maxLines = 1)
 }
 
 internal fun clock(seconds: Long): String = "${seconds / 60}:${(seconds % 60).toString().padStart(2, '0')}"
@@ -182,11 +177,11 @@ internal fun durationClock(durationMs: Long): String = clock((durationMs + 500L)
 
 @Composable
 private fun Countdown(count: Int?, label: String) {
-    Row(Modifier.background(Ink.copy(alpha = .88f), RoundedCornerShape(24.dp)).padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        Caption(label, White)
-        Text(count?.toString() ?: "…", fontFamily = FontFamily.Monospace, color = Lilac,
-            fontWeight = FontWeight.Bold, fontSize = 20.sp)
+    val value = count?.toString() ?: "…"
+    Box(Modifier.size(57.dp).background(StudioGraphite.copy(alpha = .92f), CircleShape)
+        .border(1.dp, StudioCoral, CircleShape).clearAndSetSemantics { contentDescription = "$label, $value" },
+        contentAlignment = Alignment.Center) {
+        Text(value, fontFamily = FontFamily.Monospace, color = StudioIvory, fontWeight = FontWeight.Bold, fontSize = 28.sp)
     }
 }
 
@@ -205,29 +200,25 @@ private fun PauseSheet(actions: Actions) {
 }
 
 @Composable
-private fun PlayControls(state: ScreenState, positionMs: () -> Long, accent: Color) {
-    val lastWindow = state.lastHitWindowMs
-    val tail by remember(positionMs, lastWindow) { derivedStateOf { positionMs() > lastWindow } }
-    val reaction = state.reaction
-    val text = when {
-        reaction != null -> reaction
-        state.countdown != null && state.scene != Scene.CountIn -> "Первое приземление · ${state.countdown}"
-        tail -> "Конец мелодии"
-        else -> "Касайся экрана при каждом приземлении"
-    }
-    val color = when {
-        reaction == null -> White
-        reaction == "Пропуск" || reaction == "Мимо" -> stageColor(0xFF7878)
-        else -> Mint
-    }
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+private fun ScoreStrip(state: ScreenState, positionMs: () -> Long) {
+    val stats = state.stats ?: return
+    val combo = stats.combo
+    val shape = RoundedCornerShape(22.dp)
+    Row(Modifier.background(StudioGraphite.copy(alpha = .94f), shape)
+        .border(1.dp, StudioIvory.copy(alpha = .19f), shape)
+        .padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text(text, modifier = Modifier.weight(1f), color = color, fontSize = 15.sp,
-            lineHeight = 18.sp, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        Column(horizontalAlignment = Alignment.End) {
-            Text("Счёт  ${number(state.stats?.score ?: 0)}", color = White, fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.Bold, fontSize = 14.sp)
-            Text("Комбо  ×${state.stats?.combo ?: 0}", color = accent, fontSize = 12.sp)
+        Column(Modifier.widthIn(min = 73.dp)) {
+            Text("Счёт", color = StudioIvory.copy(alpha = .76f), fontSize = 10.sp, lineHeight = 12.sp)
+            Text(number(stats.score), color = StudioIvory, fontSize = 20.sp, lineHeight = 22.sp,
+                fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+        }
+        Spacer(Modifier.height(23.dp).width(1.dp).background(StudioIvory.copy(alpha = .22f)))
+        Row(Modifier.clearAndSetSemantics { contentDescription = "Серия $combo" },
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            StreakFlame(combo, state.profile.flameTier, positionMs, Modifier.size(25.dp, 30.dp))
+            Text("×$combo", modifier = Modifier.widthIn(min = 30.dp), color = if (combo >= 3) StudioCoral else StudioIvory, fontSize = 19.sp,
+                fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
         }
     }
 }

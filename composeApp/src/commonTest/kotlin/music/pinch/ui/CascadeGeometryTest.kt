@@ -91,7 +91,51 @@ class CascadeGeometryTest {
         path.writeGpuFrame(second + 220L, frame, listOf(early, corrected))
         assertTrue(frozen.contentEquals(frame))
         path.writeGpuFrame(second + 220L, frame) // Preview has no results.
-        for (slot in 17 until CascadeFrameSize step 2) assertEquals(-1f, frame[slot])
+        for (slot in 17 until 25 step 2) assertEquals(-1f, frame[slot])
+    }
+
+    @Test fun cueFollowsTheJudgesMidpointAndSparksRequireALiveConfirmedContact() {
+        val path = PlanarPath(Chart("pair", 127, 2100, listOf(
+            Note("one", 1000, 65, 50, 1f), Note("two", 1236, 67, 50, 1f)), authoredLandings = true))
+        val frame = FloatArray(CascadeFrameSize)
+        path.writeGpuFrame(1000, frame, showWindow = true)
+        val key = frame[5]
+        assertEquals(key, frame[25])
+        assertEquals(0f, frame[26])
+        path.writeGpuFrame(804, frame, showWindow = true)
+        assertEquals(-1f, frame[25])
+        path.writeGpuFrame(805, frame, showWindow = true)
+        assertEquals(key, frame[25])
+        assertEquals(-1f, frame[26])
+        path.writeGpuFrame(1431, frame, showWindow = true)
+        assertEquals(key + 1f, frame[25])
+        assertEquals(1f, frame[26])
+        path.writeGpuFrame(1432, frame, showWindow = true)
+        assertEquals(-1f, frame[25])
+        path.writeGpuFrame(1118, frame, showWindow = true)
+        assertEquals(key, frame[25])
+        path.writeGpuFrame(1119, frame, showWindow = true)
+        assertEquals(key + 1f, frame[25])
+        val hit = PanelFeedback(1000, 1080, true)
+        val miss = PanelFeedback(1236, 1440, false)
+        path.writeGpuFrame(1100, frame, listOf(hit), showWindow = true)
+        assertEquals(-1f, frame[25])
+        assertEquals(20f / 360f, frame[27])
+        path.writeGpuFrame(1100, frame, listOf(hit))
+        assertEquals(-1f, frame[25])
+        assertEquals(-1f, frame[27])
+        // A scored key stays spent across pause, even if the song resumes inside its window.
+        val spent = hit.copy(effectsVisible = false)
+        path.writeGpuFrame(1100, frame, listOf(spent), showWindow = true)
+        assertEquals(-1f, frame[25])
+        assertEquals(-1f, frame[17])
+        assertEquals(0f, frame[18])
+        assertEquals(-1f, frame[27])
+        path.writeGpuFrame(1119, frame, listOf(spent), showWindow = true)
+        assertEquals(key + 1f, frame[25])
+        path.writeGpuFrame(1440, frame, listOf(hit, miss), showWindow = true)
+        assertEquals(-1f, frame[27])
+        assertEquals(-1f, frame[28])
     }
 
     @Test fun finalCatcherCarriesTheSeatedBallThroughItsOneStroke() {

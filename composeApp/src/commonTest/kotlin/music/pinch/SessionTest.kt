@@ -111,6 +111,87 @@ class SessionTest {
         assertEquals(Scene.Playing, state.scene)
     }
 
+    @Test fun aPartialRunKeepsItsHitsThroughPauseAndProcessRecreation() {
+        val host = Host()
+        host.values["record.landings.v1.Orbit.test.bundled"] = "65000"
+        val run = session(host)
+        assertEquals(0L, run.state.profile.totalXp)
+        assertEquals(65_000, run.state.bestScore)
+        run.start(preview = false)
+        run.readyToPlay(host.player)
+        host.player.tick(2000)
+        run.observe()
+        run.tapNow()
+        run.tap(12_001) // Second down on the already scored panel.
+        assertEquals(5L, run.state.profile.totalXp)
+        assertEquals(0, run.state.runReward.finishXp)
+        val judged = run.state.panelFeedback.single { it.hit }
+        assertTrue(judged.effectsVisible)
+        run.pause()
+        assertTrue(run.state.panelFeedback.none { it.effectsVisible })
+        assertEquals(judged.copy(effectsVisible = false), run.state.panelFeedback.single { it.hit })
+        run.tap(12_500)
+        run.resume()
+        run.observe()
+        host.player.tick(2000, 13_500)
+        run.observe()
+        assertEquals(Scene.Playing, run.state.scene)
+        run.tapNow() // Resume on the same panel.
+        assertEquals(judged.copy(effectsVisible = false), run.state.panelFeedback.single { it.hit })
+        assertEquals(1, run.state.stats?.combo)
+        run.tap(13_744) // In the gap.
+        run.dispose()
+        val next = session(host)
+        assertEquals(5L, next.state.profile.totalXp)
+        assertEquals(65_000, next.state.bestScore)
+        assertEquals(0, next.state.runReward.totalXp)
+    }
+
+    @Test fun aFinishedReplayAwardsNewHitsAndOneFinishBonusWhilePreviewAndMissesEarnNothing() {
+        val host = Host()
+        val course = Song("streak", "Серия", "", Chart("Серия", 120, 7000, List(10) { i ->
+            Note("n$i", 1000L + 500L * i, 70, 120, .8f)
+        }))
+        val run = session(host, listOf(course))
+        fun start(preview: Boolean) {
+            run.start(preview)
+            run.readyToPlay(host.player)
+        }
+        fun finish() {
+            host.player.end()
+            run.observe()
+            run.observe()
+        }
+        start(preview = true)
+        run.tap(11_000)
+        finish()
+        assertEquals(0L, run.state.profile.totalXp)
+        start(preview = false)
+        finish()
+        assertEquals(0, run.state.runReward.totalXp)
+        assertNull(host.values[PlayerProfile.storageKey])
+        repeat(2) { previousRuns ->
+            start(preview = false)
+            assertEquals(if (previousRuns == 0) 1 else 2, run.state.runReward.startLevel)
+            for (i in 0 until 10) {
+                val at = 1000L + 500L * i + when (i) { 5 -> 100; 9 -> 150; else -> 0 }
+                host.player.tick(at)
+                run.observe()
+                run.tapNow()
+                run.tap(host.player.uptimeMs() + 1)
+                if (previousRuns == 0 && i == 7) assertEquals(2, run.state.profile.level)
+            }
+            finish()
+            assertEquals(Scene.Result, run.state.scene)
+            assertEquals(47, run.state.runReward.hitXp)
+            assertEquals(4, run.state.runReward.streakXp)
+            assertEquals(5, run.state.runReward.finishXp)
+            assertEquals(56L * (previousRuns + 1), run.state.profile.totalXp)
+        }
+        assertEquals(3, run.state.profile.level)
+        assertEquals(1, run.state.profile.flameTier)
+    }
+
     @Test
     fun menuMetadataAndImmediatePlayDoNotBuildUnselectedSongsOrStartAnObsoleteAttempt() {
         val work = ArrayDeque<Runnable>()

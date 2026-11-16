@@ -1,7 +1,12 @@
 // ES 2.0 shaders, also used by the offscreen reference renderer.
 #pragma once
 namespace cascade {
-static const char* sceneVS = R"GL(
+#define STAGE_CAMERA_GLSL "const vec3 eye=vec3(2.80,-4.88,8.20);\n" \
+    "const vec3 forward=vec3(-.279687,.487454,-.827155);\n" \
+    "const vec3 right=vec3(.947306,0.,-.32033);\n" \
+    "const vec3 up=vec3(-.156135,-.873148,-.461818);\n"
+
+static const char* sceneVS = STAGE_CAMERA_GLSL R"GL(
 attribute highp vec3 aPos;
 attribute mediump vec3 aNormal;
 attribute mediump vec2 aMat;
@@ -13,10 +18,6 @@ varying mediump vec3 vPos;
 varying mediump vec3 vN;
 varying mediump vec2 vMat;
 varying mediump vec2 vFace;
-const vec3 eye=vec3(2.80,-4.88,8.20);
-const vec3 forward=vec3(-.279687,.487454,-.827155);
-const vec3 right=vec3(.947306,0.,-.32033);
-const vec3 up=vec3(-.156135,-.873148,-.461818);
 void main(){
     mat2 turn=mat2(uTilt.x,uTilt.y,-uTilt.y,uTilt.x);
     vPos=vec3(turn*(aPos.xy+vec2(0.,uKey.w*aMat.y)),aPos.z)+uOffset;
@@ -130,10 +131,59 @@ void main(){
 }
 )GL";
 
+// A separate, unlit pass keeps material shading off particles and leaves the
+// normal stage shaders untouched on frames without input. Scene depth occludes
+// the arcs and embers when the ball or another panel passes in front of them.
+static const char* cueVS = STAGE_CAMERA_GLSL R"GL(
+attribute highp vec3 aPos;
+attribute mediump vec3 aNormal;
+attribute mediump vec2 aMat;
+uniform highp vec3 uOffset;
+uniform highp vec2 uTilt;
+uniform highp vec4 uLens;
+uniform mediump vec4 uKey; // timing phase or spark age, unused, unused, cap travel
+varying lowp vec4 vColor;
+void main() {
+    mat2 turn=mat2(uTilt.x,uTilt.y,-uTilt.y,uTilt.x);
+    vec3 p;
+    if(aMat.x < 10.5) {
+        float wide=abs(uKey.x);
+        float radius=.265+.155*wide+aNormal.x;
+        // Bracket the sphere where it will touch. Facing the camera keeps the
+        // cue legible on the near-vertical pads of a fast call and response.
+        vec2 center=turn*vec2(0.,-.23+uKey.w);
+        p=vec3(center,0.)+(right*aPos.x+up*aPos.z)*radius-.045*forward;
+        vec3 ink=vec3(.11,.16,.15), cream=vec3(.96,.93,.85), mint=vec3(.58,.90,.76);
+        vColor=vec4(mix(ink,mix(cream,mint,1.-wide),aMat.y),.92-.33*wide);
+    } else {
+        float t=uKey.x, ease=t*(2.-t);
+        vec3 dir=vec3(turn*aNormal.xy,aNormal.z);
+        vec2 viewDir=vec2(dot(dir,right),dot(dir,up));
+        vec2 across=vec2(-viewDir.y,viewDir.x)/max(.01,length(viewDir));
+        p=dir*(.16+.54*ease+aPos.x*(1.-.48*t)) +
+            (across.x*right+across.y*up)*aPos.y*(1.-.56*t);
+        p.y+=.15*t*t;
+        p.z+=.045;
+        vec3 burnt=vec3(.92,.27,.12), amber=vec3(1.,.68,.31), core=vec3(1.,.97,.83);
+        vec3 c=mix(mix(burnt,amber,aMat.y),core,smoothstep(.60,1.,aMat.y));
+        vColor=vec4(c,(1.-t*t)*(.48+.52*aMat.y));
+    }
+    vec3 d=p+uOffset-eye;
+    float z=dot(d,forward);
+    gl_Position=vec4(dot(d,right)*uLens.x,dot(d,up)*uLens.y,
+        (uLens.w+uLens.z)/(uLens.w-uLens.z)*z-2.*uLens.w*uLens.z/(uLens.w-uLens.z),z);
+}
+)GL";
+static const char* cueFS = R"GL(
+precision mediump float;
+varying lowp vec4 vColor;
+void main() { gl_FragColor=vColor; }
+)GL";
+
 // Draw the softly lit wall and translucent projected shadows before the solid
 // geometry. The machined wall faces and the backing behind their recesses
 // are sampled in world space; the camera moves past them at different rates.
-static const char* wallVS = R"GL(
+static const char* wallVS = STAGE_CAMERA_GLSL R"GL(
 attribute highp vec3 aPos;
 attribute mediump vec3 aNormal;
 attribute mediump vec2 aMat;
@@ -149,10 +199,6 @@ varying highp vec2 vReliefUV;
 varying mediump vec2 vReliefUV;
 #endif
 varying lowp vec4 vColor;
-const vec3 eye=vec3(2.80,-4.88,8.20);
-const vec3 forward=vec3(-.279687,.487454,-.827155);
-const vec3 right=vec3(.947306,0.,-.32033);
-const vec3 up=vec3(-.156135,-.873148,-.461818);
 void main(){
     vReliefUV=vec2(0.);
     if(aMat.x<.5) {
@@ -205,4 +251,5 @@ void main(){
     gl_FragColor=vec4(col,1.);
 }
 )GL";
+#undef STAGE_CAMERA_GLSL
 } // namespace cascade
