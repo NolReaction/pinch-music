@@ -147,26 +147,33 @@ def lead_attacks():
     return notes
 
 
+def bell_answer_at(bar):
+    section = section_at(bar)
+    local = bar - section.bar
+    if section.groove not in ("peak", "bridge", "final", "outro") or local % 4 not in (1, 3):
+        return None
+    chord = HARMONY[chord_at(section, local)][1]
+    return Attack(bar * 16 + 6, chord[-1] + 12, 3.8, "bell", .365)
+
+
+def bell_answers():
+    return [bell for bar in range(BAR_COUNT) if (bell := bell_answer_at(bar))]
+
+
+def chart_attacks():
+    # The high bell answers across the rests in the second half. When both
+    # hands of the arrangement strike together the player follows the lead.
+    contacts = {attack.tick: attack for attack in lead_attacks()}
+    for bell in bell_answers():
+        contacts.setdefault(bell.tick, bell)
+    return sorted(contacts.values(), key=lambda n: n.tick)
+
+
 def score_tag():
-    """Embed the exact lead performance and tempo signature in the rendered M4A."""
-    score = [BPM, DURATION_MS, [asdict(n) for n in lead_attacks()]]
-    serialized = json.dumps(score, sort_keys=True, separators=(",", ":")).encode()
-    return "pinch-lead-sha256=" + sha256(serialized).hexdigest()
-
-
-def landing_ticks(attacks):
-    """Catch the first attack of each pitch, including sixteenth-note answers.
-
-    A run of identical sixteenths has one contact per eighth, counted from the
-    first articulation. A new pitch can answer on the very next sixteenth.
-    """
-    taps = set()
-    last = None
-    for attack in attacks:
-        if last is None or last.midi != attack.midi or attack.tick - last.tick >= 2:
-            taps.add(attack.tick)
-            last = attack
-    return taps
+    """Fingerprint all written melodic attacks, including simultaneous bell answers."""
+    performance = [BPM, DURATION_MS, [asdict(n) for n in lead_attacks()], [asdict(n) for n in bell_answers()]]
+    serialized = json.dumps(performance, sort_keys=True, separators=(",", ":")).encode()
+    return "pinch-score-sha256=" + sha256(serialized).hexdigest()
 
 
 def check_backing():
@@ -174,18 +181,19 @@ def check_backing():
     data = BACKING.read_bytes()
     if tag.encode() in data:
         return
-    # The shipped recording also hashed its obsolete gameplay flags. The
-    # fingerprint on the left includes only the actual performance and tempo.
-    legacy = {
-        "pinch-lead-sha256=fbe6f26433c4d26707c16373b5791591373fd6557b0ea4b06625c8bd2276f7e4":
-            b"pinch-lead-sha256=f76d90cb053d7efbd95562c281b02da1cc01adfda00f3022c888ce1ff7834268",
-    }
-    if tag not in legacy or legacy[tag] not in data:
+    # The shipped AAC labels the same performance with an older, lead-only tag.
+    # Accept those tags only for the verified combination of lead and bell responses.
+    original = "pinch-score-sha256=2bb7a70b29958ef3f75d54963fb37a5c38c10fedfd5e2b0a3d2357d3f6168017"
+    legacy = (
+        b"pinch-lead-sha256=fbe6f26433c4d26707c16373b5791591373fd6557b0ea4b06625c8bd2276f7e4",
+        b"pinch-lead-sha256=f76d90cb053d7efbd95562c281b02da1cc01adfda00f3022c888ce1ff7834268",
+    )
+    if tag != original or not any(value in data for value in legacy):
         raise SystemExit("The backing does not match this score. Run render.py.")
 
 
 def kotlin_source():
-    attacks = lead_attacks()
+    attacks = chart_attacks()
     section_rows = "\n".join(
         f'    {s.bar * 16} to "{s.label}",' for s in FORM
     )
@@ -198,11 +206,7 @@ def kotlin_source():
         chord_ids = (chord_numbers[chord_at(section, n)] for n in range(end - section.bar))
         band_sections.append(f'            StereoBandSection(StereoGroove.{section.groove.title()}, '
                              f'intArrayOf({", ".join(map(str, chord_ids))})),')
-    rows = []
-    taps = landing_ticks(attacks)
-    for n in attacks:
-        manual = ", playable = true" if n.tick in taps else ""
-        rows.append(f"    strike({n.tick}, {n.midi}, {float(n.length)}, {n.gain:.2f}f{manual}),")
+    rows = [f"    strike({n.tick}, {n.midi}, {float(n.length)}, {n.gain:.2f}f)," for n in attacks]
     return f'''// Generated from tools/stereo_love/score.py. Both the backing and the panels use these ticks.
 package music.pinch
 
@@ -213,8 +217,8 @@ import music.pinch.core.Note
 private const val stereoBpm = {BPM}
 private fun millisAtTick(tick: Int) = (tick * 15_000.0 / stereoBpm).roundToLong()
 
-private fun strike(tick: Int, midi: Int, length: Double, gain: Float, playable: Boolean = false) =
-    Note("stereo-$tick", millisAtTick(tick), midi, (length * 15_000.0 / stereoBpm).roundToLong(), gain, playable)
+private fun strike(tick: Int, midi: Int, length: Double, gain: Float) =
+    Note("stereo-$tick", millisAtTick(tick), midi, (length * 15_000.0 / stereoBpm).roundToLong(), gain)
 
 private val stereoSections = listOf(
 {section_rows}
@@ -234,7 +238,7 @@ internal val stereoLoveSong = Song.arranged(
     bpm = stereoBpm,
     durationMs = {DURATION_MS:_}L,
     backingAsset = "backing/stereo-love.m4a",
-    bundledRevision = 3,
+    bundledRevision = 4,
 ) {{
     val band = stereoBand(stereoBpm,
         arrayOf(

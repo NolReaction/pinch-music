@@ -32,14 +32,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import music.pinch.Actions
-import music.pinch.Instrument
 import music.pinch.ScreenState
 import music.pinch.StageMode
 
 private enum class StudioPage { Catalog, Settings, Profile }
 private val CardShape = RoundedCornerShape(15.dp)
 private val ControlShape = RoundedCornerShape(12.dp)
-private val RecordingAndInstruments: List<Instrument?> = listOf(null) + Instrument.entries
 
 @Composable
 internal fun StudioMenu(state: ScreenState, actions: Actions) {
@@ -66,31 +64,27 @@ internal fun StudioMenu(state: ScreenState, actions: Actions) {
                 CircularProgressIndicator(Modifier.size(20.dp), color = StudioCoral, strokeWidth = 2.dp)
                 Text("Разбираем мелодию…", color = StudioIvory)
             }
-            state.hasScore -> PlaybackActions(actions)
-            else -> {
-                ActionButton("Выбрать аудиофайл", actions::importAudio, accent = StudioCoral)
+            state.canPlay -> PlaybackActions(actions)
+            state.needsSourceFile -> {
+                ActionButton("Выбрать исходный файл", actions::restoreRecording, accent = StudioCoral)
                 Spacer(Modifier.height(7.dp))
-                Caption("Подойдёт запись в MP3, M4A или WAV.")
+                Caption("Карта сохранена. Для игры нужна исходная запись.")
             }
+            else -> Caption("Фонограмма готовится")
         }
         Spacer(Modifier.height(21.dp))
         SectionLabel("Сцена")
         Row(Modifier.fillMaxWidth().selectableGroup(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
             for (mode in StageMode.entries) {
-                Choice(mode.label, mode == state.stageMode, Modifier.weight(1f),
+                StageChoice(mode.label, mode == state.stageMode, Modifier.weight(1f),
                     if (mode == StageMode.Orbit) StudioIcon.Orbit else StudioIcon.Cascade) {
                     if (mode != state.stageMode) actions.selectStageMode(mode)
                 }
             }
         }
-        if (state.hasScore) {
-            Spacer(Modifier.height(17.dp))
-            SectionLabel("Звучание")
-            VoiceChoices(state, actions)
-        }
         Spacer(Modifier.height(13.dp))
         Rule()
-        if (state.hasScore && !state.importing) {
+        if (!state.importing) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Row(Modifier.weight(1f).clip(ControlShape).clickable(role = Role.Button, onClick = actions::importAudio)
                     .heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -222,43 +216,16 @@ private fun SectionLabel(label: String) {
 }
 
 @Composable
-private fun VoiceChoices(state: ScreenState, actions: Actions) {
-    val voices = if (!state.hasRecording) Instrument.entries else RecordingAndInstruments
-    val selected = state.instrument.takeUnless { state.useRecording }
-    BoxWithConstraints(Modifier.fillMaxWidth()) {
-        val scale = LocalDensity.current.fontScale
-        val count = when {
-            scale > 1.55f -> 1
-            voices.size == 4 || maxWidth < 300.dp || scale > 1.15f -> 2
-            else -> 3
-        }
-        val rows = remember(voices, count) { voices.chunked(count) }
-        Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-            for (row in rows) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                for (voice in row) {
-                    Choice(voice?.label ?: if (state.selectedSong.id in state.recordedImportIds) "Запись" else "Оригинал", voice == selected, Modifier.weight(1f)) {
-                        if (voice == null) actions.selectRecording() else actions.selectInstrument(voice)
-                    }
-                }
-                repeat(count - row.size) { Spacer(Modifier.weight(1f)) }
-            }
-        }
-    }
-}
-
-@Composable
-private fun Choice(label: String, active: Boolean, modifier: Modifier, icon: StudioIcon? = null, choose: () -> Unit) {
+private fun StageChoice(label: String, active: Boolean, modifier: Modifier, icon: StudioIcon, choose: () -> Unit) {
     val text = if (active) StudioMint else StudioIvory
     Row(modifier.clip(ControlShape).background(if (active) Color(0xff23332e) else Surface)
         .border(1.dp, if (active) Color(0xff688d79) else Line, ControlShape)
-        .selectable(active, role = if (icon == null) Role.RadioButton else Role.Tab, onClick = choose)
+        .selectable(active, role = Role.Tab, onClick = choose)
         .heightIn(min = 48.dp).padding(horizontal = 4.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
-        if (icon != null) {
-            StudioGlyph(icon, text, Modifier.size(19.dp))
-            Spacer(Modifier.width(6.dp))
-        }
-        Text(label, color = text, fontSize = if (icon == null) 13.sp else 15.sp, lineHeight = 18.sp,
+        StudioGlyph(icon, text, Modifier.size(19.dp))
+        Spacer(Modifier.width(6.dp))
+        Text(label, color = text, fontSize = 15.sp, lineHeight = 18.sp,
             fontWeight = if (active) FontWeight.Bold else FontWeight.Medium, textAlign = TextAlign.Center)
     }
 }

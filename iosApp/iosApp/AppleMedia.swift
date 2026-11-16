@@ -392,7 +392,12 @@ private actor GameAudioLoader {
             sourceURL = URL(fileURLWithPath: path)
         } else if let asset = backingAsset {
             guard let folder = Bundle.main.resourceURL else { throw AudioFailure("Отсутствуют ресурсы игры.") }
-            sourceURL = folder.appendingPathComponent("media").appendingPathComponent(asset)
+            let url = folder.appendingPathComponent("media").appendingPathComponent(asset)
+            if url.pathExtension == "m4a", !FileManager.default.fileExists(atPath: url.path) {
+                sourceURL = url.deletingPathExtension().appendingPathExtension("wav")
+            } else {
+                sourceURL = url
+            }
         }
         if let url = sourceURL {
             let file = try AVAudioFile(forReading: url, commonFormat: .pcmFormatFloat32, interleaved: false)

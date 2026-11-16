@@ -126,7 +126,7 @@ struct Piece {
     Buffer rail;
 };
 struct Stage {
-    Program scene, wall, cues;
+    Program scene, wall, shadows, cues;
     Buffer wallMesh, marble, brackets, sparks;
     std::array<Buffer, 8> keys; // short vs full, mount side, accent vs plain
     std::vector<Piece> pieces;
@@ -173,7 +173,8 @@ struct Stage {
         reliefMotif = motif;
     }
     bool init() {
-        if (!scene.link(sceneVS, sceneFS) || !wall.link(wallVS, wallFS) || !cues.link(cueVS, cueFS))
+        if (!scene.link(sceneVS, sceneFS) || !wall.link(wallVS, wallFS) ||
+            !shadows.link(shadowVS, unlitFS) || !cues.link(cueVS, unlitFS))
             return false;
         Mesh w;
         // Interpolate the wall lighting on a coarse grid and the shadow penumbrae on rings.
@@ -195,7 +196,9 @@ struct Stage {
                 float opacity = 1 - t * t * (3 - 2 * t);
                 for (int k = 0; k < segments; ++k) {
                     float a = 2.f * Pi * k / segments;
-                    w.point({r * std::cos(a), r * std::sin(a), 0}, {opacity, 0, 0}, Skirt, slot);
+                    const float x = std::cos(a), y = std::sin(a);
+                    const float side = std::max(std::abs(x), std::abs(y));
+                    w.point({r * x, r * y, r}, {opacity, x / side, y / side}, Skirt, slot);
                 }
                 for (int k = 0; k < segments; ++k) {
                     int a = center + 1 + (j - 1) * segments + k,
@@ -280,6 +283,20 @@ struct Stage {
             --lo; // The preceding rail can extend down into the viewport.
         auto hi = std::upper_bound(lo, pieces.end(), bottom,
                                    [](float y, const Piece& p) { return y < p.y; });
+        // |clip.x| and |clip.y| must both be <= clip.w. Test a conservative
+        // axis-aligned box against all four planes before submitting any vertices.
+        const V forward{-.279687f, .487454f, -.827155f};
+        const V right{.947306f * lensX, 0.f, -.32033f * lensX};
+        const V up = V{-.156135f, -.873148f, -.461818f} * lensY;
+        const V planes[] = {right - forward, right * -1.f - forward, up - forward, up * -1.f - forward};
+        auto visible = [&](V center, V half) {
+            const V delta = center - eye;
+            for (V plane : planes) {
+                if (dot(delta, plane) > std::abs(plane.x) * half.x + std::abs(plane.y) * half.y +
+                                        std::abs(plane.z) * half.z) return false;
+            }
+            return true;
+        };
         glViewport(0, 0, width, height);
         glDisable(GL_SCISSOR_TEST);
         glDisable(GL_CULL_FACE);
@@ -299,13 +316,15 @@ struct Stage {
         glDrawElements(GL_TRIANGLES, backdropIndices, GL_UNSIGNED_SHORT, nullptr);
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glUseProgram(shadows.id);
+        glUniform4f(shadows.lens, lensX, lensY, .20f, 45.f);
         float decals[16 * 4], axes[16 * 4];
         int used = 0;
         auto flush = [&]() {
             if (!used)
                 return;
-            glUniform4fv(wall.decals, used, decals);
-            glUniform4fv(wall.shadowAxes, used, axes);
+            glUniform4fv(shadows.decals, used, decals);
+            glUniform4fv(shadows.shadowAxes, used, axes);
             glDrawElements(GL_TRIANGLES, used * shadowIndices, GL_UNSIGNED_SHORT,
                            reinterpret_cast<void*>(backdropIndices * sizeof(uint16_t)));
             used = 0;
@@ -313,6 +332,8 @@ struct Stage {
         // Project onto the wall along the same studio light that shades the metal.
         constexpr float castX = -.92f, castY = .34f;
         auto shadow = [&](float x, float y, float ux, float uy, float vx, float vy, float square, float alpha) {
+            if (!visible({x, y, -1.347f}, {std::abs(ux) + std::abs(vx) + .002f,
+                                             std::abs(uy) + std::abs(vy) + .002f, 0.f})) return;
             int n = 4 * used;
             decals[n] = x; decals[n + 1] = y; decals[n + 2] = square; decals[n + 3] = alpha;
             axes[n] = ux; axes[n + 1] = uy; axes[n + 2] = vx; axes[n + 3] = vy;
@@ -324,7 +345,7 @@ struct Stage {
             if (length <= .001f) return;
             float extend = .5f + .50f * penumbra / length;
             shadow((a.x + b.x) * .5f, (a.y + b.y) * .5f, d.x * extend, d.y * extend,
-                   -d.y * penumbra / length, d.x * penumbra / length, 2.f, alpha);
+                   -d.y * penumbra / length, d.x * penumbra / length, -std::min(1.f, penumbra / (length * extend)), alpha);
         };
         for (auto it = lo; it != hi; ++it) {
             const V origin{it->x - cameraX, it->y - cameraY, 0};
@@ -370,25 +391,9 @@ struct Stage {
             Piece& p = *it;
             int i = static_cast<int>(it - pieces.begin());
             bool guided = p.route.size() >= 2;
-            // Bounding boxes for the two slab clip planes, including mounting
-            // hardware and the full pitched guide from its key to its release lip.
-            const V mid = (p.routeMax + p.routeMin) * .5f;
-            const V half = (p.routeMax - p.routeMin) * .5f;
-            V center{p.x - cameraX + mid.x, p.y - cameraY + .22f + mid.y, -.32f};
-            V halfSize{.83f + half.x, .91f + half.y, 1.06f};
-            bool clipped = false;
-            for (float sign : {-1.f, 1.f}) {
-                const V plane =
-                    V{-.156135f, -.873148f, -.461818f} * (lensY * sign) - V{-.279687f, .487454f, -.827155f};
-                const float radius = std::abs(plane.x) * halfSize.x + std::abs(plane.y) * halfSize.y +
-                                     std::abs(plane.z) * halfSize.z;
-                if (dot(center - eye, plane) > radius)
-                    clipped = true;
-            }
-            if (clipped)
-                continue;
-            glUniform3f(scene.offset, p.x - cameraX, p.y - cameraY, 0);
-            if (p.style >= 0.f) {
+            const V origin{p.x - cameraX, p.y - cameraY, 0};
+            if (p.style >= 0.f && visible(origin + V{0, .22f, -.55f}, {.83f, .91f, .83f})) {
+                glUniform3f(scene.offset, origin.x, origin.y, 0);
                 int shape = (guided ? 4 : 0) + (p.side > 0 ? 2 : 0) + (p.style == 1.f ? 1 : 0);
                 float impact = i == active ? strength : 0.f;
                 bool upcoming = i == next;
@@ -404,7 +409,10 @@ struct Stage {
                 keys[shape].bind();
                 keys[shape].draw();
             }
-            if (guided) {
+            const V mid = (p.routeMax + p.routeMin) * .5f;
+            const V half = (p.routeMax - p.routeMin) * .5f;
+            if (guided && visible(origin + mid + V{0, .22f, -.32f}, half + V{.83f, .91f, 1.06f})) {
+                glUniform3f(scene.offset, origin.x, origin.y, 0);
                 if (!p.rail.count)
                     p.rail.upload(railMesh(p.route, p.style < 0.f));
                 // Rails are already built in world axes from the physics samples.

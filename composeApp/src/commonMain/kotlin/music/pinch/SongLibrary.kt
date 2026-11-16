@@ -55,24 +55,7 @@ private fun arrangement(
 }
 
 internal val songLibrary = listOf(
-    arrangement("on-the-floor", "On the Floor", "Jennifer Lopez ft. Pitbull", 130, 16, 3) { listOf(
-        Phrase(.91f, lead = listOf(0 to 69, 3 to 67, 5 to 65, 7 to 64, 10 to 62),
-            answer = listOf(2 to 50, 8 to 57, 13 to 53), grace = listOf(3 to 70)),
-        Phrase(.84f, lead = listOf(0 to 62, 2 to 65, 5 to 64, 8 to 62, 11 to 60),
-            answer = listOf(4 to 53, 7 to 57, 14 to 57), pickups = listOf(20 to 62, 25 to 64)),
-        Phrase(.83f, lead = listOf(0 to 65, 4 to 67, 7 to 69, 12 to 67),
-            answer = listOf(2 to 57, 9 to 60), pickups = listOf(21 to 70), gate = .89),
-        Phrase(.82f, lead = listOf(0 to 65, 3 to 64, 8 to 62, 13 to 61),
-            answer = listOf(6 to 58, 11 to 57), grace = listOf(9 to 65)),
-        Phrase(.96f, lead = listOf(0 to 65, 3 to 69, 6 to 72, 10 to 69, 13 to 67),
-            answer = listOf(2 to 53, 8 to 60, 12 to 55), grace = listOf(9 to 70)),
-        Phrase(.97f, lead = listOf(0 to 74, 4 to 72, 7 to 69, 11 to 67),
-            answer = listOf(2 to 58, 10 to 57), pickups = listOf(26 to 65)),
-        Phrase(.93f, lead = listOf(0 to 69, 3 to 67, 5 to 65, 8 to 64, 12 to 62),
-            answer = listOf(6 to 53, 10 to 57), grace = listOf(19 to 65)),
-        Phrase(.90f, lead = listOf(0 to 65, 3 to 64, 6 to 60, 10 to 62),
-            answer = listOf(2 to 55, 8 to 57, 12 to 53, 14 to 50), gate = .93),
-    ) },
+    onTheFloorSong,
     stereoLoveSong,
     arrangement("gypsy-woman", "Gypsy Woman", "Crystal Waters", 120, 16, 3) { listOf(
         Phrase(.86f, lead = listOf(0 to 62, 3 to 64, 6 to 57, 8 to 60, 12 to 58),

@@ -22,9 +22,8 @@ import androidx.compose.ui.graphics.drawscope.CanvasDrawScope
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
-import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.scale
-import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.IntSize
@@ -275,11 +274,11 @@ internal class MarbleScene(private val meshes: OrbitMeshes, private val marbleAt
         val blur = u*bar.shadowPenumbra
         val major = .5f*length.getDistance() + blur
         val minor = u*.11f + blur
-        translate(center.x, center.y) {
-            rotate(atan2(length.y,length.x)*57.29578f, Offset.Zero) {
-                scale(major,minor,Offset.Zero) { drawCircle(ShadowFeather, 1f, Offset.Zero) }
-            }
-        }
+        withTransform({
+            translate(center.x, center.y)
+            rotate(atan2(length.y,length.x)*57.29578f, Offset.Zero)
+            scale(major,minor,Offset.Zero)
+        }) { drawCircle(ShadowFeather, 1f, Offset.Zero) }
         for (i in bar.anchors.indices) {
             val a = camera.project(bar.anchors[i])
             val b = camera.project(bar.lower[i])
@@ -309,7 +308,7 @@ internal class MarbleScene(private val meshes: OrbitMeshes, private val marbleAt
         val u = camera.unit(rail.stations[rail.stations.size/2])
         for (side in 0..1) {
             val points = if (side==0) rail.left else rail.right
-            outline.reset()
+            outline.rewind()
             var started = false
             for (point in points) {
                 val p = camera.project(point)
@@ -330,7 +329,7 @@ internal class MarbleScene(private val meshes: OrbitMeshes, private val marbleAt
     }
 
     private fun detailLoop(points: Array<StagePoint>, camera: Camera) {
-        detail.reset()
+        detail.rewind()
         for (i in points.indices) {
             val p = camera.project(points[i])
             if (i == 0) detail.moveTo(p.x,p.y) else detail.lineTo(p.x,p.y)
@@ -361,6 +360,11 @@ internal class MarbleScene(private val meshes: OrbitMeshes, private val marbleAt
             projectedX[n] = point.x
             projectedY[n] = point.y
         }
+        // A backing bracket or shadow can be visible even after its cap has left
+        // the viewport. The four corner rings bound every face and its feedback stroke.
+        val margin = unit * .20f + 2f
+        if (projectedX.all { it < -margin } || projectedX.all { it > size.width + margin } ||
+            projectedY.all { it < -margin } || projectedY.all { it > size.height + margin }) return
         val step = (light * LightSteps).roundToInt().coerceIn(0, LightSteps)
         val finish = bar.finish
         val shadeBase = step*(ShadeSteps+1)
@@ -376,7 +380,7 @@ internal class MarbleScene(private val meshes: OrbitMeshes, private val marbleAt
                 val ux = projectedX[b+i]
                 val uy = projectedY[b+i]
                 if ((qx-px)*(uy-py) - (qy-py)*(ux-px) >= 0f) continue
-                outline.reset()
+                outline.rewind()
                 outline.moveTo(px, py)
                 outline.lineTo(qx, qy)
                 outline.lineTo(projectedX[b+j], projectedY[b+j])
@@ -397,7 +401,7 @@ internal class MarbleScene(private val meshes: OrbitMeshes, private val marbleAt
         val front = (projectedX[10]-projectedX[0])*(projectedY[14]-projectedY[0]) -
             (projectedY[10]-projectedY[0])*(projectedX[14]-projectedX[0]) > 0f
         val start = if (front) 0 else (Levels-1)*Corners
-        outline.reset()
+        outline.rewind()
         outline.moveTo(projectedX[start], projectedY[start])
         for (i in 1 until Corners) outline.lineTo(projectedX[start+i], projectedY[start+i])
         outline.close()
@@ -503,9 +507,10 @@ internal class MarbleScene(private val meshes: OrbitMeshes, private val marbleAt
         }
         val wallContact = camera.project(shadow(frame.marble))
         val wallR = camera.unit(frame.marble)*MarbleRadius*1.58f
-        translate(wallContact.x,wallContact.y) {
-            scale(wallR,wallR*.88f,Offset.Zero) { drawCircle(ShadowFeather,1f,Offset.Zero) }
-        }
+        withTransform({
+            translate(wallContact.x, wallContact.y)
+            scale(wallR, wallR*.88f, Offset.Zero)
+        }) { drawCircle(ShadowFeather,1f,Offset.Zero) }
         for (i in start..min(path.spans.lastIndex, end + 1)) {
             val run = path.spans[i]
             if (run.railEnd <= 0f) continue
@@ -530,16 +535,16 @@ internal class MarbleScene(private val meshes: OrbitMeshes, private val marbleAt
             val result = feedback.lastOrNull { it.effectsVisible && it.noteAtMs == bar.key.atMs }
             // The wall mounts are fixed. Only the struck plate travels on its springs.
             val travel = panelCompression(age)
-            val face = bar.key.center
-            val offset = camera.project(face - bar.key.normal * travel) - camera.project(face)
-            translate(offset.x, offset.y) {
-                bar(bar, camera, age, light, incoming, result, timeMs, frame.marble)
-                if (i == cue) drawLandingCue(camera.project(face), camera.unit(face) * MarbleRadius, landingPhase(timeMs, bar.key.atMs))
-                if (showWindow && result != null) {
-                    val progress = sparkPhase(timeMs, result)
-                    if (progress >= 0f) drawLandingSparks(camera.project(face), camera.unit(face) * MarbleRadius, progress)
-                }
+            val face = camera.project(bar.key.center)
+            val offset = if (travel == 0f) Offset.Zero else camera.project(bar.key.center - bar.key.normal * travel) - face
+            if (offset != Offset.Zero) drawContext.transform.translate(offset.x, offset.y)
+            bar(bar, camera, age, light, incoming, result, timeMs, frame.marble)
+            if (i == cue) drawLandingCue(face, camera.unit(bar.key.center) * MarbleRadius, landingPhase(timeMs, bar.key.atMs))
+            if (showWindow && result != null) {
+                val progress = sparkPhase(timeMs, result)
+                if (progress >= 0f) drawLandingSparks(face, camera.unit(bar.key.center) * MarbleRadius, progress)
             }
+            if (offset != Offset.Zero) drawContext.transform.translate(-offset.x, -offset.y)
         }
         if (!marbleDrawn) marble(camera,frame)
     }

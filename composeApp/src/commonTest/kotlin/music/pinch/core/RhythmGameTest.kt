@@ -168,6 +168,30 @@ class RhythmGameTest {
     }
 
     @Test
+    fun sixteenthNoteRollsKeepDistinctPerfectTapsAndIgnoreBouncesAtTheMidpoint() {
+        val onsets = listOf(39_331L, 39_449L, 39_567L, 39_685L)
+        val roll = onsets.mapIndexed { i, time -> first.copy(id = "roll-$i", atMs = time) }
+        val rapidChart = Chart("Дробь", 127, 41_000, roll)
+        for (forgiving in listOf(false, true)) {
+            val game = RhythmGame(rapidChart, forgiving)
+            for ((i, key) in roll.withIndex()) {
+                // Each tap is still Perfect. A late tap followed by an early one can
+                // leave just 28 ms of real time between two deliberate gestures.
+                val time = key.atMs + if (i % 2 == 0) 45 else -45
+                assertEquals(key, assertIs<TapResult.Hit>(game.tap(time)).note)
+                assertEquals(TapResult.Ignored, game.tap(time + 4))
+            }
+            assertEquals(GameStats(4, perfect = 4, combo = 4, maxCombo = 4), game.finish())
+
+            game.restart()
+            assertEquals(roll[0], assertIs<TapResult.Hit>(game.tap(onsets[0] + 59)).note)
+            assertEquals(TapResult.Ignored, game.tap(onsets[0] + 60))
+            assertEquals(roll[1], assertIs<TapResult.Hit>(game.tap(onsets[1])).note)
+            assertEquals(2, game.finish().missed)
+        }
+    }
+
+    @Test
     fun anOlderLandingExpiresOnlyAfterItsOwnLateWindowAndPreservesTheLaterHitStreak() {
         val middle = first.copy(id = "mid", atMs = 2_100)
         val game = RhythmGame(chart.copy(notes = listOf(first, middle, second)), forgiving = true)

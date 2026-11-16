@@ -174,7 +174,7 @@ void main() {
         (uLens.w+uLens.z)/(uLens.w-uLens.z)*z-2.*uLens.w*uLens.z/(uLens.w-uLens.z),z);
 }
 )GL";
-static const char* cueFS = R"GL(
+static const char* unlitFS = R"GL(
 precision mediump float;
 varying lowp vec4 vColor;
 void main() { gl_FragColor=vColor; }
@@ -185,11 +185,7 @@ void main() { gl_FragColor=vColor; }
 // are sampled in world space; the camera moves past them at different rates.
 static const char* wallVS = STAGE_CAMERA_GLSL R"GL(
 attribute highp vec3 aPos;
-attribute mediump vec3 aNormal;
-attribute mediump vec2 aMat;
 uniform highp vec4 uLens;
-uniform highp vec4 uDecals[16]; // centre, corner shape, opacity
-uniform highp vec4 uShadowAxes[16];
 uniform lowp vec3 uPaint;
 uniform lowp vec3 uAccent;
 uniform mediump vec3 uPhase; // camera position modulo the wall period, theme motif
@@ -200,31 +196,34 @@ varying mediump vec2 vReliefUV;
 #endif
 varying lowp vec4 vColor;
 void main(){
-    vReliefUV=vec2(0.);
-    if(aMat.x<.5) {
-        vec2 uv=aPos.xy*.5+.5;
-        vec3 ray=forward+right*aPos.x/uLens.x+up*aPos.y/uLens.y;
-        vec2 slope=ray.xy/min(-.09,ray.z);
-        vec2 origin=uPhase.xy+eye.xy;
-        vReliefUV=(origin+slope*(-1.35-eye.z))*.625;
-        vec2 bounce=origin+slope*(-2.55-eye.z);
-        float farLight=.5+.5*sin((bounce.x+bounce.y)*.2617994);
-        float light=.27+.48*uv.y+.14*uv.x;
-        vec3 col=mix(uPaint,uAccent,light)*(.982+.029*farLight);
-        gl_Position=vec4(aPos.xy,0.,1.); vColor=vec4(col,1.); return;
-    }
+    vec2 uv=aPos.xy*.5+.5;
+    vec3 ray=forward+right*aPos.x/uLens.x+up*aPos.y/uLens.y;
+    vec2 slope=ray.xy/min(-.09,ray.z);
+    vec2 origin=uPhase.xy+eye.xy;
+    vReliefUV=(origin+slope*(-1.35-eye.z))*.625;
+    vec2 bounce=origin+slope*(-2.55-eye.z);
+    float farLight=.5+.5*sin((bounce.x+bounce.y)*.2617994);
+    float light=.27+.48*uv.y+.14*uv.x;
+    vec3 col=mix(uPaint,uAccent,light)*(.982+.029*farLight);
+    gl_Position=vec4(aPos.xy,0.,1.);
+    vColor=vec4(col,1.);
+}
+)GL";
+
+static const char* shadowVS = STAGE_CAMERA_GLSL R"GL(
+attribute highp vec3 aPos; // radial xy and radius
+attribute mediump vec3 aNormal; // opacity and direction on a unit square
+attribute mediump vec2 aMat;
+uniform highp vec4 uLens;
+uniform highp vec4 uDecals[16]; // centre, corner shape (negative for a rail), opacity
+uniform highp vec4 uShadowAxes[16];
+varying lowp vec4 vColor;
+void main(){
     int idx=int(aMat.y+.5);
     vec4 data=uDecals[idx], axes=uShadowAxes[idx];
-    vec2 q=aPos.xy;
-    float radius=length(q), side=max(.001,max(abs(q.x),abs(q.y)));
-    if(data.z>1.5) {
-        // Soften in physical units at the ends of a continuous rail shadow.
-        // A long segment must not fade through its whole length at each joint.
-        float feather=min(1.,length(axes.zw)/max(.001,length(axes.xy)));
-        q=vec2(q.x/side*mix(1.-feather,1.,radius),q.y/side*radius);
-    } else {
-        q*=mix(1.,radius/side,data.z);
-    }
+    vec2 box=aNormal.yz*aPos.z;
+    vec2 q=mix(aPos.xy,box,max(0.,data.z));
+    if(data.z<0.) q=vec2(aNormal.y*mix(1.+data.z,1.,aPos.z),box.y);
     vec2 p=data.xy+axes.xy*q.x+axes.zw*q.y;
     vec3 d=vec3(p,-1.347)-eye;
     float z=dot(d,forward);
@@ -246,7 +245,6 @@ varying mediump vec2 vReliefUV;
 #endif
 uniform sampler2D uRelief;
 void main(){
-    if(vColor.a<.99) { gl_FragColor=vColor; return; }
     vec3 col=vColor.rgb*(.967+.066*texture2D(uRelief,vReliefUV).r);
     gl_FragColor=vec4(col,1.);
 }

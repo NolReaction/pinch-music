@@ -181,15 +181,33 @@ internal class MarblePath(chart: Chart) {
         centers.add(orbit(angles[0], MarbleRadius * -1f))
         val contacts = if (chart.notes.size == attacks.size) chart else chart.copy(notes = attacks)
         val sections = ArrayList<CourseRun>(times.lastIndex)
+        val beatMs = 60_000.0 / chart.bpm
+        var heading = if (phraseDirection(attacks, 0, beatMs) < 0) -1 else 1
+        var lastTurn = -4
         var spin = 0f
         for (i in 1..times.lastIndex) {
             val seconds = (times[i] - times[i - 1]) / 1000f
-            // Give fast alternating notes room around the oval, while also keeping
-            // the vertical step below a free fall from rest for very short intervals.
-            val advance = 1.72 * seconds + .28 * min(1f, seconds / .118f)
+            val note = attacks.getOrNull(i - 2)
+            val target = attacks.getOrNull(i - 1)
+            val interval = if (note != null && target != null) target.midi - note.midi else 0
+            // Turn below the old bank after a deep descent. Keep the return and its
+            // immediate follow-up airborne arcs short enough to clear the bank above.
+            val nextGap = if (i + 1 < times.lastIndex) times[i + 1] - times[i] else 0L
+            if (i >= 3 && target != null && i - lastTurn >= 4 &&
+                centers.last().y - centers[centers.lastIndex - 1].y > 1.62f &&
+                seconds * 1000 in (.65 * beatMs)..(1.12 * beatMs) &&
+                nextGap <= 1.65 * beatMs) {
+                val desired = phraseDirection(attacks, i - 2, beatMs)
+                if (desired != 0 && desired != heading) {
+                    heading = desired
+                    lastTurn = i
+                }
+            }
+            val reach = min(8, abs(interval)) / 8f
+            val advance = (1.56 + .34 * reach) * seconds + (.28 + .06 * reach) * min(1f, seconds / .118f)
             val catcher = i == times.lastIndex
-            angles[i] = if (catcher) angles[i - 1] else angles[i - 1] + advance
-            val drop = min(Descent * seconds, .19f * OrbitGravity * seconds * seconds)
+            angles[i] = if (catcher) angles[i - 1] else angles[i - 1] + heading * advance
+            val drop = min((Descent - .12f + .22f * reach) * seconds, .19f * OrbitGravity * seconds * seconds)
             val previous = centers.last()
             val next = if (catcher) previous else orbit(angles[i], previous.y + drop)
             val guided = if (i == 1) times[i] >= 1300 else contacts.hasGuideAfter(i - 2)
@@ -200,7 +218,6 @@ internal class MarblePath(chart: Chart) {
             integratedX[i] = integratedX[i - 1] + (times[i] - times[i - 1]) * (previous.x + next.x).toDouble() / 2
         }
         spans = sections
-        val beatMs = 60_000.0 / chart.bpm
         val gaps = attacks.zipWithNext { a, b -> (b.atMs - a.atMs).toDouble() }.sorted()
         val usualStep = gaps.getOrNull(gaps.size/2) ?: beatMs
         val sustainedMs = max(.75*beatMs, .88*usualStep)

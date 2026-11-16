@@ -15,7 +15,7 @@ import numpy as np
 from scipy import signal
 from scipy.io import wavfile
 
-from score import BACKING, BAR_COUNT, BPM, DURATION_MS, FORM, HARMONY, chord_at, lead_attacks, score_tag, section_at
+from score import BACKING, BAR_COUNT, BPM, DURATION_MS, FORM, HARMONY, bell_answer_at, bell_answers, chord_at, lead_attacks, score_tag, section_at
 
 RATE = 32_000
 BEAT = 60 / BPM
@@ -181,8 +181,9 @@ def render():
         for j, pitch in enumerate(chord):
             place(pitched("pad", pitch, 14.9 if not last else 9.0), tick,
                   .091 * bed, (-.48, .12, .50)[j], .25)
-        if groove in ("peak", "bridge", "final", "outro") and local % 4 in (1, 3):
-            place(pitched("bell", chord[-1] + 12, 3.8), tick + 6, .073, .42, .55)
+        bell = bell_answer_at(bar)
+        if bell:
+            place(pitched(bell.voice, bell.midi, bell.length), bell.tick, .20 * bell.gain, .42, .55)
         if last:
             place(kit["kick"], tick, .40)
             place(pitched("bass", root, 8), tick, .31, send=.08)
@@ -247,13 +248,19 @@ def render():
     mix[-fade:] *= np.linspace(1, 0, fade, dtype=np.float32)[:, None]
 
 
+def correlation(reference, actual):
+    norm = np.linalg.norm(actual) * np.linalg.norm(reference)
+    return float(np.dot(reference, actual) / norm) if norm else 0.0
+
+
 def verify_backing(path):
-    """Match the lead waveform against the encoded mix at each scheduled contact."""
+    """Match the melody and right-panned bell responses against the encoded performance."""
     audio = subprocess.check_output([
         "ffmpeg", "-v", "error", "-i", str(path), "-vn", "-f", "f32le",
-        "-ac", "1", "-ar", str(RATE), "-",
+        "-ac", "2", "-ar", str(RATE), "-",
     ])
-    pcm = np.frombuffer(audio, dtype="<f4")
+    stereo = np.frombuffer(audio, dtype="<f4").reshape(-1, 2)
+    pcm = stereo.mean(axis=1)
     contacts = lead_attacks()
     minimum = 1.0
     for n in contacts:
@@ -262,12 +269,29 @@ def verify_backing(path):
         size = round(min(.080, .9 * n.length * TICK) * RATE)
         lead = filtered(pitched(n.voice, n.midi, n.length)[:size], 250, "high")
         actual = filtered(pcm[start:start + size], 250, "high")
-        norm = np.linalg.norm(actual) * np.linalg.norm(lead)
-        match = float(np.dot(lead, actual) / norm) if norm else 0.0
+        match = correlation(lead, actual)
         if match < .5:
             raise ValueError(f"Missing or mistimed MIDI {n.midi} at tick {n.tick} (correlation {match:.3f})")
         minimum = min(minimum, match)
     print(f"Matched {len(contacts)} melody onsets in decoded AAC. Minimum correlation {minimum:.3f}")
+
+    # The lead and bell can sound together. Subtract the left channel at the
+    # lead's pan ratio and isolate the bell fundamental in its first 94 ms.
+    lead_pan_ratio = np.tan((1 - .045) * np.pi / 4)
+    bells = bell_answers()
+    minimum = 1.0
+    for bell in bells:
+        hz = frequency(bell.midi)
+        sos = signal.butter(2, (.96 * hz, 1.04 * hz), fs=RATE, btype="bandpass", output="sos")
+        start = round(bell.tick * TICK * RATE)
+        window = stereo[start:start + round(.094 * RATE)]
+        actual = signal.sosfilt(sos, window[:, 1] - lead_pan_ratio * window[:, 0])
+        template = signal.sosfilt(sos, pitched(bell.voice, bell.midi, bell.length)[:len(window)])
+        match = correlation(template, actual)
+        if match < .65:
+            raise ValueError(f"Missing or mistimed bell MIDI {bell.midi} at tick {bell.tick} (correlation {match:.3f})")
+        minimum = min(minimum, match)
+    print(f"Matched {len(bells)} bell answers in decoded AAC. Minimum correlation {minimum:.3f}")
 
 
 def write_backing():

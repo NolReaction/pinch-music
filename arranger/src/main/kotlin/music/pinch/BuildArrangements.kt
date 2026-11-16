@@ -4,7 +4,6 @@ import java.io.File
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
-import kotlinx.coroutines.runBlocking
 
 private fun encodeAac(encoder: File, wav: File, destination: File, bitRate: Int = 96_000): Boolean {
     Files.deleteIfExists(destination.toPath())
@@ -48,47 +47,33 @@ private fun renderRecording(source: File, destination: File, scratch: File, code
     }
 }
 
-/** Reuse the app's PCM renderer. Each file starts at chart zero, including any written rests. */
-fun main(args: Array<String>): Unit = runBlocking {
-    val roots = File(args[0])
-    val output = File(args[1], "arrangements")
+/** The recorded mix and the generated dance score each produce one audio timeline. */
+fun main(args: Array<String>) {
+    val source = File(args[0])
+    val assets = File(args[1])
     val scratch = File(args[2])
-    var encoder = args[3].takeIf { it.isNotEmpty() }?.let(::File)
+    val codec = args[3].takeIf { it.isNotEmpty() }?.let(::File)
+    val output = assets.resolve("backing")
+    output.mkdirs()
     scratch.mkdirs()
-    val current = mutableSetOf<File>()
-    for (song in songLibrary) {
-        val score = requireNotNull(song.bundled)
-        val destination = output.resolve(song.id)
-        destination.mkdirs()
-        for (instrument in listOf(null) + Instrument.entries) {
-            val name = instrument?.name?.lowercase() ?: "band"
-            val wav = scratch.resolve("track.wav")
-            wav.outputStream().buffered().use { stream ->
-                renderArrangement(score, instrument, { voice, pitch ->
-                    roots.resolve("${voice.name.lowercase()}/$pitch.wav").readBytes()
-                }) { bytes, length -> stream.write(bytes, 0, length) }
-            }
-            val aac = scratch.resolve("track.m4a")
-            val codec = encoder
-            val track = when {
-                codec == null -> wav
-                encodeAac(codec, wav, aac) -> aac
-                else -> {
-                    System.err.println("AAC unavailable from ${codec.name}. Packaging PCM WAV.")
-                    Files.deleteIfExists(aac.toPath())
-                    encoder = null
-                    wav
-                }
-            }
-            val file = destination.resolve("$name.${track.extension}")
-            Files.move(track.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
-            current.add(file)
-        }
+
+    val stereoLove = output.resolve("stereo-love.m4a")
+    renderRecording(source, stereoLove, scratch, codec)
+
+    val wav = scratch.resolve("on-the-floor.wav")
+    val aac = scratch.resolve("on-the-floor.m4a")
+    val floor = try {
+        writeOnTheFloorMaster(wav, requireNotNull(onTheFloorSong.bundled))
+        val track = if (codec != null && encodeAac(codec, wav, aac, bitRate = 160_000)) aac else wav
+        output.resolve(track.name).also { Files.move(track.toPath(), it.toPath(), StandardCopyOption.REPLACE_EXISTING) }
+    } finally {
+        Files.deleteIfExists(wav.toPath())
+        Files.deleteIfExists(aac.toPath())
     }
-    renderRecording(roots.parentFile.resolve("backing/stereo-love.m4a"),
-        File(args[1], "backing/stereo-love.m4a"), scratch, encoder)
-    writeLaunchSound(File(args[1], "launch.wav"))
-    // A removed score or a changed encoder must not leave an old track in the application.
-    output.walkBottomUp().filter { it.isFile && it !in current }.forEach { Files.delete(it.toPath()) }
-    Files.deleteIfExists(scratch.resolve("track.wav").toPath())
+    writeLaunchSound(assets.resolve("launch.wav"))
+    val current = setOf(stereoLove, floor)
+    output.listFiles().orEmpty().filter { it.isFile && it !in current }.forEach { Files.delete(it.toPath()) }
+    // Upgrading a checkout with old generated previews must also retire its artifacts.
+    val previews = assets.resolve("arrangements")
+    if (previews.exists()) check(previews.deleteRecursively()) { "Cannot remove old previews at $previews" }
 }

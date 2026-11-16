@@ -19,7 +19,7 @@ dependencies {
 // Both platforms package the same scored master. Keep the source recording in the authoring tree.
 val gameAssetsDirectory = layout.buildDirectory.dir("generated/gameAssets")
 val gameAssets = tasks.register<Sync>("prepareGameAssets") {
-    from(rootProject.file("media")) { exclude("backing/stereo-love.m4a") }
+    from(rootProject.file("media")) { include("feedback/piano.wav") }
     from(arrangedAudio)
     into(gameAssetsDirectory)
 }
@@ -99,17 +99,17 @@ val xcodeResources = providers.environmentVariable("TARGET_BUILD_DIR")
         File(products, resources)
     }
 val installXcodeMedia = tasks.register<Sync>("installXcodeMedia") {
-    from(gameAssets) { exclude("arrangements/**", "launch.wav") }
+    from(gameAssets) { exclude("launch.wav") }
     into(xcodeResources.map { it.resolve("media") })
 }
 val installLaunchSound = tasks.register<Copy>("installLaunchSound") {
     from(arrangedAudio.elements.map { it.single().asFile.resolve("launch.wav") })
     into(xcodeResources)
 }
-val installXcodeArrangements = tasks.register<Sync>("installXcodeArrangements") {
+// The existing Xcode project invokes this task by name. Its old output consisted of track previews.
+val installXcodeArrangements = tasks.register<Delete>("installXcodeArrangements") {
     dependsOn(installLaunchSound, installXcodeMedia)
-    from(arrangedAudio.elements.map { it.single().asFile.resolve("arrangements") })
-    into(xcodeResources.map { it.resolve("arrangements") })
+    delete(xcodeResources.map { it.resolve("arrangements") })
 }
 tasks.matching { it.name == "embedAndSignAppleFrameworkForXcode" }.configureEach {
     if (xcodeResources.isPresent) dependsOn(installXcodeArrangements)

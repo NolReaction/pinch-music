@@ -6,6 +6,7 @@ import kotlin.math.hypot
 import kotlin.math.min
 import kotlin.math.sqrt
 import music.pinch.core.Chart
+import music.pinch.core.Note
 import music.pinch.core.cascadeChart
 import music.pinch.core.cascadePreRollMs
 import music.pinch.core.hasGuideAfter
@@ -240,6 +241,20 @@ private fun overheadVelocity(
     return -above / critical - .5 * CascadeGravity * critical
 }
 
+/** The first short melodic line after a breath sets the direction of the next phrase.
+ * Look ahead in beats so the same motif has the same shape when transposed or replayed faster. */
+internal fun phraseDirection(notes: List<Note>, index: Int, beatMs: Double): Int {
+    val first = notes[index]
+    var contour = 0
+    for (j in index + 1 until notes.size) {
+        val note = notes[j]
+        if (note.atMs - first.atMs > 2.25 * beatMs || note.atMs - notes[j - 1].atMs > 1.55 * beatMs) break
+        val distance = note.midi - first.midi
+        if (abs(distance) > abs(contour)) contour = distance
+    }
+    return contour.compareTo(0)
+}
+
 /** A fixed world-space contact plane in a perspective scene. All lengths and times are solved once per chart. */
 internal class PlanarPath(chart: Chart, contactChart: Chart = chart.cascadeChart()) {
     private val durationMs = chart.durationMs
@@ -257,7 +272,8 @@ internal class PlanarPath(chart: Chart, contactChart: Chart = chart.cascadeChart
         val strikes = ArrayList<PlanarAttack>(notes.size)
         val keys = ArrayList<PlanarPanel>(notes.size)
         val sections = ArrayList<PlanarSpan>(notes.lastIndex)
-        var direction = if ((notes.getOrNull(1)?.midi ?: notes.first().midi) >= notes.first().midi) 1 else -1
+        val beat = 60_000.0 / contactChart.bpm
+        var direction = if (phraseDirection(notes, 0, beat) < 0) -1 else 1
         origin = StagePoint(0f, -MarbleRadius, 0f)
         entry = CascadeEntry(notes.first().atMs, startMs, direction, origin)
         var center = origin
@@ -277,26 +293,44 @@ internal class PlanarPath(chart: Chart, contactChart: Chart = chart.cascadeChart
             val incomingX = previous?.vx ?: entry.vx
             val incomingY = previous?.arrivalVy ?: entry.arrivalVy
             val guide = contactChart.hasGuideAfter(i)
-            val beat = 60_000.0 / contactChart.bpm
             val previousInterval = if (i > 0) note.midi - notes[i - 1].midi else 0
             val nextInterval = notes.getOrNull(i + 2)?.let { it.midi - next.midi } ?: 0
             val fast = gap <= (.86 * beat).coerceIn(285.0, 435.0)
-            // A staircase needs room for the whole key before the next strike.
-            // On a tight pickup its back edge would cut across the incoming arc;
-            // rebound towards the opposite bank instead.
-            val scaleRun = abs(incomingX) * seconds >= .70 && abs(interval) in 1..3 &&
+            // A run of sixteenths must enter with enough downward momentum to clear
+            // the underside of each earlier bank. Plan that descent one contact ahead.
+            val rapidGap = minOf(.34 * beat, 175.0)
+            val followingGap = notes.getOrNull(i + 2)?.let { it.atMs - next.atMs }
+            val preparingBurst = followingGap != null && followingGap <= rapidGap
+            val inBurst = gap <= rapidGap
+            val previousGap = if (i == 0) gap else note.atMs - notes[i - 1].atMs
+            val repeatsPitch = interval == 0 || (i > 0 && next.midi == notes[i - 1].midi)
+            // A staircase needs room for the back edge of the next key.
+            val scaleRun = abs(incomingX) * seconds >= .70 && abs(interval) in 1..4 &&
                 (previousInterval * interval > 0 || nextInterval * interval > 0)
             val reply = !guide && !scaleRun && (fast || (gap <= 1.24 * beat &&
-                (interval == 0 || interval * previousInterval < 0 || abs(interval) >= 5)))
-            val turn = !guide && previous != null && (reply || center.x * direction > 4.3 ||
+                (repeatsPitch || interval * previousInterval < 0 || abs(interval) >= 5)))
+            // A sustained breath starts a new melodic line. Send its first leap towards
+            // the strongest local pitch excursion; let the following steps sweep that way.
+            val phrase = previousGap >= 1.48 * beat && !fast
+            val phraseHeading = if (phrase) phraseDirection(notes, i, beat) else 0
+            val approachingEdge = center.x * direction > 4.3
+            val turn = !guide && previous != null && (reply || approachingEdge ||
+                (phraseHeading != 0 && phraseHeading != direction) ||
                 (runSteps >= 2 && !scaleRun && interval * direction <= -3))
             if (turn) {
                 direction = -direction
                 runSteps = 0
             }
             runSteps++
-            val targetSpeed = (if (fast) 3.52 else 2.70) + minOf(9, abs(interval)) * .10 +
-                if (next.playable) .16 else 0.0
+            val emphasis = ((next.velocity - note.velocity) * 1.10).coerceIn(-.18, .24)
+            val gestureSpeed = when {
+                reply && repeatsPitch -> 3.60
+                fast -> 3.48
+                phrase -> 3.22
+                scaleRun -> 2.92
+                else -> 2.62
+            }
+            val targetSpeed = gestureSpeed + minOf(9, abs(interval)) * .095 + emphasis + if (next.playable) .16 else 0.0
             val carriedSpeed = if (previous == null) targetSpeed else
                 (.55 * abs(incomingX) + .45 * targetSpeed).coerceIn(2.40, 4.65)
             // Aim back at the facing bank, within the reach of this note's time
@@ -305,7 +339,11 @@ internal class PlanarPath(chart: Chart, contactChart: Chart = chart.cascadeChart
                 (abs(center.x - previous.start.x) / seconds).coerceIn(.88 * carriedSpeed, 1.12 * carriedSpeed)
             } else carriedSpeed
             val energy = incomingX * incomingX + incomingY * incomingY
-            val speed = minOf(reachSpeed, .94 * sqrt(energy))
+            // Reversing vx costs at least 2 * |vx| / MaxKeySlope in vertical velocity.
+            // Gravity can restore g*t before the next impact. Respect that limit in a
+            // roll to keep the sphere descending clear of even a long row of sixteenths.
+            val returnLimit = if (inBurst) .5 * MaxKeySlope * CascadeGravity * seconds else reachSpeed
+            val speed = minOf(reachSpeed, returnLimit, .94 * sqrt(energy))
             var panel = PlanarPanel(direction > 0, center.y + MarbleRadius, i, i)
             val slope: Double
             val rail: CascadeRail?
@@ -338,10 +376,14 @@ internal class PlanarPath(chart: Chart, contactChart: Chart = chart.cascadeChart
                 // A fast return redirects the lateral velocity while continuing
                 // down past the other bank. Longer accents have time for a visible apex.
                 val desiredDrop = when {
-                    fast -> .64 + minOf(8, abs(interval)) * .018
+                    preparingBurst -> .88 + minOf(seconds, .48) * .48
+                    fast -> .63 + minOf(8, abs(interval)) * .018
                     reply -> .68
-                    scaleRun -> 1.02
-                    else -> .82
+                    // A phrase reopening or a leap takes a shallower arc to the next shelf.
+                    // A legato line cascades further with each step of its contour.
+                    phrase || abs(interval) >= 5 -> .58
+                    scaleRun -> 1.00 + minOf(4, abs(interval)) * .055
+                    else -> .78 + .14 * (note.durationMs / beat).coerceIn(0.0, 1.0)
                 }
                 val maxRebound = minOf(5.0, .70 * incomingY)
                 val desiredVy = (desiredDrop - freeFall) / seconds

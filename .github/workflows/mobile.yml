@@ -29,30 +29,27 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - run: ./gradlew --max-workers=2 :composeApp:testDebugUnitTest --stacktrace
       - run: ./gradlew --max-workers=2 :composeApp:assembleDebug --stacktrace
-      - name: Check Stereo Love score and packaging
+      - name: Check song timing and recording assets
         run: |
           python3 tools/stereo_love/score.py --check
           python3 - <<'PYTHON'
           from pathlib import Path
           from zipfile import ZipFile, ZIP_STORED
           apk, = Path("composeApp/build/outputs/apk/debug").glob("*.apk")
-          track = Path("arranger/build/generated/assets/backing/stereo-love.m4a")
+          generated = Path("arranger/build/generated/assets")
+          masters = sorted((generated / "backing").glob("*"))
+          assert [f.stem for f in masters] == ["on-the-floor", "stereo-love"]
           with ZipFile(apk) as package:
               for abi in ("arm64-v8a", "armeabi-v7a", "x86", "x86_64"):
                   with package.open(f"lib/{abi}/libpinch_stage.so") as renderer:
                       assert renderer.read(4) == b"\x7fELF", f"Missing game renderer for {abi}"
-              asset = package.getinfo("assets/backing/stereo-love.m4a")
-              assert asset.compress_type == ZIP_STORED, "MediaPlayer needs an uncompressed asset"
-              assert package.read(asset) == track.read_bytes(), "Packaged soundtrack differs from build master"
-              arrangements = Path("arranger/build/generated/assets")
-              tracks = sorted(arrangements.glob("arrangements/*/*"))
-              assert len(tracks) == 32 and len({track.parent for track in tracks}) == 8
-              for track in tracks:
-                  item = package.getinfo("assets/" + track.relative_to(arrangements).as_posix())
-                  assert item.compress_type == ZIP_STORED and package.read(item) == track.read_bytes(), item.filename
-              for instrument in ("piano", "mallet", "synth"):
-                  strike = package.getinfo(f"assets/feedback/{instrument}.wav")
-                  assert strike.compress_type == ZIP_STORED and strike.file_size > 44
+              bundled = {n for n in package.namelist() if n.startswith("assets/backing/")}
+              assert bundled == {"assets/backing/" + f.name for f in masters}
+              for file in masters + [generated / "launch.wav"]:
+                  item = package.getinfo("assets/" + file.relative_to(generated).as_posix())
+                  assert item.compress_type == ZIP_STORED and package.read(item) == file.read_bytes(), item.filename
+              assert not any(n.startswith(("assets/arrangements/", "assets/instruments/")) for n in package.namelist())
+              assert package.getinfo("assets/feedback/piano.wav").file_size > 44
           PYTHON
       - uses: actions/upload-artifact@v4
         with:
@@ -78,10 +75,9 @@ jobs:
             -destination 'generic/platform=iOS Simulator' ARCHS=arm64 ONLY_ACTIVE_ARCH=YES \
             -derivedDataPath "$RUNNER_TEMP/PinchBuild" CODE_SIGNING_ALLOWED=NO build
           app="$RUNNER_TEMP/PinchBuild/Build/Products/Debug-iphonesimulator/PinchMusic.app"
-          cmp arranger/build/generated/assets/backing/stereo-love.m4a "$app/media/backing/stereo-love.m4a"
-          test "$(find "$app/arrangements" -type f | wc -l | tr -d ' ')" = 32
-          diff -qr arranger/build/generated/assets/arrangements "$app/arrangements"
-          for instrument in piano mallet synth; do
-            test -s "$app/media/instruments/$instrument/60.wav"
-            test -s "$app/media/feedback/$instrument.wav"
-          done
+          diff -qr arranger/build/generated/assets/backing "$app/media/backing"
+          test "$(find "$app/media/backing" -type f | wc -l | tr -d ' ')" = 2
+          test ! -d "$app/arrangements"
+          test ! -d "$app/media/instruments"
+          test -s "$app/media/feedback/piano.wav"
+          cmp arranger/build/generated/assets/launch.wav "$app/launch.wav"

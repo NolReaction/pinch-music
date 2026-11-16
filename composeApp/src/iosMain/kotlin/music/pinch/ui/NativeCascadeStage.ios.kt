@@ -11,6 +11,7 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.UIKitInteropProperties
 import androidx.compose.ui.viewinterop.UIKitView
+import kotlinx.cinterop.COpaquePointer
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.usePinned
 import platform.Foundation.NSData
@@ -21,7 +22,8 @@ import platform.UIKit.UIView
 interface AppleCascadeSurface {
     val view: UIView
     fun setCourse(keys: NSData, rails: NSData, onPresented: () -> Unit)
-    fun draw(frame: NSData)
+    /** Points to CascadeFrameSize contiguous floats, valid for this call only. */
+    fun draw(frame: COpaquePointer)
     fun close()
 }
 
@@ -58,18 +60,11 @@ private fun FloatArray.bytes(): NSData = if (isEmpty()) NSData() else usePinned 
 private class AppleDisplay(val surface: AppleCascadeSurface, private val onPresented: () -> Unit) : CascadeDisplay {
     private var installed: CascadeGpuCourse? = null
 
-    @OptIn(kotlinx.cinterop.BetaInteropApi::class)
     override fun present(course: CascadeGpuCourse, frame: FloatArray) {
         if (installed !== course) {
             surface.setCourse(course.keys.bytes(), course.rails.bytes(), onPresented)
             installed = course
         }
-        // draw() consumes these pinned bytes synchronously. Swift copies them
-        // into its reusable frame before returning (including paused frames).
-        frame.usePinned {
-            val bytes = NSData.create(bytesNoCopy = it.addressOf(0), length = frame.size.toULong() * 4uL,
-                freeWhenDone = false)
-            surface.draw(bytes)
-        }
+        frame.usePinned { surface.draw(it.addressOf(0)) }
     }
 }

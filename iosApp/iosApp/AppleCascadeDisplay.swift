@@ -78,9 +78,12 @@ final class AppleCascadeDisplay: NSObject, @preconcurrency AppleCascadeSurface, 
         return values
     }
 
-    func draw(frame data: Data) {
-        guard !closed, data.count == frame.count * MemoryLayout<Float>.stride else { return }
-        _ = frame.withUnsafeMutableBytes { dest in data.copyBytes(to: dest) }
+    func draw(frame values: UnsafeMutableRawPointer) {
+        guard !closed else { return }
+        // The pinned Kotlin array is borrowed for this call; retain our own last pose for UIKit redraws.
+        frame.withUnsafeMutableBufferPointer { buffer in
+            buffer.baseAddress?.update(from: values.assumingMemoryBound(to: Float.self), count: buffer.count)
+        }
         hasFrame = true
         if !suspended && canvas.window != nil && UIApplication.shared.applicationState == .active {
             // The caller already runs on CADisplayLink and supplied this refresh's pose.
@@ -111,7 +114,6 @@ final class AppleCascadeDisplay: NSObject, @preconcurrency AppleCascadeSurface, 
         // GLKView presents its drawable after this delegate returns. Acknowledge the drawn
         // course on the following display refresh, on the same main thread as the session.
         if onPresented != nil && firstRefresh == nil {
-            glFinish()
             let link = CADisplayLink(target: self, selector: #selector(afterPresentation(_:)))
             firstRefresh = link
             link.add(to: .main, forMode: .common)

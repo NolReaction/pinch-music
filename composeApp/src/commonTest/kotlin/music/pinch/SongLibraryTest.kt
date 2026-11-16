@@ -6,6 +6,9 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import music.pinch.core.BackingVoice
+import music.pinch.core.Grade
+import music.pinch.core.RhythmGame
+import music.pinch.core.TapResult
 import music.pinch.core.cascadeChart
 
 class SongLibraryTest {
@@ -30,8 +33,9 @@ class SongLibraryTest {
         val chart = requireNotNull(stereoLoveSong.bundled)
         assertEquals("backing/stereo-love.m4a", stereoLoveSong.backingAsset)
         assertEquals(184_000L, chart.durationMs)
-        assertEquals(508, chart.notes.size)
-        assertEquals(493, chart.notes.count { it.playable })
+        assertEquals(523, chart.notes.size)
+        assertEquals(chart.notes, chart.cascadeChart().notes)
+        assertTrue(chart.notes.all { it.playable })
         assertEquals(0L, chart.notes.first().atMs)
         assertTrue(chart.notes.zipWithNext().all { (a, b) -> b.atMs > a.atMs })
         val lastManualMs = chart.notes.last { it.playable }.atMs
@@ -50,23 +54,43 @@ class SongLibraryTest {
         assertEquals("Кода", stereoLoveSectionAt(chart.durationMs))
     }
 
-    @Test fun stereoLoveLandsOnTheFirstSoundOfEveryMelodicTurn() {
+    @Test fun stereoLoveKeepsEveryReedArticulationAndTheBellAnswersBetweenLeadAttacks() {
         val chart = requireNotNull(stereoLoveSong.bundled)
-        val targets = chart.cascadeChart().notes
-        assertEquals(chart.notes.filter { it.playable }, targets)
-        val turns = chart.notes.zipWithNext().filter { (a, b) -> a.midi != b.midi }.map { it.second }
-        assertTrue(turns.all { it.playable })
-        // The pickup E5 answers immediately on low G#4. Later F#5 gets its
-        // plate on the first reed attack, before the optional repeated F#5.
-        fun key(tick: Int) = targets.singleOrNull { it.id == "stereo-$tick" }
-        assertEquals(76, key(291)?.midi)
-        assertEquals(68, key(292)?.midi)
-        assertEquals(78, key(328)?.midi)
-        assertEquals(null, key(329))
-        val eighth = 30_000L / chart.bpm
-        val gaps = targets.zipWithNext { a, b -> b.atMs - a.atMs }
-        assertTrue(gaps.any { it < eighth })
-        assertTrue(gaps.zipWithNext().none { (a, b) -> a < eighth && b < eighth })
+        val byId = chart.cascadeChart().notes.associateBy { it.id }
+        fun key(tick: Int) = byId.getValue("stereo-$tick")
+
+        // Each time this accordion bar comes around, the three G#5s, both F#5s
+        // and all three E5s sound separately, including the formerly skipped middle blows.
+        for (bar in listOf(20, 24, 60, 68, 92)) {
+            val offsets = listOf(3, 4, 5, 7, 8, 9, 13, 14, 15)
+            assertEquals(listOf(80, 80, 80, 80, 78, 78, 76, 76, 76),
+                offsets.map { key(bar * 16 + it).midi })
+        }
+        val bellBars = (59..95 step 2).toList()
+        for (bar in bellBars) {
+            val pitch = when (bar) {
+                59, 67, 91, 95 -> 75 // simultaneous D#5 lead wins over E5 bell
+                else -> if (bar % 4 == 1) 75 else 76
+            }
+            assertEquals(pitch, key(bar * 16 + 6).midi, "bell answer in bar $bar")
+        }
+        val bellAlone = bellBars.filter { it !in listOf(59, 67, 91, 95) }.map { key(it * 16 + 6) }
+        assertEquals(15, bellAlone.size)
+        assertTrue(bellAlone.all { it.velocity < .5f })
+        assertEquals(508, chart.notes.size - bellAlone.size)
+    }
+
+    @Test fun everyStereoLandingScoresExactlyOnceIncludingTheMiddleOfAReedRoll() {
+        val route = requireNotNull(stereoLoveSong.bundled).cascadeChart()
+        val game = RhythmGame(route, forgiving = true)
+        for (note in route.notes) {
+            assertEquals(TapResult.Hit(note, Grade.Perfect, 0), game.tap(note.atMs))
+            assertEquals(TapResult.Ignored, game.tap(note.atMs + 8))
+        }
+        val stats = game.finish()
+        assertEquals(523, stats.perfect)
+        assertEquals(523, stats.maxCombo)
+        assertEquals(100_000, stats.score)
     }
 
     @Test fun savedChartsRememberAutoContactsAndLoadEarlierSingleFingerCharts() {
@@ -82,7 +106,7 @@ class SongLibraryTest {
     }
 
     @Test fun authoredLeadsKeepChordVoicesAndDrumsOutOfThePlayableRoute() {
-        val lengths = mapOf("on-the-floor" to 16, "gypsy-woman" to 16, "levels" to 20,
+        val lengths = mapOf("gypsy-woman" to 16, "levels" to 20,
             "stay" to 32, "turn-down-for-what" to 12, "yeah" to 16, "the-final-countdown" to 16)
         for (song in songLibrary.filter { it.backingAsset == null }) {
             val chart = requireNotNull(song.bundled)

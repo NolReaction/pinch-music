@@ -19,6 +19,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.StrokeCap
 import music.pinch.resources.Res
@@ -102,7 +103,7 @@ internal fun PerformanceScreen(state: ScreenState, actions: Actions, positionMs:
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         CircularProgressIndicator(Modifier.size(26.dp), color = StudioCoral, strokeWidth = 2.dp)
-                        Caption(if (state.renderingAudio) "Готовим аудиодорожку" else "Готовим мелодию", White)
+                        Caption("Готовим мелодию", White)
                         TextButton(onClick = actions::menu) { Text("В меню", color = White) }
                     }
                     else -> Unit
@@ -163,7 +164,7 @@ private fun SessionHeader(state: ScreenState, actions: Actions, positionMs: () -
                     contentAlignment = Alignment.Center) { Symbol(IconShape.Pause, StudioIvory) }
             }
         }
-        Canvas(Modifier.fillMaxWidth().padding(end = 5.dp).height(2.dp)) {
+        Canvas(Modifier.fillMaxWidth().padding(end = 5.dp).height(2.dp).graphicsLayer()) {
             val ratio = (positionMs().toFloat() / state.durationMs.coerceAtLeast(1L)).coerceIn(0f, 1f)
             drawRect(StudioIvory.copy(alpha = .27f))
             drawRect(StudioCoral, size = Size(size.width * ratio, size.height))
@@ -216,7 +217,7 @@ private fun ScoreStrip(state: ScreenState, positionMs: () -> Long) {
         Spacer(Modifier.height(23.dp).width(1.dp).background(StudioIvory.copy(alpha = .22f)))
         Row(Modifier.clearAndSetSemantics { contentDescription = "Серия $combo" },
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-            StreakFlame(combo, state.profile.flameTier, positionMs, Modifier.size(25.dp, 30.dp))
+            StreakFlame(combo, state.profile.flameTier, positionMs, Modifier.size(25.dp, 30.dp).graphicsLayer())
             Text("×$combo", modifier = Modifier.widthIn(min = 30.dp), color = if (combo >= 3) StudioCoral else StudioIvory, fontSize = 19.sp,
                 fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
         }

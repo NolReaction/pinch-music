@@ -66,9 +66,9 @@ private enum class CatalogTab(val label: String) { All("Все"), Favorites("И�
 internal fun StudioCatalog(state: ScreenState, actions: Actions, dismiss: () -> Unit, select: (Song) -> Unit) {
     var tab by rememberSaveable { mutableStateOf(CatalogTab.All) }
     var deleting by rememberSaveable { mutableStateOf<String?>(null) }
-    val songs = remember(state.songs, state.favoriteIds, state.importedIds, tab) {
+    val songs = remember(state.songs, state.favoriteIds, state.importedIds, state.availableIds, tab) {
         when (tab) {
-            CatalogTab.All -> state.songs.sortedByDescending { it.backingAsset != null }
+            CatalogTab.All -> state.songs.sortedByDescending { it.id in state.availableIds }
             CatalogTab.Favorites -> state.songs.filter { it.id in state.favoriteIds }
             CatalogTab.Personal -> state.songs.filter { it.id in state.importedIds }.asReversed()
         }
@@ -118,7 +118,12 @@ internal fun StudioCatalog(state: ScreenState, actions: Actions, dismiss: () -> 
                             Column(Modifier.weight(1f)) {
                                 Text(song.title, color = if (active) StudioMint else StudioIvory, fontSize = 16.sp,
                                     lineHeight = 20.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                if (song.artist.isNotBlank()) Text(song.artist, color = Muted, fontSize = 12.sp,
+                                val detail = when {
+                                    song.id in state.availableIds -> song.artist
+                                    song.id in state.importedIds -> "Нужен исходный файл"
+                                    else -> "Фонограмма готовится"
+                                }
+                                if (detail.isNotBlank()) Text(detail, color = Muted, fontSize = 12.sp,
                                     lineHeight = 16.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
                             }
                             if (tab != CatalogTab.Personal) song.bundledDurationMs?.let {

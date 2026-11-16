@@ -3,6 +3,7 @@ package music.pinch
 import android.content.Context
 import java.io.FileDescriptor
 import java.io.FileInputStream
+import java.io.FileNotFoundException
 import android.media.MediaPlayer
 import android.os.SystemClock
 import kotlinx.coroutines.CancellationException
@@ -46,7 +47,14 @@ internal class AndroidMedia(
                 val asset = backingAsset ?: arrangement?.takeIf { it.bundledAsset }?.path
                 if (asset != null) {
                     withContext(Dispatchers.IO) {
-                        context.assets.openFd(asset).use { fd ->
+                        val descriptor = try {
+                            context.assets.openFd(asset)
+                        } catch (missing: FileNotFoundException) {
+                            // Builds without an AAC encoder ship the master as uncompressed PCM.
+                            if (!asset.endsWith(".m4a")) throw missing
+                            context.assets.openFd(asset.removeSuffix(".m4a") + ".wav")
+                        }
+                        descriptor.use { fd ->
                             // MediaPlayer and its listeners stay on their owning looper.
                             withContext(Dispatchers.Main.immediate) { prepareBacking(fd.fileDescriptor, fd.startOffset, fd.length) }
                         }

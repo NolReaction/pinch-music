@@ -1,6 +1,9 @@
 package music.pinch.ui
 
 import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlin.math.sqrt
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -55,6 +58,21 @@ class MarblePathTest {
         for (song in songLibrary) {
             val keys = MarblePath(requireNotNull(song.bundled)).keys
             assertEquals(PanelShape.entries.toSet(), keys.map { it.shape }.toSet(), song.title)
+        }
+    }
+
+    @Test fun bothFullSongsLeadThroughClockwiseAndCounterclockwisePhrases() {
+        for (id in listOf("stereo-love", "on-the-floor")) {
+            val chart = requireNotNull(songLibrary.single { it.id == id }.bundled)
+            val path = MarblePath(chart.cascadeChart())
+            fun angle(point: StagePoint) = atan2(point.x / 2.12f, (point.z - .78f) / .94f)
+            // Only short flights are unambiguous from their end points (under half a turn).
+            val sweeps = path.spans.filter { it.durationMs in 1..650 }.mapNotNull {
+                val delta = angle(it.ball(1f)) - angle(it.ball(0f))
+                val rotation = atan2(sin(delta), cos(delta))
+                if (abs(rotation) < .001f) null else rotation > 0f
+            }
+            assertTrue(sweeps.zipWithNext().count { (a, b) -> a != b } >= 2, id)
         }
     }
 

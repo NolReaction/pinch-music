@@ -7,8 +7,9 @@ import kotlin.uuid.Uuid
 /** Old imports were stored against a built-in song. Keep the original chart and record keys
  * for those entries, but give them their own selectable identity. */
 internal data class PersonalSong(val id: String, val title: String, val legacyId: String? = null,
-    val hasRecording: Boolean = false) {
+    val hasRecording: Boolean = false, val previousHash: Int? = null, val sameTargets: Boolean = false) {
     val storageId get() = legacyId ?: id
+    val chartKey get() = if (previousHash == null) "chart.$storageId" else "chart.restored.$id"
     fun asSong() = Song(id, title, "Своя запись")
 }
 
@@ -38,17 +39,23 @@ internal class PersonalCatalog(private val platform: Platform, private val built
         return PersonalSong("import-" + Uuid.random(), title)
     }
 
-    fun add(entry: PersonalSong, chart: String) {
+    fun awaitingFile(id: String): Boolean = (readIndex() ?: index).entries.any { it.id == id && !it.hasRecording }
+
+    fun saveRecording(entry: PersonalSong, chart: String) {
         val current = readIndex() ?: index
-        platform.writeValue("chart.${entry.storageId}", chart)
-        save(current.copy(entries = current.entries + entry))
+        platform.writeValue(entry.chartKey, chart)
+        val existing = current.entries.indexOfFirst { it.id == entry.id }
+        val updated = current.entries.toMutableList()
+        if (existing < 0) updated.add(entry) else updated[existing] = entry
+        save(current.copy(entries = updated))
     }
 
     fun remove(entry: PersonalSong) {
         val current = readIndex() ?: index
         save(current.copy(entries = current.entries.filterNot { it.id == entry.id },
             favorites = current.favorites - entry.id))
-        platform.removeValue("chart.${entry.storageId}")
+        platform.removeValue(entry.chartKey)
+        if (entry.previousHash != null) platform.removeValue("chart.${entry.storageId}")
     }
 
     fun toggleFavorite(id: String) {
@@ -87,7 +94,8 @@ internal class PersonalCatalog(private val platform: Platform, private val built
         val entries = json.getValue("songs").jsonArray.map { el ->
             val item = el.jsonObject
             PersonalSong(item.getValue("id").jsonPrimitive.content, item.getValue("title").jsonPrimitive.content,
-                item["legacy"]?.jsonPrimitive?.content, item["recording"]?.jsonPrimitive?.boolean == true)
+                item["legacy"]?.jsonPrimitive?.content, item["recording"]?.jsonPrimitive?.boolean == true,
+                item["previousHash"]?.jsonPrimitive?.int, item["sameTargets"]?.jsonPrimitive?.boolean == true)
         }
         return Index(entries, json.getValue("favorites").jsonArray.mapTo(linkedSetOf()) { it.jsonPrimitive.content })
     }
@@ -105,6 +113,8 @@ internal class PersonalCatalog(private val platform: Platform, private val built
                     put("title", song.title)
                     song.legacyId?.let { put("legacy", it) }
                     if (song.hasRecording) put("recording", true)
+                    song.previousHash?.let { put("previousHash", it) }
+                    if (song.sameTargets) put("sameTargets", true)
                 })
             }
             putJsonArray("favorites") { value.favorites.forEach { add(it) } }

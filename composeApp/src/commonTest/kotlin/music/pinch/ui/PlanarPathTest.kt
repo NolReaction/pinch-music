@@ -67,6 +67,45 @@ class PlanarPathTest {
         }
     }
 
+    @Test fun densePhrasesLeaveRoomForTheWholeBodyOfEachKey() {
+        // A rolling marble can clear the face even if the deep skirts of two keys
+        // on the same bank intersect behind it. Test the four separating axes.
+        data class Body(val x: Float, val y: Float, val dx: Float, val dy: Float, val halfWidth: Float) {
+            fun radiusOn(ax: Float, ay: Float) =
+                halfWidth * abs(ax * dx + ay * dy) + .18f * abs(ay * dx - ax * dy)
+            fun separated(other: Body, ax: Float, ay: Float) =
+                abs(ax * (x - other.x) + ay * (y - other.y)) >= radiusOn(ax, ay) + other.radiusOn(ax, ay)
+        }
+        val roll = Chart("Sixteenths", 130, 3600, (0..20).map { i ->
+            Note("r$i", if (i == 0) 0L else 460L + (i - 1) * 115L, 64 + i % 2, 85L, .9f)
+        }, authoredLandings = true)
+        assertCourseClear(roll, roll.title)
+        val songs = listOf("stereo-love", "on-the-floor").map { id ->
+            requireNotNull(songLibrary.single { it.id == id }.bundled)
+        }
+        for (chart in songs + roll) {
+            val path = PlanarPath(chart)
+            val bodies = path.panels.mapIndexed { i, panel ->
+                val dx = 1f / hypot(1f, panel.slope)
+                val dy = dx * panel.slope
+                val rail = panel.railSamples.isNotEmpty()
+                val offset = (if (panel.left) -1 else 1) * (if (rail) .23f else .22f)
+                val face = MarbleRadius + .18f
+                Body(path.attacks[i].x + offset * dx - face * dy,
+                    panel.topY - MarbleRadius + offset * dy + face * dx, dx, dy, if (rail) .23f else .35f)
+            }
+            for ((i, a) in bodies.withIndex()) {
+                for (j in i - 1 downTo 0) {
+                    if (path.panels[i].topY - path.panels[j].topY > 2f) break
+                    val b = bodies[j]
+                    assertTrue(a.separated(b, a.dx, a.dy) || a.separated(b, -a.dy, a.dx) ||
+                        a.separated(b, b.dx, b.dy) || a.separated(b, -b.dy, b.dx),
+                        "${chart.title} key bodies overlap at ${path.attacks[i].atMs} and ${path.attacks[j].atMs} ms")
+                }
+            }
+        }
+    }
+
     @Test fun returnUnderADeepKeyClearsItsUnderside() {
         // Imported phrase: the 1111 ms contact turns back underneath the 506 ms key.
         val times = listOf(0L, 506L, 647L, 1111L, 1369L, 1706L, 2934L, 3592L, 4500L)
@@ -206,6 +245,23 @@ class PlanarPathTest {
             val dy = (b.marble.y - b.cameraY) - (a.marble.y - a.cameraY)
             assertTrue(hypot(dx, dy) < MarbleRadius * .60f, "visible step at ${ms}ms")
         }
+    }
+
+    @Test fun afterABreathTheNextPhraseLeadsTheLayoutEvenBeforeItsFirstLeap() {
+        val times = listOf(0L, 236L, 472L, 1272L, 1902L, 2138L, 2374L)
+        // Same entry, breath and first two repeated notes; the next pitch excursion
+        // gives the response its heading before the first leap is heard.
+        fun path(pitches: List<Int>) = PlanarPath(Chart("Phrase", 127, 3200L,
+            times.mapIndexed { i, t -> Note("n$i", t, pitches[i], 200L, .85f) }, authoredLandings = true))
+        val up = listOf(60, 67, 60, 65, 65, 68, 70)
+        val down = listOf(60, 67, 60, 65, 65, 62, 60)
+        val rising = path(up)
+        val falling = path(down)
+        val transposed = path(up.map { it + 5 })
+        assertEquals(rising.attacks.map { it.x }, transposed.attacks.map { it.x })
+        assertEquals(rising.panels, transposed.panels)
+        assertTrue(rising.attacks[4].x > rising.attacks[3].x)
+        assertTrue(falling.attacks[4].x < falling.attacks[3].x)
     }
 
     @Test fun quickMelodicAnswersRecoilBetweenFacingBanksWhileAScaleCanContinue() {

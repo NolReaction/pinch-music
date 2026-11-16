@@ -14,11 +14,7 @@ internal fun writeLaunchSound(file: File) {
     val rate = 32_000
     val length = rate * 740 / 1000
     val bytes = ByteBuffer.allocate(44 + length * 2).order(ByteOrder.LITTLE_ENDIAN)
-    fun tag(s: String) { bytes.put(s.toByteArray(Charsets.US_ASCII)) }
-    tag("RIFF"); bytes.putInt(bytes.capacity() - 8); tag("WAVE")
-    tag("fmt "); bytes.putInt(16); bytes.putShort(1); bytes.putShort(1)
-    bytes.putInt(rate); bytes.putInt(rate * 2); bytes.putShort(2); bytes.putShort(16)
-    tag("data"); bytes.putInt(length * 2)
+    bytes.put(waveHeader(rate, 1, length * 2))
     val onsets = doubleArrayOf(.030, .215, .435)
     val pitches = doubleArrayOf(392.0, 523.251, 659.255)
     val gains = doubleArrayOf(.23, .20, .25)

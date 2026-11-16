@@ -16,10 +16,7 @@ data class ScreenState(
     val favoriteIds: Set<String> = emptySet(),
     val recordedImportIds: Set<String> = emptySet(),
     val availableIds: Set<String> = emptySet(),
-    val instrument: Instrument = Instrument.Piano,
-    val solo: Boolean = false,
     val importing: Boolean = false,
-    val renderingAudio: Boolean = false,
     val notice: String? = null,
     val scene: Scene = Scene.Menu,
     val preview: Boolean = false,
@@ -36,12 +33,10 @@ data class ScreenState(
     val profile: PlayerProfile = PlayerProfile(),
     val runReward: RunReward = RunReward(startLevel = profile.level),
 ) {
-    val recordedAsset: String? get() = selectedSong.backingAsset.takeUnless { selectedSong.id in importedIds }
-    val hasRecording: Boolean get() = recordedAsset != null || selectedSong.id in recordedImportIds
-    val useRecording: Boolean get() = hasRecording && !solo
-    val backingAsset: String? get() = recordedAsset.takeUnless { solo }
+    val backingAsset: String? get() = selectedSong.backingAsset.takeUnless { selectedSong.id in importedIds }
+    val needsSourceFile: Boolean get() = selectedSong.id in importedIds && selectedSong.id !in recordedImportIds
+    val canPlay: Boolean get() = selectedSong.id in availableIds
     val title: String get() = selectedSong.title
-    val hasScore: Boolean get() = selectedSong.hasBundled || selectedSong.id in importedIds
     val bpm: Int get() = chart?.bpm ?: selectedSong.bundledBpm.takeUnless { selectedSong.id in importedIds } ?: 0
     val durationMs: Long get() = chart?.durationMs ?: selectedSong.bundledDurationMs.takeUnless { selectedSong.id in importedIds } ?: 0L
     val lastHitWindowMs: Long get() = (chart?.notes?.lastOrNull()?.atMs ?: 0) + FORGIVING_WINDOW_MS
@@ -49,11 +44,10 @@ data class ScreenState(
 
 interface Actions {
     fun selectSong(id: String)
-    fun selectRecording()
-    fun selectInstrument(value: Instrument)
     fun selectStageMode(value: StageMode)
     fun removeImport(id: String)
     fun toggleFavorite(id: String)
+    fun restoreRecording()
     fun importAudio()
     fun dismissNotice()
     fun stagePresented(attempt: Long)

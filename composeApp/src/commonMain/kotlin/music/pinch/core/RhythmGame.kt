@@ -10,12 +10,13 @@ sealed interface TapResult {
     data object Ignored : TapResult
 }
 
+private const val PERFECT_MS = 45L
 private const val WINDOW_MS = 120L
 internal const val FORGIVING_WINDOW_MS = 195L
 private const val DOUBLE_TAP_MS = 75L
 
 internal fun gradeFor(errorMs: Long): Grade? = when (errorMs) {
-    in -45L..45L -> Grade.Perfect
+    in -PERFECT_MS..PERFECT_MS -> Grade.Perfect
     in -90L..90L -> Grade.Good
     in -WINDOW_MS..WINDOW_MS -> Grade.Okay
     else -> null
@@ -113,9 +114,12 @@ class RhythmGame(chart: Chart, private val forgiving: Boolean = false) {
         if (lastHitIndex >= 0) {
             val spacing = note.atMs - notes[lastHitIndex].atMs
             val debounce = minOf(DOUBLE_TAP_MS, spacing / 2)
-            // Two downs straddling the midpoint are one gesture unless the second is already
-            // within a display frame of the next contact. Fast exact landings always count.
-            if (positionMs - debounce < lastHitMs && -error > minOf(16L, spacing / 4)) return TapResult.Ignored
+            val sinceHit = positionMs - lastHitMs
+            // On a reed roll, even two Perfect taps may be only 28 ms apart.
+            // Require independent, centered hits to bypass the overlapping-window debounce.
+            val precisePair = sinceHit >= 24 && abs(error) <= PERFECT_MS &&
+                abs(lastHitMs - notes[lastHitIndex].atMs) <= PERFECT_MS
+            if (sinceHit < debounce && -error > minOf(16L, spacing / 4) && !precisePair) return TapResult.Ignored
         }
         val grade = if (forgiving) when (abs(error)) {
             in 0..80 -> Grade.Perfect

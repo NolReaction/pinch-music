@@ -32,13 +32,6 @@ private data class Band(val groove: Groove, val form: List<Passage>)
 
 private fun bandFor(id: String): Band {
     return when (id) {
-        // Tresillo bass and syncopated keys against a straight dance pulse.
-        "on-the-floor" -> Band(Groove(listOf(0 to 0, 6 to 7, 12 to 12), listOf(3, 7, 10, 14), 1.45,
-            listOf(0, 6, 8, 12), listOf(4, 12), listOf(2, 6, 10, 14)),
-            listOf(bars(Section.Intro, Chord.Dm, Chord.Dm), bars(Section.Groove, Chord.Bb, Chord.C),
-                bars(Section.Groove, Chord.F, Chord.C, Chord.Gm, Chord.A7),
-                bars(Section.Lift, Chord.Bb, Chord.F, Chord.Gm, Chord.A7),
-                bars(Section.Return, Chord.Dm, Chord.Bb), bars(Section.End, Chord.A7, Chord.Dm)))
         // Organ chops, sevenths/ninths and a lightly swung inner pulse.
         "gypsy-woman" -> Band(Groove(listOf(0 to 0, 7 to 7, 10 to 12, 14 to 7), listOf(2, 6, 10, 14), 1.15,
             listOf(0, 4, 8, 12), listOf(4, 12), listOf(2, 6, 9, 10, 14), .19),

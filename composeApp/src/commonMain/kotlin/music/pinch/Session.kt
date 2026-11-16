@@ -25,21 +25,21 @@ internal class Session(
     songs: List<Song> = songLibrary,
     private val courseDispatcher: CoroutineDispatcher = Dispatchers.Default.limitedParallelism(1),
 ) : Actions {
-    private val catalog = PersonalCatalog(platform, songs)
-    private class Selection(val source: Chart, val landings: Chart, val importHash: Int? = null) {
-        val lead = LeadPart(source, landings)
+    private companion object {
+        // One UI-thread writer per legacy file, including across application windows.
+        val restoring = mutableSetOf<String>()
     }
+    private val catalog = PersonalCatalog(platform, songs)
+    private class Selection(val source: Chart, val landings: Chart, val importHash: Int? = null)
     private val selections = mutableMapOf<String, Selection>()
     private var loadingScore: Job? = null
     private var importingSong: Job? = null
     private var startWhenReady = false
     private fun defaultSong() = catalog.songs.firstOrNull { it.id == "stereo-love" && it.hasBundled }
-        ?: catalog.songs.firstOrNull { it.hasBundled } ?: catalog.songs.first()
+        ?: catalog.songs.firstOrNull { it.hasBundled && it.backingAsset != null } ?: catalog.songs.first()
     private val initialSong = platform.readValue("selected.song")?.let { saved -> catalog.songs.find { it.id == saved } }
         ?: defaultSong()
     var state by mutableStateOf(ScreenState(songs = catalog.songs, selectedSong = initialSong,
-        instrument = platform.readValue("instrument")?.let { name -> Instrument.entries.find { it.name == name } } ?: Instrument.Piano,
-        solo = platform.readValue("playback.solo") == "true",
         stageMode = platform.readValue("stage.mode")?.let { name -> StageMode.entries.find { it.name == name } } ?: StageMode.Orbit,
         volume = platform.volume, haptics = platform.haptics, profile = storedProfile()))
         private set
@@ -53,14 +53,6 @@ internal class Session(
     private var playRequestedAt = 0L
     private var waitingSince: Long? = null
     private var resumeAt: Long? = null
-    private var lead: LeadPart? = null
-    private var bandChart: Chart? = null
-    private var bandFile: Deferred<Result<ArrangementTrack>>? = null
-    private var pendingAudio: Job? = null
-    private var lastManualKey: Long? = null
-    private var lastManualSound = -1_000L
-    private var nextAutomaticNote = 0
-    private var sourceChart: Chart? = null
     // Keep the selected course warm across Listen, Play and Restart. A change of song
     // or scene replaces it. The native player belongs only to the current attempt.
     private var courseTask: Deferred<Result<PreparedStage>>? = null
@@ -94,16 +86,16 @@ internal class Session(
     private fun menuAvailability(): ScreenState {
         val tracks = catalog.songs
         val personal = catalog.entries.mapTo(mutableSetOf()) { it.id }
+        val recorded = catalog.entries.filter { it.hasRecording }.mapTo(mutableSetOf()) { it.id }
         return state.copy(songs = tracks, importedIds = personal, favoriteIds = catalog.favorites,
-            recordedImportIds = catalog.entries.filter { it.hasRecording }.mapTo(mutableSetOf()) { it.id },
-            availableIds = tracks.filter { it.hasBundled || it.id in personal }.mapTo(mutableSetOf()) { it.id })
+            recordedImportIds = recorded,
+            availableIds = tracks.filter { it.hasBundled && it.backingAsset != null }.mapTo(recorded.toMutableSet()) { it.id })
     }
 
     private fun refreshSong() {
         loadingScore?.cancel()
         courseTask?.cancel()
         courseTask = null
-        sourceChart = null
         val song = state.selectedSong
         val cached = selections[song.id]
         if (cached != null) {
@@ -112,7 +104,7 @@ internal class Session(
         }
         state = menuAvailability().copy(chart = null, bestScore = null)
         val entry = catalog.entries.find { it.id == song.id }
-        if (entry == null && !song.hasBundled) return
+        if (entry == null && song.id !in state.availableIds) return
         val eager = song.suppliedChart
         if (entry == null && eager != null) {
             installSelection(song, Selection(eager, eager.cascadeChart()))
@@ -125,7 +117,7 @@ internal class Session(
                         val source = requireNotNull(song.bundled)
                         Selection(source, source.cascadeChart())
                     } else {
-                        val raw = requireNotNull(platform.readValue("chart.${entry.storageId}"))
+                        val raw = requireNotNull(platform.readValue(entry.chartKey))
                         val source = decodeChart(raw, song.title)
                         Selection(source, source.cascadeChart(), encodeChart(source).hashCode())
                     }
@@ -144,16 +136,21 @@ internal class Session(
         selections[song.id] = selection
         val source = selection.source
         val chart = selection.landings
-        sourceChart = source
         val arrangement = when {
             selection.importHash != null -> "import.${selection.importHash}"
             song.bundledRevision > 1 -> "bundled.v${song.bundledRevision}"
             else -> "bundled"
         }
         val mode = state.stageMode
-        val recordOwner = catalog.entries.find { it.id == song.id }?.storageId ?: song.id
+        val entry = catalog.entries.find { it.id == song.id }
+        val recordOwner = entry?.storageId ?: song.id
         recordKey = "record.landings.v1.${mode.name}.$recordOwner.$arrangement"
-        state = menuAvailability().copy(chart = chart, bestScore = platform.readValue(recordKey)?.toIntOrNull())
+        val previousRecord = entry?.takeIf { it.sameTargets }?.previousHash?.let {
+            platform.readValue("record.landings.v1.${mode.name}.$recordOwner.import.$it")?.toIntOrNull()
+        }
+        val bestScore = listOfNotNull(platform.readValue(recordKey)?.toIntOrNull(), previousRecord).maxOrNull()
+        state = menuAvailability().copy(chart = chart, bestScore = bestScore)
+        if (!state.canPlay) return
         courseTask = scope.async(courseDispatcher) {
             try {
                 Result.success(when (mode) {
@@ -166,60 +163,18 @@ internal class Session(
                 Result.failure(e)
             }
         }
-        warmAccompaniment()
         if (startWhenReady) {
             startWhenReady = false
             startPrepared(state.preview)
         }
     }
 
-    private fun warmAccompaniment() {
-        val chart = sourceChart?.takeIf { !state.useRecording && it.accompaniment.isNotEmpty() }
-        if (chart === bandChart && (chart == null || bandFile != null)) return
-        bandFile?.cancel()
-        bandChart = chart
-        val bundledId = bundledId(chart)
-        bandFile = chart?.let {
-            scope.async {
-                try {
-                    Result.success(platform.arrangementTrack(it, bundledId, previewInstrument = null))
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (failure: Exception) {
-                    Result.failure(failure)
-                }
-            }
-        }
-    }
-
-    private fun bundledId(chart: Chart?): String? =
-        state.selectedSong.takeIf { chart != null && it.loadedBundled === chart }?.id
-
     override fun selectSong(id: String) {
         if (state.scene != Scene.Menu || state.importing || id == state.selectedSong.id) return
         val song = state.songs.find { it.id == id } ?: return
         platform.writeValue("selected.song", id)
         state = state.copy(selectedSong = song, notice = null)
-        sourceChart = null
-        warmAccompaniment()
         refreshSong()
-    }
-
-    override fun selectRecording() {
-        if (state.scene != Scene.Menu || !state.hasRecording || !state.solo) return
-        platform.writeValue("playback.solo", "false")
-        state = state.copy(solo = false)
-        warmAccompaniment()
-    }
-
-    override fun selectInstrument(value: Instrument) {
-        if (state.scene != Scene.Menu) return
-        val solo = state.solo || state.hasRecording
-        if (value == state.instrument && solo == state.solo) return
-        if (solo != state.solo) platform.writeValue("playback.solo", solo.toString())
-        if (value != state.instrument) platform.writeValue("instrument", value.name)
-        state = state.copy(instrument = value, solo = solo)
-        warmAccompaniment()
     }
 
     override fun selectStageMode(value: StageMode) {
@@ -238,9 +193,10 @@ internal class Session(
     override fun removeImport(id: String) {
         if (state.scene != Scene.Menu || state.importing) return
         val entry = catalog.entries.find { it.id == id } ?: return
-        val hash = selections[id]?.importHash ?: platform.readValue("chart.${entry.storageId}")?.hashCode()
+        val activeHash = selections[id]?.importHash ?: platform.readValue(entry.chartKey)?.hashCode()
+        val hashes = setOfNotNull(activeHash, entry.previousHash)
         catalog.remove(entry)
-        if (hash != null) for (mode in StageMode.entries) {
+        for (hash in hashes) for (mode in StageMode.entries) {
             platform.removeValue("record.landings.v1.${mode.name}.${entry.storageId}.import.$hash")
         }
         selections.remove(id)
@@ -248,50 +204,80 @@ internal class Session(
             val fallback = catalog.songs.find { it.id == entry.legacyId && it.hasBundled } ?: defaultSong()
             platform.writeValue("selected.song", fallback.id)
             state = menuAvailability().copy(selectedSong = fallback)
-            sourceChart = null
-            warmAccompaniment()
             refreshSong()
         } else state = menuAvailability()
         if (entry.hasRecording) platform.removeImportAudio(id)
     }
 
-    override fun importAudio() {
+    override fun importAudio() = pickRecording(null)
+
+    override fun restoreRecording() {
+        val entry = catalog.entries.find { it.id == state.selectedSong.id && !it.hasRecording } ?: return
+        pickRecording(entry)
+    }
+
+    private fun pickRecording(previous: PersonalSong?) {
         if (state.importing || state.scene != Scene.Menu) return
+        if (previous != null && !restoring.add(previous.id)) return
         state = state.copy(importing = true, notice = null)
-        importingSong = scope.launch {
+        importingSong = scope.launch(start = CoroutineStart.UNDISPATCHED) {
             try {
                 val audio = platform.pickAudio() ?: return@launch
-                val entry = catalog.newEntry(audio.displayName)
-                val (saved, selection) = withContext(courseDispatcher) {
-                    val chart = extractLeadChart(audio.samples, 11_025, entry.title)
-                    val text = encodeChart(chart)
-                    text to Selection(chart, chart.cascadeChart(), text.hashCode())
+                val pending = previous ?: catalog.newEntry(audio.displayName)
+                val cached = selections[pending.id]
+                val (entry, raw, selection) = withContext(courseDispatcher) {
+                    val chart = extractLeadChart(audio.samples, 11_025, pending.title)
+                    val raw = encodeChart(chart)
+                    val selection = Selection(chart, chart.cascadeChart(), raw.hashCode())
+                    val original = previous?.let { old ->
+                        cached ?: platform.readValue(old.chartKey)?.let { text ->
+                            val source = decodeChart(text, old.title)
+                            Selection(source, source.cascadeChart(), encodeChart(source).hashCode())
+                        }
+                    }
+                    // Earlier importers shifted all onsets by a count-in. Reanalyse the actual file
+                    // and keep the original chart even if the new transcription differs.
+                    val restored = pending.copy(hasRecording = true,
+                        previousHash = previous?.let { original?.importHash ?: raw.hashCode() },
+                        sameTargets = original != null && sameTargets(original.landings, selection.landings))
+                    Triple(restored, raw, selection)
                 }
-                val hasRecording = try {
-                    val stored = platform.saveImportAudio(entry.id, audio)
+                if (previous != null && !catalog.awaitingFile(previous.id)) {
+                    state = state.copy(notice = "Запись уже изменена в другом окне.")
+                    return@launch
+                }
+                try {
+                    check(platform.saveImportAudio(entry.id, audio)) { "Не удалось сохранить фонограмму записи." }
                     currentCoroutineContext().ensureActive()
-                    check(stored || audio.recording == null) { "Не удалось сохранить фрагмент записи." }
-                    catalog.add(entry.copy(hasRecording = stored), saved)
-                    stored
+                    check(previous == null || catalog.awaitingFile(previous.id)) { "Запись удалена из каталога." }
+                    catalog.saveRecording(entry, raw)
                 } catch (failure: Exception) {
-                    // Cancellation returning from the file writer can occur after the atomic rename.
-                    // The UUID is private to this attempt until its catalog entry has been published.
                     platform.removeImportAudio(entry.id)
-                    platform.removeValue("chart.${entry.storageId}")
+                    platform.removeValue(entry.chartKey)
                     throw failure
                 }
                 selections[entry.id] = selection
                 platform.writeValue("selected.song", entry.id)
-                if (hasRecording) platform.writeValue("playback.solo", "false")
-                state = menuAvailability().copy(selectedSong = entry.asSong(), solo = state.solo && !hasRecording)
+                state = menuAvailability().copy(selectedSong = entry.asSong())
                 refreshSong()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 state = state.copy(notice = e.message ?: "Не удалось разобрать аудиофайл.")
             } finally {
+                previous?.let { restoring.remove(it.id) }
                 state = state.copy(importing = false)
             }
+        }
+    }
+
+    private fun sameTargets(old: Chart, fresh: Chart): Boolean {
+        if (old.notes.size != fresh.notes.size || old.notes.isEmpty()) return false
+        val shift = fresh.notes.first().atMs - old.notes.first().atMs
+        return old.notes.indices.all { i ->
+            val a = old.notes[i]
+            val b = fresh.notes[i]
+            a.midi == b.midi && abs(b.atMs - a.atMs - shift) <= 35L
         }
     }
 
@@ -304,11 +290,15 @@ internal class Session(
     override fun restart() = startAttempt(state.preview)
 
     private fun startAttempt(preview: Boolean) {
-        if (state.importing || !state.hasScore) return
+        if (state.importing) return
+        if (!state.canPlay) {
+            state = state.copy(notice = if (state.needsSourceFile) "Выбери исходный файл этой записи." else "Фонограмма готовится.")
+            return
+        }
         close()
         val profile = storedProfile()
         state = state.copy(scene = Scene.Loading, attempt = state.attempt + 1, preview = preview, notice = null,
-            countdown = null, error = null, newRecord = false, stats = null, renderingAudio = false,
+            countdown = null, error = null, newRecord = false, stats = null,
             panelFeedback = emptyList(), profile = profile, runReward = RunReward(startLevel = profile.level))
         if (state.chart == null || courseTask == null) {
             startWhenReady = true
@@ -319,44 +309,18 @@ internal class Session(
     private fun startPrepared(preview: Boolean) {
         val selection = selections[state.selectedSong.id] ?: return
         val song = selection.landings
-        val source = selection.source
         val course = courseTask ?: return
         introMs = if (preview) 0L else song.cascadePreRollMs()
         positionMs = -introMs
         try {
-            val player = platform.newMedia(song.durationMs, state.instrument)
+            val imported = if (state.selectedSong.id in state.recordedImportIds)
+                requireNotNull(platform.importAudioTrack(state.selectedSong.id)) { "Не удалось открыть файл записи." }
+            else null
+            val player = platform.newMedia(song.durationMs, Instrument.Piano)
             media = player
             player.onInterrupted = { if (media === player) pause() }
-            val recorded = state.useRecording
-            lead = selection.lead.takeUnless { recorded || preview }
-            val pitches = lead?.pitches.orEmpty()
             player.setBackingVolume(state.volume)
-            val sampledPreview = preview && !recorded
-            if (!sampledPreview) warmAccompaniment()
-            val render = bandFile.takeUnless { sampledPreview || recorded }
-            if (render == null && !sampledPreview) {
-                val importedAudio = if (recorded && state.selectedSong.id in state.recordedImportIds)
-                    requireNotNull(platform.importAudioTrack(state.selectedSong.id)) { "Не удалось открыть свою запись." }
-                else null
-                player.prepare(pitches, state.backingAsset, importedAudio, includeStrike = recorded && !preview)
-            } else {
-                val instrument = state.instrument
-                val bundledId = bundledId(source)
-                pendingAudio = scope.launch {
-                    try {
-                        val track = if (sampledPreview) platform.arrangementTrack(source, bundledId, instrument)
-                            else requireNotNull(render).await().getOrThrow()
-                        if (media === player) player.prepare(pitches, backingAsset = null, arrangement = track)
-                    } catch (cancelled: CancellationException) {
-                        throw cancelled
-                    } catch (failure: Exception) {
-                        if (media === player) {
-                            if (!sampledPreview) bandFile = null
-                            fail("Не удалось подготовить сопровождение. " + failure.message.orEmpty())
-                        }
-                    }
-                }
-            }
+            player.prepare(emptySet(), state.backingAsset, imported, includeStrike = !preview)
             pendingStart = scope.launch {
                 val result = course.await()
                 if (media !== player) return@launch
@@ -380,15 +344,6 @@ internal class Session(
 
     fun observe() {
         val player = media ?: return
-        if (state.scene == Scene.Loading || state.scene == Scene.Resuming) {
-            // Give the native player its full prepare timeout after its source file exists.
-            val rendering = pendingAudio?.isActive == true
-            if (state.renderingAudio != rendering) state = state.copy(renderingAudio = rendering)
-            if (rendering) {
-                waitingSince = null
-                return
-            }
-        }
         val snap = player.snapshot()
         if (snap.error != null) {
             fail("Не удалось воспроизвести мелодию. " + snap.error)
@@ -459,25 +414,6 @@ internal class Session(
                 playingAnchor = snap
                 val song = state.chart ?: return
                 val now = snap.positionMs.coerceIn(0L, song.durationMs)
-                val automaticNotes = lead?.timed.orEmpty()
-                if (nextAutomaticNote < automaticNotes.size) {
-                    val first = nextAutomaticNote
-                    while (nextAutomaticNote < automaticNotes.size && automaticNotes[nextAutomaticNote].atMs <= now) {
-                        nextAutomaticNote++
-                    }
-                    // After a stall, play only the latest timely onset, including all voices in a chord.
-                    if (nextAutomaticNote > first) {
-                        val latest = automaticNotes[nextAutomaticNote - 1].atMs
-                        if (now - latest <= 120) {
-                            for (index in first until nextAutomaticNote) {
-                                val note = automaticNotes[index]
-                                if (note.atMs == latest && lead?.maySound(note, lastManualKey, now - lastManualSound) == true) {
-                                    soundVoice(player, note, now)
-                                }
-                            }
-                        }
-                    }
-                }
                 // A small delivery margin lets a frame and a queued input of the same vsync settle.
                 val confirmed = snap.confirmedPositionMs ?: now
                 game?.advance(confirmed - 32)
@@ -556,11 +492,10 @@ internal class Session(
         }
         when (result) {
             is TapResult.Hit -> {
-                if (opening) pendingOpeningNote = result.note else soundHit(player, result.note, feedbackAt)
+                if (opening) pendingOpeningNote = result.note else soundHit(player, result.note)
                 if (state.haptics) platform.feedback()
             }
-            TapResult.Stray -> if (state.useRecording) player.strike(.095f * state.volume)
-            TapResult.Ignored -> Unit
+            TapResult.Stray, TapResult.Ignored -> Unit
         }
     }
 
@@ -586,20 +521,8 @@ internal class Session(
         return recent
     }
 
-    private fun soundVoice(player: GameMedia, note: Note, at: Long) {
-        // Keep the written release time after a late touch or a delayed display frame.
-        val remaining = (note.durationMs - (at - note.atMs).coerceAtLeast(0)).coerceIn(30L, 10_000L)
-        player.note(note.midi, note.velocity * state.volume, remaining.toInt())
-    }
-
-    private fun soundHit(player: GameMedia, note: Note, at: Long = note.atMs) {
-        if (state.useRecording) {
-            player.strike(.24f * note.velocity * state.volume)
-        } else {
-            lastManualKey = note.atMs
-            lastManualSound = at
-            for (voice in lead?.chord(note).orEmpty()) soundVoice(player, voice, at)
-        }
+    private fun soundHit(player: GameMedia, note: Note) {
+        player.strike(.20f * note.velocity * state.volume)
     }
 
     override fun pause() {
@@ -674,8 +597,6 @@ internal class Session(
         loadingScore?.cancel()
         courseTask?.cancel()
         courseTask = null
-        bandFile?.cancel()
-        bandFile = null
         close()
     }
 
@@ -693,12 +614,6 @@ internal class Session(
         media = null
         old?.onInterrupted = null
         old?.close()
-        pendingAudio?.cancel()
-        pendingAudio = null
-        lead = null
-        lastManualKey = null
-        lastManualSound = -1_000L
-        nextAutomaticNote = 0
         stage = null
         playingAnchor = null
         game = null
