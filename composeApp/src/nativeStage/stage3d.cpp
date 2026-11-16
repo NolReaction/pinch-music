@@ -140,10 +140,10 @@ struct Stage {
         if (!relief) glGenTextures(1, &relief);
         glBindTexture(GL_TEXTURE_2D, relief);
         if (reliefMotif == motif) return;
-        // Each channel stores one feature of the repeated acoustic panel. This is
-        // generated once per song on the GL thread; the wall needs only two filtered reads.
+        // Bake the joints, recesses and bevels once for this song. One filtered
+        // luminance sample per pixel is enough to light the patterned wall.
         constexpr int side = 128;
-        std::vector<uint8_t> texels(side * side * 4);
+        std::vector<uint8_t> texels(side * side);
         auto smooth = [](float a, float b, float v) {
             const float t = std::clamp((v - a) / (b - a), 0.f, 1.f);
             return t * t * (3.f - 2.f * t);
@@ -164,16 +164,16 @@ struct Stage {
                 case 6: d = std::hypot(.85f * x, 1.4f * y) - .51f; break;    // oval cavities
                 default: d = std::abs(std::max(ax, ay) - .70f) - .095f; break;
                 }
-                uint8_t* pixel = &texels[(j * side + i) * 4];
-                pixel[0] = static_cast<uint8_t>(255.f * smooth(-.02f, .022f, d));
-                pixel[1] = static_cast<uint8_t>(255.f * (1.f - smooth(.01f, .055f, std::abs(d - .025f))));
-                pixel[2] = static_cast<uint8_t>(255.f * (1.f - smooth(.007f, .032f, 1.f - std::max(ax, ay))));
-                pixel[3] = static_cast<uint8_t>(255.f * (1.f - smooth(.06f, .28f, std::min(ax, ay))));
+                const float face = smooth(-.02f, .022f, d);
+                const float bevel = 1.f - smooth(.01f, .055f, std::abs(d - .025f));
+                const float seam = 1.f - smooth(.007f, .032f, 1.f - std::max(ax, ay));
+                const float light = .65f * (1.f - face) + (1.f - .19f * seam) * face + .08f * bevel;
+                texels[j * side + i] = static_cast<uint8_t>(255.f * std::min(1.f, .90f * light));
             }
         }
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, side, side, 0, GL_RGBA, GL_UNSIGNED_BYTE, texels.data());
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, side, side, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, texels.data());
         reliefMotif = motif;
     }
     bool init() {

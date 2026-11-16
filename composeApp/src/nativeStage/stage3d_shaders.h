@@ -151,23 +151,29 @@ uniform highp vec4 uDecals[16]; // x, y, type (0 key, 1 ball), face slope
 uniform lowp vec3 uPaint;
 uniform lowp vec3 uAccent;
 uniform mediump vec3 uPhase; // camera position modulo the wall period, theme motif
-varying mediump vec4 vRoom;
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+varying highp vec2 vReliefUV;
+#else
+varying mediump vec2 vReliefUV;
+#endif
 varying lowp vec4 vColor;
 const vec3 eye=vec3(2.80,-4.88,8.20);
 const vec3 forward=vec3(-.279687,.487454,-.827155);
 const vec3 right=vec3(.947306,0.,-.32033);
 const vec3 up=vec3(-.156135,-.873148,-.461818);
 void main(){
-    vRoom=vec4(0.);
+    vReliefUV=vec2(0.);
     if(aMat.x<.5) {
         vec2 uv=aPos.xy*.5+.5;
         vec3 ray=forward+right*aPos.x/uLens.x+up*aPos.y/uLens.y;
         vec2 slope=ray.xy/min(-.09,ray.z);
         vec2 origin=uPhase.xy+eye.xy;
-        vRoom=vec4(origin+slope*(-1.35-eye.z),origin+slope*(-2.55-eye.z));
+        vReliefUV=(origin+slope*(-1.35-eye.z))/6.;
+        vec2 farTile=abs(fract((origin+slope*(-2.55-eye.z))/6.)*2.-1.);
+        float farLight=1.-smoothstep(.15,.55,min(farTile.x,farTile.y));
         vec2 pool=uv-vec2(.64,.66);
         float light=.26+.44*uv.y+.26*(1.-smoothstep(0.,.57,dot(pool,pool)));
-        vec3 col=mix(uPaint,uAccent,light);
+        vec3 col=mix(uPaint,uAccent,light)*(.966+.047*farLight);
         gl_Position=vec4(aPos.xy,0.,1.); vColor=vec4(col,1.); return;
     }
     vec4 data=uDecals[int(aMat.y+.5)];
@@ -182,19 +188,21 @@ void main(){
 }
 )GL";
 static const char* wallFS = R"GL(
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
 precision mediump float;
+#endif
 varying lowp vec4 vColor;
-varying mediump vec4 vRoom;
-uniform lowp vec3 uPaint;
-uniform lowp vec3 uAccent;
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+varying highp vec2 vReliefUV;
+#else
+varying mediump vec2 vReliefUV;
+#endif
 uniform sampler2D uRelief;
 void main(){
     if(vColor.a<.99) { gl_FragColor=vColor; return; }
-    vec3 panel=texture2D(uRelief,vRoom.xy/6.).rgb;
-    float ribs=texture2D(uRelief,vRoom.zw/3.).a;
-    vec3 recessed=mix(uPaint,vColor.rgb,.42)+uAccent*.056*ribs;
-    vec3 face=vColor.rgb*(1.-.21*panel.b);
-    vec3 col=mix(recessed,face,panel.r)+uAccent*.10*panel.g;
+    vec3 col=vColor.rgb*(1.11*texture2D(uRelief,vReliefUV).r);
     gl_FragColor=vec4(col,1.);
 }
 )GL";

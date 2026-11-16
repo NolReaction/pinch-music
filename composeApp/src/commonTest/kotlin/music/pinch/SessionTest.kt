@@ -740,6 +740,49 @@ class SessionTest {
     }
 
     @Test
+    fun interruptionAtTheVeryEndFinishesEvenAfterTheBackingWasReleased() {
+        for (preview in listOf(false, true)) {
+            val host = Host()
+            val session = session(host, listOf(song.copy(backingAsset = "full.m4a")))
+            session.start(preview)
+            val player = host.player
+            session.readyToPlay(player)
+            player.end()
+            player.onInterrupted!!.invoke()
+            player.status = player.status.copy(ready = false)
+            session.resume()
+            session.observe()
+            assertEquals(if (preview) Scene.Menu else Scene.Result, session.state.scene)
+            assertEquals(1, player.starts)
+        }
+    }
+
+    @Test
+    fun pausingDuringTheFinalWindowPreservesItsRemainingTime() {
+        val host = Host()
+        val last = Note("last", 3990, 72, 10, .8f)
+        val session = session(host, listOf(song.copy(bundled = Chart("Тест", 120, 4000, listOf(last)))))
+        session.start(false)
+        val player = host.player
+        session.readyToPlay(player)
+        player.end()
+        session.observe()
+        player.tick(4000, 14_045)
+        session.pause()
+        player.tick(4000, 88_000)
+        player.status = player.status.copy(ready = false)
+        session.resume()
+        session.observe()
+        assertEquals(Scene.Playing, session.state.scene)
+        player.tick(4000, 88_140)
+        session.tapNow()
+        assertEquals(1, session.state.stats?.okay)
+        player.tick(4000, 88_141)
+        session.observe()
+        assertEquals(Scene.Result, session.state.scene)
+    }
+
+    @Test
     fun bothScenesScoreAnUnaccentedPhysicalKeyOnceAndApplyTheSameTimingWindow() {
         val raw = requireNotNull(song.bundled)
         val soft = raw.notes.first().copy(id = "soft", atMs = 2_700, playable = false)

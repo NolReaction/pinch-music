@@ -68,6 +68,7 @@ internal class Session(
     private var openingEnd: Long? = null
     private var pendingOpeningNote: Note? = null
     private var eofObservedAt: Long? = null
+    private var eofElapsedAtPause = 0L
     private var lastMistakeAt: Long? = null
     private var lastMistakeTarget: String? = null
 
@@ -246,6 +247,22 @@ internal class Session(
             fail("Не удалось воспроизвести мелодию. " + snap.error)
             return
         }
+        // Once iOS releases a completed audio graph it can report ended and unprepared together.
+        if (snap.ended && transportStarted && (state.scene == Scene.Playing || state.scene == Scene.Resuming)) {
+            if (state.scene == Scene.Resuming) {
+                eofObservedAt = snap.observedUptimeMs - eofElapsedAtPause
+                playRequestedAt = snap.observedUptimeMs
+                game?.resume()
+                state = state.copy(scene = Scene.Playing, countdown = null)
+            }
+            val end = eofObservedAt ?: snap.observedUptimeMs.also { eofObservedAt = it }
+            // Keep the input window for a short final note open after its last sample.
+            if (!state.preview && snap.observedUptimeMs - end <= state.lastHitWindowMs - state.durationMs) {
+                positionMs = state.durationMs
+                playingAnchor = snap.copy(positionMs = state.durationMs, observedUptimeMs = end, stalled = false)
+            } else finish()
+            return
+        }
         when (state.scene) {
             Scene.Loading, Scene.Resuming -> {
                 if (!snap.ready || stage == null || !presented) {
@@ -280,18 +297,6 @@ internal class Session(
                 }
             }
             Scene.Playing -> {
-                if (snap.ended) {
-                    // A short imported final note may outlive the file's last sample.
-                    val end = eofObservedAt ?: snap.observedUptimeMs.also { eofObservedAt = it }
-                    val tail = state.lastHitWindowMs - state.durationMs
-                    if (!state.preview && tail >= 0 && snap.observedUptimeMs - end <= tail) {
-                        positionMs = state.durationMs
-                        playingAnchor = snap.copy(positionMs = state.durationMs, observedUptimeMs = end, stalled = false)
-                        return
-                    }
-                    finish()
-                    return
-                }
                 if (!snap.playing) {
                     playingAnchor = null
                     if (hasPlayed) {
@@ -455,8 +460,12 @@ internal class Session(
         state = state.copy(scene = Scene.Paused, countdown = null, reaction = null)
         game?.pause()
         media?.pause()
-        if (transportStarted) media?.snapshot()?.let { positionMs = it.positionMs }
-        else positionMs = -introMs
+        if (transportStarted) {
+            media?.snapshot()?.let { snap ->
+                positionMs = snap.positionMs
+                eofElapsedAtPause = eofObservedAt?.let { (snap.observedUptimeMs - it).coerceAtLeast(0) } ?: 0L
+            }
+        } else positionMs = -introMs
         openingEnd = null
         playingAnchor = null
         hasPlayed = false
@@ -519,6 +528,7 @@ internal class Session(
         openingEnd = null
         pendingOpeningNote = null
         eofObservedAt = null
+        eofElapsedAtPause = 0L
         pendingStart?.cancel()
         pendingStart = null
         val old = media
