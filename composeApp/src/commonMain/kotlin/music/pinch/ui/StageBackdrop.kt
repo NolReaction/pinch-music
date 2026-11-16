@@ -26,7 +26,7 @@ internal class StageBackdrop(size: Size, theme: StageTheme) {
 
     init {
         val random = Random(2741 + 47 * theme.ordinal)
-        val count = (size.width * size.height / 34f).toInt().coerceIn(0, 2600)
+        val count = (size.width * size.height / 62f).toInt().coerceIn(0, 2600)
         repeat(count) { i ->
             val x = random.nextFloat() * size.width
             val y = random.nextFloat() * size.height
@@ -39,7 +39,7 @@ internal class StageBackdrop(size: Size, theme: StageTheme) {
 
     fun draw(scope: DrawScope) = with(scope) {
         drawRect(wash)
-        drawPath(raisedGrain, Color.White, alpha = .12f, style = stroke)
-        drawPath(sunkenGrain, Color(0xff444748), alpha = .067f, style = stroke)
+        drawPath(raisedGrain, Color.White, alpha = .075f, style = stroke)
+        drawPath(sunkenGrain, Color(0xff444748), alpha = .038f, style = stroke)
     }
 }

@@ -72,8 +72,8 @@ android {
         externalNativeBuild.cmake.arguments += "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON"
         minSdk = 24
         targetSdk = 36
-        versionCode = 4
-        versionName = "0.4.0"
+        versionCode = 5
+        versionName = "0.4.1"
     }
     sourceSets["main"].assets.srcDir(gameAssetsDirectory)
     sourceSets["test"].resources.srcDir("src/androidUnitTest/resources")

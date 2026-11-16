@@ -56,14 +56,14 @@ private const val LightSteps = 12
 private const val ShadeSteps = 12
 private const val VisibleLimit = 49
 
-private val BlackNickel = Color(0xff222332)
-private val Steel = Color(0xff68697b)
-private val Silver = Color(0xffc3c6d1)
+private val BlackNickel = Color(0xff414a50)
+private val Steel = Color(0xff879496)
+private val Silver = Color(0xffd7e0df)
 private val PinLight = Color(0xfff6eadb)
 private val PinShade = Color(0xff242231)
-private val WallShadow = Color(0xff171b2c)
+private val WallShadow = Color(0xff3e5058)
 private val ShadowFeather = Brush.radialGradient(listOf(
-    WallShadow.copy(alpha=.39f), WallShadow.copy(alpha=.23f), WallShadow.copy(alpha=.06f),
+    WallShadow.copy(alpha=.31f), WallShadow.copy(alpha=.18f), WallShadow.copy(alpha=.045f),
     WallShadow.copy(alpha=0f)
 ), Offset.Zero, 1f)
 
@@ -90,7 +90,7 @@ internal class Finish(rest: Color, tint: Color) {
     val tops = Array(LightSteps+1) { i -> lerp(rest, tint, i / LightSteps.toFloat()) }
     val bevels = Array(LightSteps+1) { i -> lerp(lerp(rest, PinLight, .31f), lerp(tint, PinLight, .33f), i / LightSteps.toFloat()) }
     val faces = Array(LightSteps+1) { i ->
-        lerp(lerp(rest, BlackNickel, .53f), lerp(tint, Color.Black, .42f), i / LightSteps.toFloat())
+        lerp(lerp(rest, BlackNickel, .39f), lerp(tint, BlackNickel, .30f), i / LightSteps.toFloat())
     }
     // Indexed by [light][edge normal][bevel/body/bottom]. Building these tables once
     // also avoids repeated colour-space conversions in the polygon draw loop.
@@ -99,8 +99,8 @@ internal class Finish(rest: Color, tint: Color) {
         val shade = (i / 3 % (ShadeSteps+1)) / ShadeSteps.toFloat()
         when (i%3) {
             0 -> lerp(faces[light], bevels[light], .32f+.64f*shade)
-            1 -> lerp(Color(0xff080c14), faces[light], shade)
-            else -> lerp(BlackNickel, faces[light], .52f*shade)
+            1 -> lerp(lerp(rest, BlackNickel, .64f), faces[light], .24f + .76f * shade)
+            else -> lerp(BlackNickel, faces[light], .32f + .48f*shade)
         }
     }
     val sideArgb = IntArray(sides.size) { sides[it].toArgb() }
@@ -148,11 +148,11 @@ private class PanelSides {
 internal class OrbitMaterials(val theme: StageTheme) {
     private val pigment = stageColor(theme.panel)
     private val light = stageColor(theme.light)
-    val wood = Finish(lerp(pigment, Color(0xffb5855b), .18f), lerp(pigment, light, .70f))
-    val drum = Finish(lerp(pigment, BlackNickel, .19f), lerp(pigment, light, .62f))
-    val fork = Finish(lerp(pigment, Silver, .23f), lerp(pigment, Color.White, .73f))
+    val wood = Finish(lerp(Color(0xffa36d43), pigment, .12f), Color(0xffe9bf82))
+    val drum = Finish(lerp(pigment, Steel, .32f), lerp(pigment, light, .75f))
+    val fork = Finish(lerp(Silver, pigment, .13f), Color(0xfff7f8ed))
     val membrane = Array(LightSteps + 1) { i ->
-        lerp(lerp(pigment, light, .24f), light, i / LightSteps.toFloat())
+        lerp(lerp(pigment, light, .62f), light, i / LightSteps.toFloat())
     }
     val trim = lerp(stageColor(theme.accent), Silver, .42f)
 }
@@ -249,10 +249,16 @@ internal class Bar(val key: StageKey, index: Int, private val materials: OrbitMa
         key.point(rx * Circle[i].x, 0f, rz * Circle[i].y)
     }
     val skin = if (key.shape == PanelShape.Drum) ring(length*.79f, width*.79f) else emptyArray()
-    val woodGrain = if (key.shape == PanelShape.WoodBar) arrayOf(
-        key.point(-length*.83f, 0f, width*.37f), key.point(length*.81f, 0f, width*.28f),
-        key.point(-length*.79f, 0f, -width*.45f), key.point(length*.82f, 0f, -width*.50f)
-    ) else emptyArray()
+    // Fine curved fibers follow the long axis. These world-space paths are
+    // prepared with the bar, so neither the grain nor its phase swims on camera moves.
+    val woodGrain = if (key.shape == PanelShape.WoodBar) Array(7) { row ->
+        Array(12) { sample ->
+            val t = sample / 11f
+            val x = length * (-.80f + 1.60f * t)
+            val z = width * ((row - 3) * .19f + .045f * sin(t * 5.2f + row * .8f + index))
+            key.point(x, 0f, z)
+        }
+    } else emptyArray()
     val depthAxis = key.point(0f,0f,1f) - key.center
     val shading = IntArray(Corners) { i ->
         val a = mesh[i+Corners]
@@ -502,9 +508,15 @@ internal class MarbleScene(private val meshes: OrbitMeshes, private val marbleAt
             }
         }
         if (bar.woodGrain.isNotEmpty()) {
-            for (i in bar.woodGrain.indices step 2) {
-                drawLine(PinShade, camera.project(bar.woodGrain[i]), camera.project(bar.woodGrain[i+1]),
-                    unit*.014f, StrokeCap.Round, alpha=.32f)
+            bar.woodGrain.forEachIndexed { row, fiber ->
+                detail.rewind()
+                fiber.forEachIndexed { i, point ->
+                    val p = camera.project(point)
+                    if (i == 0) detail.moveTo(p.x, p.y) else detail.lineTo(p.x, p.y)
+                }
+                drawPath(detail, if (row % 3 == 0) PinLight else PinShade,
+                    alpha = if (row % 3 == 0) .20f else .17f,
+                    style = Stroke(unit * .006f, cap = StrokeCap.Round))
             }
         }
 

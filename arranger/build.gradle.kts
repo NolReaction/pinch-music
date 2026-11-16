@@ -16,6 +16,10 @@ kotlin {
     }
 }
 
+dependencies {
+    testImplementation(kotlin("test-junit"))
+}
+
 val performance = rootProject.layout.projectDirectory.file("media/backing/stereo-love.m4a")
 val assets = layout.buildDirectory.dir("generated/assets")
 val encoder = File("/usr/bin/afconvert").takeIf { it.canExecute() } ?: System.getenv("PATH").orEmpty()

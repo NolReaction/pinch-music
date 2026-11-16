@@ -1,4 +1,4 @@
-"""Bake a rotating, glass-encased red marble under a fixed studio environment.
+"""Bake a clear marble with coloured internal ribbons under a fixed studio environment.
 
 The sprite atlas rotates the internal glass inclusions. The reflected softboxes stay
 in camera space, as they would on a rotating sphere. Run with NumPy and Pillow.
@@ -54,7 +54,7 @@ def studio_panel(direction, right, half_width, half_height):
 
 
 fresnel = .042 + .958 * (1-z)**5
-sky = tint(rgb(38, 30, 44), rgb(146, 145, 174), smooth(.44 + .6*reflection[..., 1]))
+sky = tint(rgb(66, 84, 95), rgb(219, 226, 221), smooth(.44 + .6*reflection[..., 1]))
 left_box = studio_panel([-.68, .75, .22], [1, -.15, .16], .21, .73)
 right_box = studio_panel([.84, .28, -.13], [-.04, 1, .25], .19, .68)
 rim_box = studio_panel([-.65, -.2, -.63], [.1, 1, .2], .032, .77)
@@ -83,26 +83,32 @@ for frame in range(STEPS):
     u = inside[..., 0]*c + inside[..., 1]*s
     v = -inside[..., 0]*s + inside[..., 1]*c
     w = inside[..., 2]
-    thread = v + .42*np.sin(2.8*u - 1.15*w) + .22*u + .15
-    glass = tint(rgb(49, 5, 29), rgb(144, 15, 26), smooth(.28 + .52*light + .13*u))
-    glass *= (.43 + .57*transmission)[..., None]
-    glass = tint(glass, rgb(218, 45, 30), window*(.32+.42*light))
-    glass = tint(glass, rgb(202, 34, 37), smooth(.48 - 1.45*thread + .16*u) *
-                 (.34 + .48*light))
-    glass = tint(glass, rgb(241, 77, 32), np.exp(-((thread+.115)/.052)**2) *
-                 smooth(.60+.85*u) * .78)
-    glass = tint(glass, rgb(24, 23, 46), np.exp(-((thread-.16)/.15)**2) * .91)
-    glass = tint(glass, rgb(131, 133, 160), np.exp(-((thread-.125)/.038)**2) *
-                 smooth(.58 - .67*u) * .72)
-    glass = tint(glass, rgb(253, 105, 35), smooth((-y-.33)*1.95)*window*.72)
-    surface = tint(glass, sky, .08 + .78*fresnel)
-    surface = tint(surface, rgb(110, 91, 119), .33*dome)
-    surface = tint(surface, rgb(18, 22, 39), .45*np.exp(-((horizon+.095)/.13)**2))
-    surface = tint(surface, rgb(210, 201, 221), .30*np.exp(-((horizon-.045)/.055)**2)*dome)
+    # The same blue/turquoise, violet and amber ribbons as the native sphere.
+    # The clear volume remains visible between them, unlike a painted solid ball.
+    thread = u + .31*np.sin(3.4*v + 2.6*w)
+    ribbon = 1 - smooth((np.abs(thread) - .12) / .16)
+    violet = 1 - smooth((np.abs(thread + .43 + .17*v) - .11) / .15)
+    curl = v - .24*np.sin(4.3*w - 1.7*u) - .22
+    amber = (1 - smooth((np.abs(curl) - .07) / .08)) * smooth((u + .62) / .77)
+    glass = tint(rgb(144, 189, 194), rgb(224, 233, 218), .28 + .62*transmission)
+    glass *= (.83 + .17*light)[..., None]
+    core = tint(rgb(9, 56, 163), rgb(6, 178, 161), smooth((v + .40) / .92))
+    glass = tint(glass, core, ribbon*.88)
+    glass = tint(glass, rgb(76, 19, 163), violet*.77)
+    glass = tint(glass, rgb(250, 176, 20), amber*.87)
+    # A fine light edge and the faint submerged shadow give the ribbon thickness.
+    lip = np.exp(-((np.abs(thread) - .115) / .024)**2)
+    glass = tint(glass, rgb(126, 221, 214), lip*.28)
+    glass = tint(glass, rgb(44, 81, 99), .23*(1-z)**2)
+    glass = tint(glass, rgb(219, 248, 218), smooth((-y-.33)*1.95)*window*.26)
+    surface = tint(glass, sky, .055 + .82*fresnel)
+    surface = tint(surface, rgb(222, 232, 226), .13*dome)
+    surface = tint(surface, rgb(42, 63, 83), .13*np.exp(-((horizon+.095)/.13)**2))
+    surface = tint(surface, rgb(230, 241, 240), .18*np.exp(-((horizon-.045)/.055)**2)*dome)
 
-    surface = tint(surface, rgb(255, 242, 233), left_box * (.71+.25*fresnel))
-    surface = tint(surface, rgb(255, 190, 123), right_box * (.56+.41*fresnel))
-    surface = tint(surface, rgb(209, 207, 238), rim_box * (.45+.40*fresnel))
+    surface = tint(surface, rgb(255, 252, 239), left_box * (.62+.30*fresnel))
+    surface = tint(surface, rgb(238, 249, 247), right_box * (.40+.46*fresnel))
+    surface = tint(surface, rgb(226, 239, 246), rim_box * (.38+.47*fresnel))
     shine = np.exp(-((x+.23)**2/.0016 + (y-.44)**2/.00058))
     surface = tint(surface, rgb(255, 248, 234), shine*.88)
     rgba = np.dstack((np.clip(surface, 0, 1), alpha))

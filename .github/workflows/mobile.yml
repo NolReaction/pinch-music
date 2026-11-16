@@ -27,7 +27,7 @@ jobs:
         with:
           packages: 'platform-tools platforms;android-36 build-tools;35.0.0 ndk;27.0.12077973 cmake;3.22.1'
       - uses: gradle/actions/setup-gradle@v4
-      - run: ./gradlew --max-workers=2 :composeApp:testDebugUnitTest --stacktrace
+      - run: ./gradlew --max-workers=2 :arranger:test :composeApp:testDebugUnitTest --stacktrace
       - run: ./gradlew --max-workers=2 :composeApp:assembleDebug --stacktrace
       - name: Check song timing and recording assets
         run: |

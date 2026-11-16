@@ -5,14 +5,14 @@ internal enum class StageTheme(
     val wall: Int, val light: Int, val panel: Int, val accent: Int,
     val cornerFraction: Float, val cutCorners: Boolean,
 ) {
-    Floor(0xA89F9A, 0xECE4DD, 0x472A34, 0xF48852, .52f, true),
-    Stereo(0x99A7A5, 0xE4EBE4, 0x8EA9AB, 0x13C3AA, .36f, false),
-    Gypsy(0xB1A393, 0xEFE6D3, 0xAA743C, 0xEAA52F, .58f, false),
-    Levels(0x9BA5AE, 0xE2E9ED, 0x31578A, 0x6A9AFF, .84f, true),
-    Stay(0xACA2A6, 0xECE5E4, 0xCEABC3, 0xB85B9F, .94f, false),
-    TurnDown(0xA39B92, 0xE8E2D5, 0x393941, 0xF27628, .24f, true),
-    Yeah(0x9FA99F, 0xE2E9D9, 0x758A43, 0x78B62D, .74f, false),
-    Countdown(0x9FA3AF, 0xE7E7EC, 0x645687, 0x8267C8, .66f, true),
+    Floor(0xB9BCAF, 0xF2F0E6, 0xA56B40, 0xCC9356, .28f, false),
+    Stereo(0xBAC6C3, 0xEFF3EB, 0xD8DCCF, 0x419B9E, .24f, false),
+    Gypsy(0xC1C3B9, 0xF3F0E5, 0xDECBA7, 0xD3A14D, .24f, false),
+    Levels(0xBBC6CC, 0xEDF2EF, 0x6B68C9, 0x7460D5, .70f, false),
+    Stay(0xC6BFC3, 0xF3ECEB, 0xE3D4D8, 0xBE729A, .24f, false),
+    TurnDown(0xBFC1C7, 0xEFEFF0, 0x7D4FBA, 0x985BCD, .70f, false),
+    Yeah(0xBEC4B5, 0xF0F0E3, 0xB9844F, 0xA0B76A, .28f, false),
+    Countdown(0xBBC4CD, 0xEDF1F4, 0x565CC1, 0x6878D6, .70f, false),
 }
 
 internal fun stageTheme(songId: String): StageTheme = when (songId) {

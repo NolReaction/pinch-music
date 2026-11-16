@@ -33,7 +33,7 @@ internal fun studioPiano(midi: Int, durationMs: Long, velocity: Float): FloatArr
     val stiffness = .000035 * 2.0.pow((midi - 60) / 18.0)
     val fundamentalCorrection = sqrt(1.0 + stiffness)
     val registerDecay = 1.85 * 2.0.pow((60 - midi) / 28.0)
-    val weights = doubleArrayOf(.92, .62, .37, .21, .15, .080, .065, .045, .025, .024, .018, .012)
+    val weights = doubleArrayOf(.96, .53, .30, .17, .105, .060, .044, .030, .019, .015, .011, .008)
     for ((index, weight) in weights.withIndex()) {
         val partial = index + 1
         val partialHz = hz * partial * sqrt(1.0 + stiffness * partial * partial) / fundamentalCorrection
@@ -43,10 +43,12 @@ internal fun studioPiano(midi: Int, durationMs: Long, velocity: Float): FloatArr
         val phaseOffset = (.18 * sin(partial * 1.43) * PianoCycle / (2 * PI)).toInt()
         var phase = phaseOffset
         var unisonPhase = phaseOffset
-        val brightness = (.62 + .65 * velocity).pow((partial - 1) * .52)
+        // The old curve exceeded unity at normal performance velocities, amplifying
+        // the top partials until the piano sounded metallic beside the reeds/synths.
+        val brightness = (.62 + .43 * velocity.coerceIn(0f, 1f)).pow((partial - 1) * .52)
         val amplitude = (weight * brightness / 1.72).toFloat()
-        var body = amplitude * .76f
-        var hammer = amplitude * .24f
+        var body = amplitude * .83f
+        var hammer = amplitude * .17f
         val bodyDecay = pianoDecay(registerDecay / partial.toDouble().pow(.68))
         val hammerDecay = pianoDecay(.075 / partial.toDouble().pow(.31))
         for (i in mono.indices) {
@@ -57,7 +59,7 @@ internal fun studioPiano(midi: Int, durationMs: Long, velocity: Float): FloatArr
             hammer *= hammerDecay
         }
     }
-    val attack = 1f - pianoDecay(.0017)
+    val attack = 1f - pianoDecay(.0028)
     val damper = pianoDecay(.120)
     var open = 0f
     var release = 1f

@@ -397,6 +397,7 @@ struct Stage {
             streamRailWindow(left, rightEdge, focus);
         }
         prepareKeys(static_cast<int>(f[11]));
+        const auto& design = keyDesign(keyMotif);
         glViewport(0, 0, width, height);
         glDisable(GL_SCISSOR_TEST);
         glDisable(GL_CULL_FACE);
@@ -453,8 +454,23 @@ struct Stage {
             const bool guided = it->route.size() >= 2;
             if (it->style >= 0.f) {
                 const float w = guided ? .23f : .35f, center = keyCenterX(guided, it->side);
-                const float cs = it->tiltCos, sn = it->tiltSin, depth = it->style > .5f ? .36f : .215f;
+                const float cs = it->tiltCos, sn = it->tiltSin;
+                const bool accented = it->style > .5f;
+                const float depth = design.instrument == 1 ? (accented ? .18f : .13f) : (accented ? .15f : .115f);
                 const float back = guided ? -.585f : -.66f, zLength = .25f - back;
+                if (design.instrument == 2) {
+                    // Hollow pipes have a narrow cylindrical silhouette. Project
+                    // their two real saddles instead of the keyboard's broad plate.
+                    for (float dx : {-w*.60f,w*.60f}) {
+                        const float x=origin.x+(center+dx)*cs-.245f*sn;
+                        const float y=origin.y+(center+dx)*sn+.245f*cs;
+                        lineShadow({x,y,0},{x+castX*1.30f,y+castY*1.30f,0},.048f,.18f);
+                    }
+                    shadow(origin.x+center*cs-.103f*sn+castX*-WallZ,
+                           origin.y+center*sn+.103f*cs+castY*-WallZ,
+                           cs*(w+.06f),sn*(w+.06f),-.165f*sn+castX*.07f,
+                           .165f*cs+castY*.07f,.20f,.25f);
+                } else {
                 const float lift = (.25f + back) * .5f - WallZ;
                 const float mountX = origin.x + center * cs - (depth + .092f) * sn;
                 const float mountY = origin.y + center * sn + (depth + .092f) * cs;
@@ -464,6 +480,7 @@ struct Stage {
                        origin.y + center * sn + depth * .5f * cs + castY * lift,
                        cs * (w + .10f), sn * (w + .10f), castX * zLength * .5f - turn * sn * (depth * .5f + .12f),
                        castY * zLength * .5f + turn * cs * (depth * .5f + .12f), .68f, .27f);
+                }
             }
             if (guided) {
                 V projected = origin + V{castX * -WallZ, castY * -WallZ + .21f, 0};
@@ -483,7 +500,6 @@ struct Stage {
         glEnable(GL_CULL_FACE);
         glDepthFunc(GL_LEQUAL);
         glUseProgram(scene.id);
-        const auto& design = keyDesign(keyMotif);
         glUniform4f(scene.finish, design.lacquer, design.reflection, design.grainX, design.grainZ);
         colour(scene.paint, f[15]);
         colour(scene.accent, f[16]);

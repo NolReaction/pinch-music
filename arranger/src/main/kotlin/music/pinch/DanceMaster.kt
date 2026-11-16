@@ -15,6 +15,12 @@ import music.pinch.core.Chart
 import music.pinch.core.Note
 
 internal enum class DanceStyle { GypsyWoman, Levels }
+internal enum class DanceLeadVoice { OrganStab, OrganMelody, Piano, Synth }
+
+internal fun danceLeadVoice(style: DanceStyle, atMs: Long): DanceLeadVoice = when (style) {
+    DanceStyle.GypsyWoman -> if (gypsyOrganLeadAt(atMs)) DanceLeadVoice.OrganStab else DanceLeadVoice.OrganMelody
+    DanceStyle.Levels -> if (levelsSoftLeadAt(atMs)) DanceLeadVoice.Piano else DanceLeadVoice.Synth
+}
 
 private const val DanceRate = 32_000
 private const val DanceCycle = 4_294_967_296.0
@@ -30,7 +36,7 @@ private fun danceSample(table: FloatArray, phase: Int): Float {
     return table[i] + fraction * (table[i + 1] - table[i])
 }
 
-private class DanceStudio(chart: Chart, private val style: DanceStyle) {
+internal class DanceStudio(chart: Chart, private val style: DanceStyle) {
     private val length = danceFrames(chart.durationMs)
     private val left = FloatArray(length)
     private val right = FloatArray(length)
@@ -60,20 +66,32 @@ private class DanceStudio(chart: Chart, private val style: DanceStyle) {
         }
     }
 
+    fun leadSamples(note: Note): FloatArray = when (danceLeadVoice(style, note.atMs)) {
+        DanceLeadVoice.OrganStab -> organ(note.midi, note.durationMs)
+        DanceLeadVoice.OrganMelody -> organ(note.midi, note.durationMs, lyrical = true)
+        DanceLeadVoice.Piano -> studioPiano(note.midi, note.durationMs, note.velocity)
+        DanceLeadVoice.Synth -> levelsSynth(note.midi, note.durationMs)
+    }
+
     fun lead(note: Note) {
-        val soft = when (style) {
-            DanceStyle.GypsyWoman -> !gypsyOrganLeadAt(note.atMs)
-            DanceStyle.Levels -> levelsSoftLeadAt(note.atMs)
-        }
         val start = danceFrames(note.atMs)
-        if (soft) {
-            val piano = studioPiano(note.midi, note.durationMs, note.velocity)
-            place(piano, start, .80f * note.velocity, -.035)
-            place(piano, start + danceFrames(43), .065f * note.velocity, .58)
-            place(piano, start + danceFrames(79), .038f * note.velocity, -.58)
+        val tone = leadSamples(note)
+        if (style == DanceStyle.GypsyWoman) {
+            // The verse enters at 8.875 s. Keep it in the organ's family instead of
+            // introducing a bright acoustic piano over the existing house riff.
+            // The sung reduction keeps its own notes, but uses softer drawbars and
+            // a longer breath so it sits inside the same performance.
+            val lyrical = !gypsyOrganLeadAt(note.atMs)
+            val gain = (if (lyrical) .57f else .72f) * note.velocity
+            place(tone, start, gain, -.025, .10f)
+            place(tone, start + danceFrames(29), gain * .070f, .58)
+            place(tone, start + danceFrames(53), gain * .045f, -.58)
+        } else if (levelsSoftLeadAt(note.atMs)) {
+            place(tone, start, .73f * note.velocity, -.035)
+            place(tone, start + danceFrames(43), .060f * note.velocity, .58)
+            place(tone, start + danceFrames(79), .035f * note.velocity, -.58)
         } else {
-            val tone = chordVoice(note.midi, note.durationMs)
-            val gain = if (style == DanceStyle.GypsyWoman) .76f else .83f
+            val gain = .81f
             place(tone, start, gain * note.velocity, -.025, .10f)
             place(tone, start + danceFrames(27), gain * note.velocity * .065f, .61)
             place(tone, start + danceFrames(49), gain * note.velocity * .047f, -.61)
@@ -102,7 +120,7 @@ private class DanceStudio(chart: Chart, private val style: DanceStyle) {
             }
             BackingVoice.Hat -> {
                 val pan = if (note.midi == 70) -.31 else .27
-                place(drum(note), start, .51f * note.velocity, pan)
+                place(drum(note), start, .44f * note.velocity, pan)
             }
         }
     }
@@ -112,27 +130,29 @@ private class DanceStudio(chart: Chart, private val style: DanceStyle) {
         DanceStyle.Levels -> levelsSynth(midi, durationMs)
     }
 
-    private fun organ(midi: Int, durationMs: Long): FloatArray {
+    private fun organ(midi: Int, durationMs: Long, lyrical: Boolean = false): FloatArray {
         val gate = danceFrames(durationMs)
-        val result = FloatArray(gate + danceFrames(270))
+        val result = FloatArray(gate + danceFrames(if (lyrical) 440 else 300))
         val inc = danceStep(danceHz(midi))
         var phase = 0
         var key = 1f
         var body = 1f
         var envelope = 0f
-        val keyDecay = danceDecay(.072)
-        val bodyDecay = danceDecay(.94)
-        val attack = 1f - danceDecay(.0014)
-        val release = danceDecay(.044)
+        val keyDecay = danceDecay(.065)
+        val bodyDecay = danceDecay(if (lyrical) 2.8 else 1.15)
+        val attack = 1f - danceDecay(if (lyrical) .0065 else .0025)
+        val release = danceDecay(if (lyrical) .072 else .049)
         val hz = danceHz(midi)
         for (i in result.indices) {
             phase += inc
             envelope = if (i < gate) envelope + attack * (1f - envelope) else envelope * release
-            var tone = .75f * danceSample(danceSine, phase)
-            if (hz * 2 < DanceRate * .46) tone += (.36f + .36f * key) * danceSample(danceSine, phase * 2)
-            if (hz * 3 < DanceRate * .46) tone += .24f * key * danceSample(danceSine, phase * 3)
-            if (hz * 4 < DanceRate * .46) tone += (.12f + .20f * key) * danceSample(danceSine, phase * 4)
-            if (hz * 6 < DanceRate * .46) tone += .075f * key * danceSample(danceSine, phase * 6)
+            var tone = (if (lyrical) .88f else .78f) * danceSample(danceSine, phase)
+            if (hz * 2 < DanceRate * .46) tone += (if (lyrical) .25f + .10f * key else .34f + .27f * key) *
+                danceSample(danceSine, phase * 2)
+            if (hz * 3 < DanceRate * .46) tone += (if (lyrical) .08f else .19f) * key * danceSample(danceSine, phase * 3)
+            if (hz * 4 < DanceRate * .46) tone += (if (lyrical) .035f else .10f + .15f * key) *
+                danceSample(danceSine, phase * 4)
+            if (hz * 6 < DanceRate * .46) tone += (if (lyrical) .012f else .055f) * key * danceSample(danceSine, phase * 6)
             result[i] = tone * envelope * (.22f + .78f * body) * .72f * endFade(i, result.size)
             key *= keyDecay
             body *= bodyDecay
@@ -143,9 +163,9 @@ private class DanceStudio(chart: Chart, private val style: DanceStyle) {
     private fun levelsTable(midi: Int): FloatArray = sawTables.getOrPut(midi) {
         val hz = danceHz(midi)
         val table = FloatArray(DanceTableSize + 1)
-        val partials = min(24, (DanceRate * .46 / hz).toInt())
+        val partials = min(20, (DanceRate * .46 / hz).toInt())
         for (h in 1..partials) {
-            val strength = (if (h % 2 == 0) .56 else .79) * exp(-h / 10.0) / h
+            val strength = (if (h % 2 == 0) .54 else .79) * exp(-h / 8.0) / h
             for (i in 0 until DanceTableSize) {
                 table[i] += (strength * sin(i * (2 * PI * h / DanceTableSize))).toFloat()
             }
@@ -169,8 +189,8 @@ private class DanceStudio(chart: Chart, private val style: DanceStyle) {
         var lowerPhase = -0x35000000
         var envelope = 0f
         var bright = 1f
-        val attack = 1f - danceDecay(.0027)
-        val release = danceDecay(.053)
+        val attack = 1f - danceDecay(.0036)
+        val release = danceDecay(.061)
         val colourDecay = danceDecay(.32)
         for (i in result.indices) {
             phase += inc
@@ -276,7 +296,7 @@ private class DanceStudio(chart: Chart, private val style: DanceStyle) {
                     (.76f * air + .44f * high) * (.58f + .66f * slap) + .13f * danceSample(danceSine, phase)
                 }
                 shaker -> (.62f * high + .27f * air) * min(1f, i / 130f)
-                else -> .91f * high + .15f * (noise - air)
+                else -> .79f * high + .18f * (noise - air)
             }
             result[i] = tone * envelope * min(1f, i / 24f) * endFade(i, size)
             envelope *= decay

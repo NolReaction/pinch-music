@@ -68,18 +68,31 @@ void main(){
     vec3 n=normalize(vN), v=normalize(eye-vPos), r=reflect(-v,n);
     float mat=vMat.x;
     if(mat>7.5 && mat<8.5) {
-        // A rotating glass marble with a pearl/violet inclusion. The clear
-        // outer skin reflects the room independently of the coloured core.
+        // Clear, cool glass around three suspended coloured ribbons. Reflections
+        // belong to the outer skin; only the inclusions follow the rolling spin.
         vec3 bn=vec3(n.x*uSpin.x+n.y*uSpin.y,-n.x*uSpin.y+n.y*uSpin.x,n.z);
-        float ribbon=bn.y+.31*bn.x+.34*sin(3.58*bn.z+2.10*bn.x);
-        float pearl=smoothstep(-.16,.16,ribbon);
-        vec3 wine=mix(vec3(.14,.060,.23),vec3(.58,.083,.33),smoothstep(-.44,.47,bn.z+.52*bn.x));
-        vec3 body=mix(wine,vec3(.87,.86,.79),pearl);
-        body=mix(body,vec3(.29,.068,.19),.82*strip(ribbon-.47,.063,.064)*smoothstep(-.35,.22,bn.x));
-        float fres=.11+.62*pow(1.-max(0.,dot(n,v)),3.);
-        vec3 color=mix(body*(.65+.34*max(0.,dot(n,L))),studio(r),fres);
-        color+=vec3(.90,.89,.83)*pow(max(dot(reflect(-L,n),v),0.),92.);
-        color+=vec3(.29,.31,.35)*strip(r.y+.55+.24*r.x,.018,.025);
+        float facing=max(0.,dot(n,v));
+        float edge=pow(1.-facing,2.);
+        vec3 refracted=refract(-v,n,.67);
+        vec3 clear=mix(vec3(.63,.78,.81),vec3(.88,.92,.86),.5+.5*bn.z);
+        clear*=.78+.26*max(0.,-refracted.y);
+        float bend=bn.x+.31*sin(3.4*bn.y+2.6*bn.z);
+        float ribbon=1.-smoothstep(.12,.28,abs(bend));
+        float curl=bn.y-.24*sin(4.3*bn.z-1.7*bn.x)-.22;
+        float amber=(1.-smoothstep(.07,.15,abs(curl)))*smoothstep(-.62,.15,bn.x);
+        float blue=1.-smoothstep(.11,.26,abs(bend+.43+.17*bn.y));
+        vec3 core=mix(vec3(.035,.22,.64),vec3(.025,.70,.63),smoothstep(-.40,.52,bn.y));
+        vec3 body=mix(clear,core,ribbon*.88);
+        body=mix(body,vec3(.30,.075,.64),blue*.77);
+        body=mix(body,vec3(.98,.69,.08),amber*.87);
+        body*=.75+.25*max(0.,dot(n,L));
+        body=mix(body,vec3(.17,.32,.39),edge*.31);
+        float fres=.055+.82*pow(1.-facing,5.);
+        vec3 color=mix(body,studio(r),fres);
+        float highlight=pow(max(dot(reflect(-L,n),v),0.),132.);
+        color+=vec3(.99,.98,.91)*highlight*.88;
+        color+=vec3(.32,.35,.36)*strip(r.y+.55+.24*r.x,.014,.034);
+        color+=vec3(.12,.22,.22)*pow(max(0.,dot(n,normalize(vec3(-.35,.60,.72)))),10.);
         gl_FragColor=vec4(color,1.); return;
     }
     vec3 env=studio(r);
@@ -120,11 +133,43 @@ void main(){
         col=vec3(.032,.039,.047)+env*.26;
     } else if(mat<6.5) {
         col=mix(vec3(.13,.14,.145),accent,min(1.,.48+preview*.52+impact));
-    } else {
+    } else if(mat<11.5) {
         col=vec3(.22,.085,.037)+env*vec3(.75,.38,.20)+vec3(.34,.18,.093)*spec;
+    } else if(mat<12.5) {
+        // Satin ivory has a broad porcelain highlight and a darker edge under
+        // the cap. It reads as a key even when the song's accent is saturated.
+        float sheen=pow(max(0.,dot(reflect(-L,n),v)),30.);
+        col=vec3(.89,.86,.77)*(.71+.26*nl)+env*(.08+.17*edge)+vec3(.13*sheen);
+    } else if(mat<13.5) {
+        // Polished ebony retains a visible reflected window without turning grey.
+        col=vec3(.024,.030,.037)+env*(.075+.28*edge)+vec3(.16,.17,.18)*spec;
+    } else if(mat<14.5) {
+        // Fine lengthwise fibres live in local key coordinates, so neither
+        // camera travel nor the short key recoil can make the wood swim.
+        float grain=texture2D(uGrain,vFace*vec2(.72,.15)+vec2(.19,.43)).r;
+        float fibre=.5+.5*sin(vFace.x*182.+sin(vFace.y*9.)*1.7+grain*8.);
+        vec3 wood=mix(vec3(.32,.145,.064),vec3(.61,.345,.155),grain);
+        wood*=.94+.075*fibre;
+        col=wood*(.72+.38*nl)+env*(.035+.13*edge)+vec3(.08,.059,.033)*spec;
+    } else if(mat<15.5) {
+        // Lacquered resonator tubes have a soft body reflection and a narrow
+        // clear-coat highlight. Their inner lip uses a separate dark material.
+        vec3 plastic=mix(vec3(.22,.12,.70),uAccent,.72);
+        float sheen=pow(max(0.,dot(reflect(-L,n),v)),78.);
+        col=plastic*(.46+.51*nl)+env*(.075+.24*edge)+vec3(.42,.40,.46)*sheen;
+    } else {
+        col=mix(vec3(.031,.020,.074),uAccent*.11,.52)*(.67+.30*nl)+env*.025;
+    }
+    if(mat>11.5 && mat<15.5) {
+        float distance=length(vPos.xz-uBall.xz);
+        float ao=1.-.30*exp(-19.*distance*distance)*(1.-smoothstep(.22,.62,abs(vPos.y-uBall.y)));
+        col*=ao;
+        // A narrow warm response leaves the instrument material visible.
+        float pulse=impact*impact;
+        col=mix(col,accent*(.66+.22*nl)+env*.10,pulse*.70+preview*.075);
     }
     // A judgement is attached to its scored cap only, even if the marble has moved on.
-    if(mat<2.5 || (mat>5.5 && mat<6.5)) {
+    if(mat<2.5 || (mat>5.5 && mat<6.5) || (mat>11.5 && mat<15.5)) {
         vec3 result=uKey.y<0. ? vec3(1.,.286,.298) : vec3(.435,.945,.675);
         col=mix(col, result*(.67+.27*max(0.,-n.y)) + env*.075, abs(uKey.y)*.96);
     }
@@ -229,7 +274,7 @@ void main(){
     vec3 d=vec3(p,-1.347)-eye;
     float z=dot(d,forward);
     gl_Position=vec4(dot(d,right)*uLens.x,dot(d,up)*uLens.y,0.,z);
-    vColor=vec4(.125,.145,.174,aNormal.x*data.w);
+    vColor=vec4(.18,.205,.22,aNormal.x*data.w);
 }
 )GL";
 static const char* wallFS = R"GL(
@@ -246,7 +291,7 @@ varying mediump vec2 vReliefUV;
 #endif
 uniform sampler2D uRelief;
 void main(){
-    vec3 col=vColor.rgb*(.967+.066*texture2D(uRelief,vReliefUV).r);
+    vec3 col=vColor.rgb*(.988+.024*texture2D(uRelief,vReliefUV).r);
     gl_FragColor=vec4(col,1.);
 }
 )GL";

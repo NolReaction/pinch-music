@@ -31,7 +31,8 @@ inline V unit(V v) {
 inline V cross(V a, V b) {
     return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
 }
-enum Surface { Face, Skirt, Inlay, Chrome, Iron, Bolt, Accent, Rail, Glass, Copper, TimingArc, Ember };
+enum Surface { Face, Skirt, Inlay, Chrome, Iron, Bolt, Accent, Rail, Glass, Copper, TimingArc, Ember,
+               Ivory, Ebony, Wood, TubePaint, TubeInside };
 struct Vertex {
     V p, n;
     float material, detail;
@@ -172,17 +173,18 @@ struct KeyDesign {
     float corner;
     Surface rim, band;
     float lacquer, reflection, grainX, grainZ;
+    int instrument; // 0: wood bar, 1: ivory/ebony keyboard, 2: hollow percussion tube
 };
 inline const KeyDesign& keyDesign(int motif) {
     static constexpr KeyDesign designs[] = {
-        {2, .108f, Copper, Accent, .92f, .26f, .34f, .34f}, // Floor: cut obsidian and copper
-        {4, .082f, Chrome, Inlay, .34f, .63f, 1.05f, .14f}, // Stereo: brushed nickel
-        {3, .132f, Copper, Iron, .83f, .24f, .14f, 2.7f}, // Gypsy: warm, lengthwise grain
-        {2, .152f, Chrome, Accent, .82f, .44f, 1.4f, 1.4f}, // Levels: faceted blue enamel
-        {5, .210f, Chrome, Inlay, .65f, .46f, .35f, .35f}, // Stay: rolled porcelain
-        {2, .054f, Iron, Copper, .86f, .29f, 2.1f, .21f}, // Turn Down: square graphite
-        {4, .167f, Copper, Accent, .70f, .40f, .26f, 1.2f}, // Yeah: rounded olive/brass caps
-        {3, .110f, Iron, Chrome, .74f, .62f, 1.8f, .23f}, // Countdown: dark nickel and violet
+        {3, .058f, Wood, Wood, .92f, .26f, .14f, 2.7f, 0}, // Floor: rosewood marimba
+        {4, .050f, Ivory, Chrome, .34f, .63f, 1.05f, .14f, 1}, // Stereo: ivory keyboard
+        {4, .050f, Ivory, Chrome, .83f, .24f, .14f, 2.7f, 1}, // Gypsy: organ keys
+        {3, .080f, Chrome, Accent, .82f, .44f, 1.4f, 1.4f, 2}, // Levels: blue pipes
+        {4, .050f, Ivory, Chrome, .65f, .46f, .35f, .35f, 1}, // Stay: ivory keyboard
+        {3, .054f, Chrome, Accent, .86f, .29f, 2.1f, .21f, 2}, // Turn Down: violet pipes
+        {3, .058f, Wood, Wood, .70f, .40f, .14f, 2.7f, 0}, // Yeah: honey marimba
+        {3, .080f, Chrome, Accent, .74f, .62f, 1.8f, .23f, 2}, // Countdown: indigo pipes
     };
     return designs[motif >= 0 && motif < 8 ? motif : 1];
 }
@@ -191,17 +193,82 @@ inline float keyCenterX(bool shortKey, float side) {
     return side * (shortKey ? .23f : .22f);
 }
 
+// Small physical keyboard caps and rails use independent face normals, so their
+// broad highlights do not round over the join as they would on a shared cube.
+inline void box(Mesh& m, V low, V high, Surface top, Surface side) {
+    const V corners[] = {{low.x,low.y,low.z}, {high.x,low.y,low.z},
+                         {high.x,low.y,high.z}, {low.x,low.y,high.z},
+                         {low.x,high.y,low.z}, {high.x,high.y,low.z},
+                         {high.x,high.y,high.z}, {low.x,high.y,high.z}};
+    const int faces[][4] = {{0,1,2,3}, {4,7,6,5}, {0,4,5,1}, {3,2,6,7}, {0,3,7,4}, {1,5,6,2}};
+    const V normals[] = {{0,-1,0}, {0,1,0}, {0,0,-1}, {0,0,1}, {-1,0,0}, {1,0,0}};
+    for (int f=0; f<6; ++f) {
+        int a = static_cast<int>(m.verts.size());
+        for (int i : faces[f]) m.point(corners[i],normals[f],f == 0 ? top : side);
+        m.quad(a,a+1,a+2,a+3);
+    }
+}
+
+// A real open cylinder, with a separate inner wall and annular ends. Its upper
+// tangent is y=0 at z=0, exactly the same contact surface used by the trajectory.
+inline Mesh percussionTube(bool shortKey, float side) {
+    Mesh m;
+    const float width = shortKey ? .46f : .70f, cx = keyCenterX(shortKey, side);
+    const float radius = .103f, inner = radius-.014f, cy = radius;
+    const float a = cx-width*.5f, b = cx+width*.5f;
+    constexpr int sides = 24;
+    for (int skin=0; skin<2; ++skin) {
+        const float r = skin ? inner : radius;
+        const float sign = skin ? -1.f : 1.f;
+        const int begin = static_cast<int>(m.verts.size());
+        for (float x : {a,b}) for (int i=0; i<sides; ++i) {
+            const float angle = i*2.f*Pi/sides;
+            V n{0,std::cos(angle),std::sin(angle)};
+            m.point({x,cy+n.y*r,n.z*r},n*sign,skin ? TubeInside : TubePaint);
+        }
+        for (int i=0;i<sides;++i) m.quad(begin+i,begin+(i+1)%sides,begin+sides+(i+1)%sides,begin+sides+i);
+    }
+    for (int end=0;end<2;++end) {
+        const int begin=static_cast<int>(m.verts.size());
+        for (float r : {inner,radius}) for (int i=0;i<sides;++i) {
+            const float angle=i*2.f*Pi/sides;
+            m.point({end ? b : a,cy+std::cos(angle)*r,std::sin(angle)*r},
+                    {end ? 1.f : -1.f,0,0},TubePaint);
+        }
+        for (int i=0;i<sides;++i) m.quad(begin+i,begin+(i+1)%sides,begin+sides+(i+1)%sides,begin+sides+i);
+    }
+    for (auto& vertex:m.verts)
+        vertex.detail=shortKey ? std::min(1.f,std::abs(vertex.p.x)/width) : 1.f;
+    // Two rounded chrome saddles cradle the lower half without crossing the
+    // playing tangent. The supports stay fixed while the pipe responds to a hit.
+    const float mountY=.245f;
+    for (float x : {cx-width*.30f,cx+width*.30f}) {
+        std::vector<V> cradle;
+        for (int i=0;i<=12;++i) {
+            const float angle=-Pi*.5f+i*Pi/12;
+            cradle.push_back({x,cy+std::cos(angle)*(radius+.010f),std::sin(angle)*(radius+.010f)});
+        }
+        tube(m,cradle,.010f,Chrome,6);
+        rod(m,{x,mountY,WallZ+.04f},{x,mountY,-.035f},.017f,Chrome,8);
+        rod(m,{x,mountY,-.035f},{x,cy+radius+.012f,0},.020f,Chrome,8);
+        ellipsoid(m,{x,mountY,WallZ+.050f},{.046f,.046f,.026f},Bolt,10,5);
+    }
+    return m;
+}
+
 // Loft rounded rectangular contours. Bevel normals angle smoothly into the flat top.
 // The two fasteners sit inside recessed ferrules on the playing face.
 inline Mesh keyMesh(bool shortKey, float side, bool accented, const KeyDesign& design) {
+    if (design.instrument == 2) return percussionTube(shortKey,side);
     Mesh m;
+    const Surface playing = design.instrument == 1 ? Ivory : Wood;
     float width = shortKey ? .46f : .70f;
     // Keep the strike near the inward lip and the long part of the key behind
     // the track. The cap then stays clear of the ball on the next row below.
     float cx = keyCenterX(shortKey, side);
     float frontZ = .25f, backZ = shortKey ? -.585f : -.66f;
     float length = frontZ - backZ, cz = (frontZ + backZ) * .5f;
-    float depth = accented ? .36f : .215f;
+    const float depth = design.instrument == 1 ? (accented ? .18f : .13f) : (accented ? .15f : .115f);
     const float corner = design.corner;
     const int perCorner = design.cornerSteps, ring = 4 * perCorner;
     struct Level {
@@ -210,14 +277,14 @@ inline Mesh keyMesh(bool shortKey, float side, bool accented, const KeyDesign& d
     };
     // A broad face, two cuts around the polished bevel, a narrow polymer
     // gasket, and the recessed gunmetal underbody are all inside the key bounds.
-    const Level levels[] = {{0, .033f, 1, Face},
+    const Level levels[] = {{0, .033f, 1, playing},
                             {.010f, .016f, .82f, design.rim},
                             {.024f, .002f, .41f, design.rim},
-                            {.040f, 0, 0, Skirt},
+                            {.040f, 0, 0, playing},
                             {.052f, 0, 0, design.band},
                             {.066f, .009f, -.28f, design.rim},
-                            {.083f, .026f, -.45f, Skirt},
-                            {depth - .018f, .026f, 0, Skirt},
+                            {.083f, .026f, -.45f, design.instrument == 1 ? Ebony : Wood},
+                            {depth - .018f, .026f, 0, design.instrument == 1 ? Ebony : Wood},
                             {depth, .043f, -.78f, Chrome}};
     auto contour = [&](Level l, int i) {
         int quadrant = i / perCorner;
@@ -227,9 +294,9 @@ inline Mesh keyMesh(bool shortKey, float side, bool accented, const KeyDesign& d
         float z = cz + (quadrant < 2 ? 1 : -1) * (length * .5f - corner);
         return V{x + (corner - l.inset) * nx, l.y, z + (corner - l.inset) * nz};
     };
-    int top = m.point({cx, 0, cz}, {0, -1, 0}, Face);
+    int top = m.point({cx, 0, cz}, {0, -1, 0}, playing);
     for (int i = 0; i < ring; ++i)
-        m.point(contour(levels[0], i), {0, -1, 0}, Face);
+        m.point(contour(levels[0], i), {0, -1, 0}, playing);
     for (int i = 0; i < ring; ++i)
         m.tri(top, top + 1 + i, top + 1 + (i + 1) % ring);
     for (int j = 0; j < 8; ++j) {
@@ -251,15 +318,27 @@ inline Mesh keyMesh(bool shortKey, float side, bool accented, const KeyDesign& d
         m.point(contour(levels[8], i), {0, 1, 0}, Skirt);
     for (int i = 0; i < ring; ++i)
         m.tri(bottom, bottom + 1 + i, bottom + 1 + (i + 1) % ring);
-    // One flush countersunk screw on the heel, outside the rolling line.
-    const float screwX = cx + side * width * .18f, screwZ = backZ + .105f;
-    rod(m, {screwX, .001f, screwZ}, {screwX, -.003f, screwZ}, .027f, Iron, 12);
-    rod(m, {screwX, -.003f, screwZ}, {screwX, -.006f, screwZ}, .021f, Bolt, 12);
-    rod(m, {screwX - .012f, -.006f, screwZ}, {screwX + .012f, -.006f, screwZ}, .0025f, Iron, 5);
-    // Slim colour insert in the front fascia, surrounded by the machined rim.
-    const float insertY = accented ? .103f : .088f;
-    rod(m, {cx - width * .34f, insertY, frontZ - .018f},
-           {cx + width * .34f, insertY, frontZ - .018f}, .012f, Accent, 8);
+    if (design.instrument == 1) {
+        // Three ivory levers and two raised black keys. The short black caps are
+        // entirely behind the marble lane, leaving the strike plane untouched.
+        for (float x : {cx-width/6.f,cx+width/6.f}) {
+            box(m,{x-.003f,-.001f,backZ+.032f},{x+.003f,.003f,frontZ-.034f},Ebony,Ebony);
+            const float half=width*.063f;
+            box(m,{x-half,-.067f,backZ+.036f},{x+half,-.002f,-.295f},Ebony,Ebony);
+            box(m,{x-half+.006f,-.069f,backZ+.046f},{x+half-.006f,-.066f,-.309f},Ebony,Ebony);
+        }
+        // A polished front lip catches the large studio softbox.
+        rod(m,{cx-width*.39f,.036f,frontZ-.017f},{cx+width*.39f,.036f,frontZ-.017f},.007f,Chrome,6);
+    } else {
+        // The two marimba suspension nodes are bored through the wood and
+        // edged with a small dark felt washer, rather than a decorative LED.
+        for (float z : {backZ+.14f,frontZ-.13f}) {
+            rod(m,{cx,.002f,z},{cx,-.002f,z},.024f,Iron,10);
+            rod(m,{cx,-.002f,z},{cx,-.005f,z},.012f,Bolt,10);
+        }
+        // A slim resonator under the bar adds a recognisable marimba silhouette.
+        rod(m,{cx,depth+.040f,backZ+.13f},{cx,depth+.040f,frontZ-.09f},.045f,Copper,12);
+    }
     // Only the cap and its fasteners travel. Guided caps hinge at the rail lip
     // to keep the transfer surface tangent while the rear of the cap goes down.
     for (auto& vertex : m.verts)
