@@ -1,0 +1,263 @@
+"""The performance and the single-finger chart share this sixteenth-note score.
+
+Run from any directory with python3 score.py [--check] to update or verify StereoLove.kt.
+A measure has 16 ticks. Phrases describe onset, MIDI pitch and sounding length in ticks.
+"""
+
+from dataclasses import asdict, dataclass
+from hashlib import sha256
+import json
+from pathlib import Path
+import sys
+
+BPM = 127
+DURATION_MS = 184_000
+ROOT = Path(__file__).resolve().parents[2]
+GRID = ROOT / "composeApp/src/commonMain/kotlin/music/pinch/StereoLove.kt"
+BACKING = ROOT / "media/backing/stereo-love.m4a"
+
+
+@dataclass(frozen=True)
+class Section:
+    bar: int
+    label: str
+    phrase: str
+    groove: str
+
+
+FORM = (
+    Section(0, "Вступление", "teaser", "intro"),
+    Section(2, "Вокальная тема", "opening", "soft"),
+    Section(10, "Вокальная тема", "opening", "lift"),
+    Section(18, "Аккордеон", "hook", "club"),
+    Section(26, "Переход", "turn", "turn"),
+    Section(28, "Куплет", "verse", "groove"),
+    Section(38, "Нарастание", "rise", "build"),
+    Section(50, "Вокальная тема", "opening", "break"),
+    Section(58, "Припев", "refrain", "peak"),
+    Section(74, "Бридж", "bridge", "bridge"),
+    Section(82, "Финал", "bridge", "final"),
+    Section(90, "Аккордеон", "hook", "peak"),
+    Section(94, "Кода", "coda", "outro"),
+)
+BAR_COUNT = 97
+
+# Root, and close inversions above the bass. G#m brings the refrain back to C#m.
+HARMONY = {
+    "C#m": (37, (56, 61, 64)),
+    "A":   (33, (57, 61, 64)),
+    "E":   (40, (56, 59, 64)),
+    "G#m": (32, (56, 59, 63)),
+    "B":   (35, (54, 59, 63)),
+    "F#m": (30, (54, 57, 61)),
+}
+
+# The accordion jumps up a sixth, reattacks the low reed, and walks down in pairs.
+HOOK = (
+    ((0,68,2.8),(3,76,.8),(4,68,.9),(6,76,1.8),(8,75,1.8),(10,76,1.8),(12,78,1.8),(14,76,1.0)),
+    ((0,75,1.9),(2,76,1.0),(4,73,1.9),(6,75,1.0),(8,71,1.9),(10,73,1.0),(12,69,1.9),(14,71,1.0)),
+    ((0,68,1.4),(3,80,.65),(4,80,.8),(5,80,.7),(7,80,.7),(8,78,.9),(9,78,2.6),(13,76,.9),(14,76,.9),(15,76,.9)),
+    ((0,75,1.8),(2,75,1.1),(4,75,2.4),(11,71,1.4),(14,73,.95)),
+)
+# Instrumental responses carry the vocal contour. Breath marks and long notes break up
+# the rapid accordion articulation, giving the successive sections distinct registers.
+OPENING = (
+    ((0,68,2.3),(3,68,1.3),(5,68,1.3),(7,69,1.0),(8,68,2.2),(11,66,1.5),(14,64,1.8)),
+    ((0,66,3.2),(4,64,2.7),(8,61,5.8)),
+    ((12,64,1.1),(14,66,1.0)),
+    ((0,68,4.0),(8,66,2.0),(12,64,2.8)),
+    ((0,68,1.5),(2,68,2.2),(5,68,1.2),(7,69,1.2),(9,68,2.4),(12,66,2.5)),
+    ((0,64,4.0),(6,66,3.2),(10,64,4.0)),
+    ((0,61,6.3),(8,63,2.0),(12,64,2.7)),
+    ((0,63,5.1),(8,61,6.0)),
+)
+VERSE = (
+    ((0,64,1.3),(2,66,1.2),(4,68,1.4),(7,68,1.4),(9,71,3.0),(14,68,1.2)),
+    ((0,66,1.4),(2,68,1.4),(4,69,1.6),(7,69,1.4),(9,68,4.0)),
+    ((0,64,1.4),(2,66,1.5),(4,68,3.0),(9,71,1.4),(11,69,1.4),(13,68,2.2)),
+    ((0,66,3.2),(4,64,2.0),(8,63,4.2)),
+)
+RISE = (
+    ((0,68,2.4),(3,68,1.2),(5,71,2.2),(8,73,2.1),(11,71,1.3),(13,68,2.0)),
+    ((0,68,1.8),(3,71,1.4),(5,73,2.4),(8,75,4.9)),
+    ((0,71,1.9),(3,73,1.3),(5,75,2.0),(8,76,2.4),(11,75,1.2),(13,73,2.0)),
+    ((0,71,2.8),(4,68,2.0),(8,68,5.4)),
+)
+BRIDGE = (
+    ((0,68,1.2),(2,71,1.1),(4,73,2.8),(8,73,1.2),(10,71,1.3),(13,68,2.0)),
+    ((0,66,2.7),(4,68,1.3),(7,69,2.4),(10,68,2.0),(14,64,1.4)),
+    ((0,68,3.0),(4,71,2.6),(8,73,1.6),(11,75,1.4),(13,76,2.7)),
+    ((0,75,2.0),(3,73,2.5),(7,71,2.1),(10,68,4.5)),
+)
+
+
+@dataclass(frozen=True)
+class Attack:
+    tick: int
+    midi: int
+    length: float
+    voice: str
+    gain: float
+
+
+def section_at(bar):
+    return next(s for s in reversed(FORM) if s.bar <= bar)
+
+
+def chord_at(section, local):
+    if section.groove == "intro":
+        return "C#m"
+    if section.groove in ("turn", "outro"):
+        return ("G#m", "C#m", "C#m")[min(local, 2)]
+    if section.groove == "build" and local >= 8:
+        return "C#m"
+    if section.phrase in ("opening", "verse", "rise"):
+        return ("C#m", "G#m", "A", "B", "C#m", "A", "F#m", "G#m")[local % 8]
+    return ("C#m", "A", "E", "G#m")[local % 4]
+
+
+def phrase_at(section, local):
+    if section.phrase in ("hook", "teaser"):
+        return HOOK[local % 4], "reed"
+    if section.phrase == "refrain":
+        if local % 8 < 4:
+            return HOOK[local % 4], "reed"
+        return BRIDGE[local % 4], "air"
+    if section.phrase == "turn":
+        return (((0,68,4.5),(8,71,2),(12,73,2)) if local == 0 else ((0,68,7.5),(12,63,2))), "pluck"
+    if section.phrase == "coda":
+        if local == 2:
+            return ((0,61,6.5),), "reed"
+        return HOOK[local], "reed"
+    phrases = {"opening": OPENING, "verse": VERSE, "rise": RISE, "bridge": BRIDGE}
+    bars = phrases[section.phrase]
+    return bars[local % len(bars)], "air"
+
+
+def lead_attacks():
+    notes = []
+    for bar in range(BAR_COUNT):
+        section = section_at(bar)
+        local = bar - section.bar
+        phrase, voice = phrase_at(section, local)
+        for offset, midi, length in phrase:
+            tick = bar * 16 + offset
+            velocity = (0.82 if offset % 4 == 0 else 0.71) + (0.05 if length >= 2 else 0)
+            notes.append(Attack(tick, midi, length, voice, velocity))
+    return notes
+
+
+def bell_answer_at(bar):
+    section = section_at(bar)
+    local = bar - section.bar
+    if section.groove not in ("peak", "bridge", "final", "outro") or local % 4 not in (1, 3):
+        return None
+    chord = HARMONY[chord_at(section, local)][1]
+    return Attack(bar * 16 + 6, chord[-1] + 12, 3.8, "bell", .365)
+
+
+def bell_answers():
+    return [bell for bar in range(BAR_COUNT) if (bell := bell_answer_at(bar))]
+
+
+def chart_attacks():
+    # The high bell answers across the rests in the second half. When both
+    # hands of the arrangement strike together the player follows the lead.
+    contacts = {attack.tick: attack for attack in lead_attacks()}
+    for bell in bell_answers():
+        contacts.setdefault(bell.tick, bell)
+    return sorted(contacts.values(), key=lambda n: n.tick)
+
+
+def score_tag():
+    """Fingerprint all written melodic attacks, including simultaneous bell answers."""
+    performance = [BPM, DURATION_MS, [asdict(n) for n in lead_attacks()], [asdict(n) for n in bell_answers()]]
+    serialized = json.dumps(performance, sort_keys=True, separators=(",", ":")).encode()
+    return "pinch-score-sha256=" + sha256(serialized).hexdigest()
+
+
+def check_backing():
+    tag = score_tag()
+    data = BACKING.read_bytes()
+    if tag.encode() in data:
+        return
+    # The shipped AAC labels the same performance with an older, lead-only tag.
+    # Accept those tags only for the verified combination of lead and bell responses.
+    original = "pinch-score-sha256=2bb7a70b29958ef3f75d54963fb37a5c38c10fedfd5e2b0a3d2357d3f6168017"
+    legacy = (
+        b"pinch-lead-sha256=fbe6f26433c4d26707c16373b5791591373fd6557b0ea4b06625c8bd2276f7e4",
+        b"pinch-lead-sha256=f76d90cb053d7efbd95562c281b02da1cc01adfda00f3022c888ce1ff7834268",
+    )
+    if tag != original or not any(value in data for value in legacy):
+        raise SystemExit("The backing does not match this score. Run render.py.")
+
+
+def kotlin_source():
+    attacks = chart_attacks()
+    section_rows = "\n".join(
+        f'    {s.bar * 16} to "{s.label}",' for s in FORM
+    )
+    chord_numbers = {name: i for i, name in enumerate(HARMONY)}
+    chords = ",\n".join(f'            intArrayOf({root}, {", ".join(map(str, voices))})'
+                          for root, voices in HARMONY.values())
+    band_sections = []
+    for i, section in enumerate(FORM):
+        end = FORM[i + 1].bar if i + 1 < len(FORM) else BAR_COUNT
+        chord_ids = (chord_numbers[chord_at(section, n)] for n in range(end - section.bar))
+        band_sections.append(f'            StereoBandSection(StereoGroove.{section.groove.title()}, '
+                             f'intArrayOf({", ".join(map(str, chord_ids))})),')
+    rows = [f"    strike({n.tick}, {n.midi}, {float(n.length)}, {n.gain:.2f}f)," for n in attacks]
+    return f'''// Generated from tools/stereo_love/score.py. Both the backing and the panels use these ticks.
+package music.pinch
+
+import kotlin.math.roundToLong
+import music.pinch.core.Chart
+import music.pinch.core.Note
+
+private const val stereoBpm = {BPM}
+private fun millisAtTick(tick: Int) = (tick * 15_000.0 / stereoBpm).roundToLong()
+
+private fun strike(tick: Int, midi: Int, length: Double, gain: Float) =
+    Note("stereo-$tick", millisAtTick(tick), midi, (length * 15_000.0 / stereoBpm).roundToLong(), gain)
+
+private val stereoSections = listOf(
+{section_rows}
+)
+
+internal fun stereoLoveSectionAt(positionMs: Long): String =
+    stereoSections.lastOrNull {{ millisAtTick(it.first) <= positionMs }}?.second ?: stereoSections.first().second
+
+private fun stereoMelody() = listOf(
+{chr(10).join(rows)}
+)
+
+internal val stereoLoveSong = Song.arranged(
+    id = "stereo-love",
+    title = "Stereo Love",
+    artist = "Edward Maya & Vika Jigulina",
+    bpm = stereoBpm,
+    durationMs = {DURATION_MS:_}L,
+    backingAsset = "backing/stereo-love.m4a",
+    bundledRevision = 4,
+) {{
+    val band = stereoBand(stereoBpm,
+        arrayOf(
+{chords},
+        ),
+        listOf(
+{chr(10).join(band_sections)}
+        ),
+    )
+    Chart("Stereo Love", stereoBpm, {DURATION_MS:_}L, stereoMelody(), band, authoredLandings = true)
+}}
+'''
+
+
+if __name__ == "__main__":
+    generated = kotlin_source()
+    if "--check" in sys.argv:
+        if GRID.read_text() != generated:
+            raise SystemExit("StereoLove.kt and score.py disagree, regenerate the chart.")
+        check_backing()
+    else:
+        GRID.write_text(generated)

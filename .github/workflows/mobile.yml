@@ -25,10 +25,32 @@ jobs:
           java-version: '17'
       - uses: android-actions/setup-android@v3
         with:
-          packages: 'platform-tools platforms;android-36 build-tools;35.0.0'
+          packages: 'platform-tools platforms;android-36 build-tools;35.0.0 ndk;27.0.12077973 cmake;3.22.1'
       - uses: gradle/actions/setup-gradle@v4
       - run: ./gradlew --max-workers=2 :composeApp:testDebugUnitTest --stacktrace
       - run: ./gradlew --max-workers=2 :composeApp:assembleDebug --stacktrace
+      - name: Check song timing and recording assets
+        run: |
+          python3 tools/stereo_love/score.py --check
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          from zipfile import ZipFile, ZIP_STORED
+          apk, = Path("composeApp/build/outputs/apk/debug").glob("*.apk")
+          generated = Path("arranger/build/generated/assets")
+          masters = sorted((generated / "backing").glob("*"))
+          assert [f.stem for f in masters] == ["gypsy-woman", "levels", "on-the-floor", "stereo-love"]
+          with ZipFile(apk) as package:
+              for abi in ("arm64-v8a", "armeabi-v7a", "x86", "x86_64"):
+                  with package.open(f"lib/{abi}/libpinch_stage.so") as renderer:
+                      assert renderer.read(4) == b"\x7fELF", f"Missing game renderer for {abi}"
+              bundled = {n for n in package.namelist() if n.startswith("assets/backing/")}
+              assert bundled == {"assets/backing/" + f.name for f in masters}
+              for file in masters + [generated / "launch.wav"]:
+                  item = package.getinfo("assets/" + file.relative_to(generated).as_posix())
+                  assert item.compress_type == ZIP_STORED and package.read(item) == file.read_bytes(), item.filename
+              assert not any(n.startswith(("assets/arrangements/", "assets/instruments/")) for n in package.namelist())
+              assert package.getinfo("assets/feedback/piano.wav").file_size > 44
+          PYTHON
       - uses: actions/upload-artifact@v4
         with:
           name: pinch-music-debug
@@ -53,6 +75,9 @@ jobs:
             -destination 'generic/platform=iOS Simulator' ARCHS=arm64 ONLY_ACTIVE_ARCH=YES \
             -derivedDataPath "$RUNNER_TEMP/PinchBuild" CODE_SIGNING_ALLOWED=NO build
           app="$RUNNER_TEMP/PinchBuild/Build/Products/Debug-iphonesimulator/PinchMusic.app"
-          for instrument in piano mallet synth; do
-            test -s "$app/media/instruments/$instrument/60.wav"
-          done
+          diff -qr arranger/build/generated/assets/backing "$app/media/backing"
+          test "$(find "$app/media/backing" -type f | wc -l | tr -d ' ')" = 4
+          test ! -d "$app/arrangements"
+          test ! -d "$app/media/instruments"
+          test -s "$app/media/feedback/piano.wav"
+          cmp arranger/build/generated/assets/launch.wav "$app/launch.wav"

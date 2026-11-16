@@ -4,6 +4,7 @@ package music.pinch
 internal class SessionClock(private val durationMs: Long) {
     private var baseMs = 0L
     private var startedAtMs: Long? = null
+    val running: Boolean get() = startedAtMs != null
 
     fun play(nowMs: Long) {
         if (startedAtMs == null && baseMs < durationMs) startedAtMs = nowMs
@@ -26,5 +27,50 @@ internal class SessionClock(private val durationMs: Long) {
     }
 }
 
-// Sparse octave samples cover MIDI 0…127 with no more than seven semitones of resampling.
-internal fun instrumentRoot(midi: Int): Int = (((midi + 6) / 12) * 12).coerceIn(0, 120)
+/** Share one decoder query across several display frames. All times use touch-event uptime. */
+internal class BackingClock(private val durationMs: Long) {
+    private var sample: Playback? = null
+    private var advancing = false
+    private var resetPositionMs = 0L
+
+    fun snapshot(nowMs: Long, read: () -> Playback): Playback {
+        val last = sample
+        if (last == null || (last.playing && !advancing) || nowMs - last.observedUptimeMs >= 64) {
+            val fresh = read()
+            // Observe real progress before coasting. Identical samples freeze the estimate through
+            // startup or a decoder stall. A later callback, pause or resume invalidates the anchor.
+            advancing = fresh.playing && fresh.positionMs > (last?.positionMs ?: resetPositionMs)
+            sample = fresh
+            return fresh.copy(stalled = fresh.playing && !advancing)
+        }
+        val elapsed = if (advancing) (nowMs - last.observedUptimeMs).coerceAtLeast(0L) else 0L
+        return last.copy(positionMs = (last.positionMs + elapsed).coerceAtMost(durationMs),
+            observedUptimeMs = nowMs, confirmedPositionMs = last.positionMs, stalled = last.playing && !advancing)
+    }
+
+    fun reset() {
+        sample?.let { resetPositionMs = it.positionMs }
+        sample = null
+        advancing = false
+    }
+}
+
+/** Ease small decoder-clock corrections over several drawn frames. Scoring and sound use the raw clock. */
+internal fun Playback.visualPosition(previous: Playback?, drawnMs: Long, durationMs: Long): Long {
+    val elapsed = previous?.let { observedUptimeMs - it.observedUptimeMs } ?: 0L
+    val predicted = drawnMs + elapsed
+    val error = positionMs - predicted
+    if (stalled || previous == null || previous.stalled || elapsed !in 1L..64L || error !in -48L..48L) {
+        return positionMs.coerceIn(drawnMs, durationMs)
+    }
+    val correction = maxOf(1L, elapsed / 4)
+    return (predicted + error.coerceIn(-correction, correction)).coerceIn(drawnMs, durationMs)
+}
+
+
+/** Never carry a rendered pose through an audio stall or predict beyond one decoder polling interval. */
+internal fun Playback.presentAt(drawnMs: Long, targetUptimeMs: Long, durationMs: Long): Long {
+    if (!playing || ended || stalled) return drawnMs
+    val lead = (targetUptimeMs - observedUptimeMs).coerceIn(0L, 64L)
+    return (drawnMs + lead).coerceAtMost(durationMs)
+}

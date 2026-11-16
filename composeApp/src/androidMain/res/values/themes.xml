@@ -1,0 +1,9 @@
+<resources>
+    <style name="BeatWindow" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@drawable/launch_background</item>
+        <item name="android:colorBackground">@color/beat_ink</item>
+        <item name="android:statusBarColor">@color/beat_ink</item>
+        <item name="android:navigationBarColor">@color/beat_ink</item>
+    </style>
+    <style name="BeatTheme" parent="@style/BeatWindow"/>
+</resources>

@@ -3,71 +3,182 @@ package music.pinch
 import android.content.res.AssetManager
 import android.media.AudioAttributes
 import android.media.SoundPool
+import android.os.SystemClock
+import java.util.concurrent.Executors
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.pow
 
-/** Created on the main looper, so load completions and gameplay share one thread. */
-internal class NoteSamples {
-    private val pool = SoundPool.Builder()
-        .setMaxStreams(8)
-        .setAudioAttributes(gameAudioAttributes())
-        .build()
-    private val idsByPitch = mutableMapOf<Int, Int>()
-    private val active = ArrayDeque<Int>()
-    private var released = false
+/** The activity owns one reusable bank. Only a fully decoded pool reaches the game thread. */
+internal class NoteSampleCache(private val assets: AssetManager) {
+    private var cached: NoteSamples? = null
 
-    fun load(assets: AssetManager, instrument: Instrument, pitches: Set<Int>, done: () -> Unit, failed: (String) -> Unit) {
-        check(idsByPitch.isEmpty())
-        if (pitches.isEmpty()) {
-            done()
-            return
-        }
-        val pending = mutableSetOf<Int>()
-        var loadingFailed = false
-        fun fail() {
-            if (!loadingFailed && !released) {
-                loadingFailed = true
-                failed("Не удалось загрузить звуки мелодии.")
-            }
-        }
-        pool.setOnLoadCompleteListener { _, id, status ->
-            if (released || loadingFailed) return@setOnLoadCompleteListener
-            if (status != 0) fail()
-            else if (pending.remove(id) && pending.isEmpty()) done()
-        }
-        for (pitch in pitches.map(::instrumentRoot).toSet()) {
-            val id = assets.openFd("instruments/${instrument.name.lowercase()}/$pitch.wav").use { pool.load(it, 1) }
-            if (id == 0) {
-                fail()
-                return
-            }
-            idsByPitch[pitch] = id
-            pending += id
+    suspend fun get(instrument: Instrument, pitches: Set<Int>, includeStrike: Boolean): NoteSamples {
+        val roots = pitches.mapTo(mutableSetOf(), ::instrumentRoot)
+        cached?.takeIf { it.covers(instrument, roots, includeStrike) }?.let { return it }
+
+        var loaded: NoteSamples? = null
+        try {
+            // Keep ownership here even when the session closes during the hop back to Main.
+            withContext(Dispatchers.IO) { loaded = NoteSamples.load(assets, instrument, roots, includeStrike) }
+            val result = checkNotNull(loaded)
+            cached?.release()
+            cached = result
+            loaded = null
+            return result
+        } finally {
+            loaded?.release()
         }
     }
 
-    fun play(pitch: Int, gain: Float) {
-        if (released) return
-        val root = instrumentRoot(pitch)
-        val sample = idsByPitch[root] ?: return
-        val rate = 2.0.pow((pitch - root) / 12.0).toFloat()
-        val level = gain.coerceIn(0f, 1f)
-        val stream = pool.play(sample, level, level, 1, 0, rate)
+    fun close() {
+        cached?.release()
+        cached = null
+    }
+}
+
+internal class NoteSamples private constructor(
+    private val pool: SoundPool,
+    private val instrument: Instrument,
+    private val ids: Map<Int, Int>,
+    private val strikeId: Int,
+) {
+    companion object {
+        private const val VOICE_COUNT = 8
+        private const val MAX_AUDIO_DELAY_MS = 80L
+        // On Android 7 even play() can make a blocking AudioService Binder call.
+        private val output = Executors.newSingleThreadExecutor { task ->
+            Thread(task, "Pinch-SoundPool").apply { isDaemon = true }
+        }
+        private val outputScope = CoroutineScope(output.asCoroutineDispatcher())
+
+        private val pitchRates = FloatArray(128) { midi ->
+            2.0.pow((midi - instrumentRoot(midi)) / 12.0).toFloat()
+        }
+
+        suspend fun load(assets: AssetManager, instrument: Instrument, roots: Set<Int>, includeStrike: Boolean): NoteSamples {
+            val pool = SoundPool.Builder().setMaxStreams(VOICE_COUNT).setAudioAttributes(gameAudioAttributes()).build()
+            // A small asset may finish before all the IDs have been submitted.
+            val results = Channel<Int>(Channel.UNLIMITED)
+            try {
+                pool.setOnLoadCompleteListener { _, _, status -> results.trySend(status) }
+                fun submit(path: String): Int = assets.openFd(path).use { fd ->
+                    pool.load(fd, 1).also { check(it != 0) { "Не удалось загрузить звук инструмента." } }
+                }
+                val name = instrument.name.lowercase()
+                val ids = roots.associateWith { root ->
+                    currentCoroutineContext().ensureActive()
+                    submit("instruments/$name/$root.wav")
+                }
+                val strikeId = if (includeStrike) submit("feedback/$name.wav") else 0
+                repeat(ids.size + if (includeStrike) 1 else 0) {
+                    check(results.receive() == 0) { "Не удалось декодировать звук инструмента." }
+                }
+                pool.setOnLoadCompleteListener(null)
+                return NoteSamples(pool, instrument, ids, strikeId)
+            } catch (e: Throwable) {
+                pool.release()
+                throw e
+            } finally {
+                results.close()
+            }
+        }
+    }
+
+    private data class Voice(val sample: Int, val rate: Float, val gain: Float, val requestedAt: Long, val durationMs: Int?)
+
+    // Only the game thread swaps inboxes. The worker owns all stream IDs.
+    private var inbox: Channel<Voice>? = null
+    private var released = false
+    @Volatile private var generation = 0L
+    private val streams = IntArray(VOICE_COUNT)
+    private var next = 0
+
+    fun covers(selected: Instrument, roots: Set<Int>, includeStrike: Boolean) =
+        instrument == selected && ids.keys.containsAll(roots) && (!includeStrike || strikeId != 0)
+
+    fun play(pitch: Int, gain: Float, durationMs: Int) {
+        val sample = ids[instrumentRoot(pitch)] ?: return
+        enqueue(sample, pitchRates[pitch], gain, durationMs)
+    }
+
+    fun strike(gain: Float) = enqueue(strikeId, 1f, gain, null)
+
+    private fun enqueue(sample: Int, rate: Float, gain: Float, durationMs: Int?) {
+        if (released || sample == 0) return
+        val queue = inbox ?: Channel<Voice>(VOICE_COUNT, BufferOverflow.DROP_OLDEST).also { channel ->
+            inbox = channel
+            val active = generation
+            outputScope.launch {
+                for (voice in channel) playOnWorker(voice, active)
+            }
+        }
+        queue.trySend(Voice(sample, rate, gain.coerceIn(0f, 1f), SystemClock.uptimeMillis(), durationMs))
+    }
+
+    private fun current(voice: Voice, active: Long) =
+        active == generation && SystemClock.uptimeMillis() - voice.requestedAt <= MAX_AUDIO_DELAY_MS
+
+    private fun playOnWorker(voice: Voice, active: Long) {
+        if (!current(voice, active)) return
+        val previous = streams[next]
+        if (previous != 0) {
+            pool.stop(previous)
+            streams[next] = 0
+            if (!current(voice, active)) return
+        }
+        val stream = pool.play(voice.sample, voice.gain, voice.gain, 1, 0, voice.rate)
         if (stream == 0) return
-        if (active.size == 8) pool.stop(active.removeFirst())
-        active.addLast(stream)
+        // A pause, cache replacement or slow Binder transaction can overtake play().
+        if (!current(voice, active)) {
+            pool.stop(stream)
+            return
+        }
+        val slot = next
+        streams[slot] = stream
+        next = (next + 1) % streams.size
+        val duration = voice.durationMs ?: return
+        // A long note can use the sample's own release. Short articulations need
+        // a note-off independent of UI frames. A stolen/reused slot has a new ID.
+        if (duration <= 2200) outputScope.launch {
+            delay((voice.requestedAt + duration - SystemClock.uptimeMillis()).coerceAtLeast(0L))
+            for (gain in floatArrayOf(voice.gain * .56f, voice.gain * .19f)) {
+                if (generation != active || streams[slot] != stream) return@launch
+                pool.setVolume(stream, gain, gain)
+                delay(8)
+            }
+            if (generation == active && streams[slot] == stream) {
+                pool.stop(stream)
+                streams[slot] = 0
+            }
+        }
     }
 
     fun silence() {
-        active.forEach(pool::stop)
-        active.clear()
+        val old = inbox ?: return
+        generation++
+        inbox = null
+        old.cancel()
+        output.execute {
+            for (stream in streams) if (stream != 0) pool.stop(stream)
+            streams.fill(0)
+            next = 0
+        }
     }
 
     fun release() {
         if (released) return
         released = true
-        pool.setOnLoadCompleteListener(null)
         silence()
-        pool.release()
+        output.execute { pool.release() }
     }
 }
 

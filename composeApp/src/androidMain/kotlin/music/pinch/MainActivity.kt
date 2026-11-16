@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Color
 import android.media.AudioManager
 import android.os.Bundle
+import music.pinch.core.Chart
 import android.view.HapticFeedbackConstants
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
@@ -20,6 +21,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge(statusBarStyle = bars, navigationBarStyle = bars)
         volumeControlStream = AudioManager.STREAM_MUSIC
         platform = AndroidPlatform(this)
+        platform.warmLaunchSound()
         setContent {
             App(platform) { enabled, action -> BackHandler(enabled = enabled, onBack = action) }
         }
@@ -32,12 +34,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onPause() {
         platform.foreground = false
+        LaunchPresentation.dismiss()
+        platform.stopLaunchSound()
         platform.active?.interrupt()
         super.onPause()
     }
 
     override fun onDestroy() {
-        platform.active?.close()
+        platform.close()
         super.onDestroy()
     }
 }
@@ -48,13 +52,37 @@ private class AndroidPlatform(private val activity: MainActivity) : Platform {
     var active: AndroidMedia? = null
         private set
 
+    private val recordings = AndroidRecordings(activity)
     private val songImport = AndroidSongImport(activity)
+    private val samples = NoteSampleCache(activity.assets)
+    private val launchSound = AndroidLaunchSound(activity)
+
+    fun close() {
+        stopLaunchSound()
+        active?.close()
+        samples.close()
+    }
+
+    override suspend fun saveImportAudio(id: String, audio: PickedAudio): Boolean {
+        val recording = audio.recording ?: return false
+        recordings.save(id, recording)
+        return true
+    }
+    override fun importAudioTrack(id: String) = recordings.track(id)
+    override fun removeImportAudio(id: String) = recordings.remove(id)
 
     override suspend fun pickAudio() = songImport.pickAudio()
+    override suspend fun pickReferenceRecording(id: String) = songImport.pickReference(id)
+    override fun referenceFile(id: String, suffix: String) = songImport.referenceFile(id, suffix)
+    override fun removeReferenceRecording(id: String) = songImport.removeReference(id)
+    override suspend fun arrangementTrack(chart: Chart, bundledId: String?, previewInstrument: Instrument?) =
+        AndroidAccompaniment.track(activity, chart, bundledId, previewInstrument)
     override fun readValue(key: String): String? = settings.getString(key, null)
     override fun writeValue(key: String, value: String) {
         settings.edit().putString(key, value).apply()
     }
+
+    override fun removeValue(key: String) { settings.edit().remove(key).apply() }
 
     override var volume: Float
         get() = settings.getFloat("volume", 0.8f).coerceIn(0f, 1f)
@@ -64,13 +92,18 @@ private class AndroidPlatform(private val activity: MainActivity) : Platform {
         get() = settings.getBoolean("haptics", false)
         set(value) = settings.edit().putBoolean("haptics", value).apply()
 
+    fun warmLaunchSound() { if (LaunchPresentation.visible && volume > 0f) launchSound.warm() }
+    override fun playLaunchSound(volume: Float) { if (foreground) launchSound.play(volume) }
+    override fun stopLaunchSound() = launchSound.stop()
+
     override fun feedback() {
         activity.window.decorView.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
     }
 
     override fun newMedia(durationMs: Long, instrument: Instrument): GameMedia {
+        stopLaunchSound()
         active?.close()
-        return AndroidMedia(activity, durationMs, instrument, { foreground }) { media ->
+        return AndroidMedia(activity, durationMs, instrument, samples, { foreground }) { media ->
             if (active === media) active = null
         }.also { active = it }
     }

@@ -26,7 +26,8 @@ class RhythmGameTest {
         game.tap(2_000)
         game.pause()
         assertEquals(TapResult.Ignored, game.tap(2_500))
-        assertEquals(0, game.advance(40_000))
+        game.advance(40_000)
+        assertEquals(emptyList(), game.takeMisses())
         assertEquals(0, game.stats.missed)
         game.resume()
         assertIs<TapResult.Hit>(game.tap(2_500))
@@ -52,10 +53,16 @@ class RhythmGameTest {
     @Test
     fun silenceCountsAllNotesOnce() {
         val game = RhythmGame(chart)
-        assertEquals(1, game.advance(2_121))
-        assertEquals(0, game.advance(2_121))
-        assertEquals(1, game.advance(2_621))
-        assertEquals(0, game.advance(4_000))
+        game.advance(2_120)
+        assertEquals(emptyList(), game.takeMisses())
+        game.advance(2_121)
+        assertEquals(listOf(first), game.takeMisses())
+        game.advance(2_121)
+        assertEquals(emptyList(), game.takeMisses())
+        game.advance(2_621)
+        assertEquals(listOf(second), game.takeMisses())
+        game.advance(4_000)
+        assertEquals(emptyList(), game.takeMisses())
         assertEquals(GameStats(2, missed = 2), game.finish())
     }
 
@@ -83,15 +90,163 @@ class RhythmGameTest {
     }
 
     @Test
-    fun nearestThenEarliestThenIdBreaksTies() {
-        val earlier = first.copy(id = "z")
-        val sameTime = first.copy(id = "c")
-        val later = second.copy(atMs = 2_160)
-        val notes = listOf(earlier, sameTime, later)
-        val game = RhythmGame(chart.copy(notes = notes))
-        assertEquals("c", assertIs<TapResult.Hit>(game.tap(2_080)).note.id)
-        assertEquals("b", assertIs<TapResult.Hit>(game.tap(2_090)).note.id)
-        assertEquals("z", assertIs<TapResult.Hit>(game.tap(2_100)).note.id)
+    fun aChordIsOneLandingAndEveryDistinctOnsetScoresIncludingUnaccentedNotes() {
+        val intro = first.copy(id = "intro", atMs = 1_000, playable = false)
+        val otherVoice = first.copy(id = "chord", midi = 60, playable = false)
+        val passive = second.copy(playable = false)
+        val game = RhythmGame(chart.copy(notes = listOf(intro, otherVoice, first, passive)), forgiving = true)
+        assertEquals(3, game.stats.noteCount)
+        assertEquals(intro, assertIs<TapResult.Hit>(game.tap(1_000)).note)
+        assertEquals(first, assertIs<TapResult.Hit>(game.tap(2_000)).note)
+        assertEquals(TapResult.Ignored, game.tap(2_010))
+        assertEquals(passive, assertIs<TapResult.Hit>(game.tap(2_500)).note)
+        assertEquals(GameStats(3, perfect = 3, combo = 3, maxCombo = 3), game.finish())
+    }
+
+    @Test
+    fun aLegacyScoreWithNoWrittenAccentsStillProducesScoreableLandings() {
+        val soft = first.copy(playable = false)
+        val ornament = soft.copy(id = "passing", atMs = first.atMs + 70)
+        val tail = second.copy(playable = false)
+        val fitted = chart.copy(notes = listOf(soft, ornament, tail)).cascadeChart()
+        assertEquals(listOf(soft, tail), fitted.notes)
+        val game = RhythmGame(fitted, forgiving = true)
+        for (note in fitted.notes) assertEquals(note, assertIs<TapResult.Hit>(game.tap(note.atMs)).note)
+        assertEquals(100_000, game.finish().score)
+    }
+
+    @Test
+    fun signedCountdownAcceptsEarlyDownForTimeZeroIncludingItsBoundary() {
+        val zero = first.copy(atMs = 0)
+        val game = RhythmGame(chart.copy(notes = listOf(zero, second)), forgiving = true)
+        assertEquals(TapResult.Ignored, game.tap(-196))
+        assertEquals(TapResult.Hit(zero, Grade.Okay, -195), game.tap(-195))
+        assertEquals(TapResult.Ignored, game.tap(-195))
+        assertEquals(TapResult.Ignored, game.tap(0))
+        assertEquals(0, game.stats.stray)
+        game.restart()
+        assertEquals(TapResult.Hit(zero, Grade.Perfect, -20), game.tap(-20))
+        val leadIn = RhythmGame(chart, forgiving = true)
+        assertEquals(TapResult.Ignored, leadIn.tap(-20))
+    }
+
+    @Test
+    fun playModeUsesInclusiveWiderGradesAndExpiryOnBothSides() {
+        val game = RhythmGame(chart, forgiving = true)
+        for ((distance, grade) in listOf(80L to Grade.Perfect, 81L to Grade.Good, 135L to Grade.Good,
+            136L to Grade.Okay, 195L to Grade.Okay)) {
+            for (error in listOf(-distance, distance)) {
+                game.restart()
+                assertEquals(TapResult.Hit(first, grade, error), game.tap(first.atMs + error))
+            }
+        }
+        game.restart()
+        assertEquals(TapResult.Ignored, game.tap(first.atMs - 196))
+        game.advance(first.atMs + 195)
+        assertEquals(emptyList(), game.takeMisses())
+        game.advance(first.atMs + 196)
+        assertEquals(listOf(first), game.takeMisses())
+        assertEquals(TapResult.Hit(first, Grade.Okay, 193), game.tap(first.atMs + 193))
+        assertEquals(0, game.stats.missed)
+    }
+
+    @Test
+    fun overlapHasOneOwnerAtTheMidpointAndRepeatsCannotSpendTheNextPanel() {
+        val next = second.copy(atMs = 2_100)
+        val game = RhythmGame(chart.copy(notes = listOf(first, next)), forgiving = true)
+        assertEquals(first, assertIs<TapResult.Hit>(game.tap(2_050)).note)
+        assertEquals(TapResult.Ignored, game.tap(2_050))
+        assertEquals(TapResult.Ignored, game.tap(2_051))
+        assertEquals(next, assertIs<TapResult.Hit>(game.tap(2_100)).note)
+        assertEquals(TapResult.Ignored, game.tap(2_190))
+        assertEquals(GameStats(2, perfect = 2, combo = 2, maxCombo = 2), game.finish())
+
+        val swift = next.copy(atMs = 2_012)
+        val fast = RhythmGame(chart.copy(notes = listOf(first, swift)), forgiving = true)
+        assertEquals(first, assertIs<TapResult.Hit>(fast.tap(2_000)).note)
+        assertEquals(swift, assertIs<TapResult.Hit>(fast.tap(2_012)).note)
+    }
+
+    @Test
+    fun sixteenthNoteRollsKeepDistinctPerfectTapsAndIgnoreBouncesAtTheMidpoint() {
+        val onsets = listOf(39_331L, 39_449L, 39_567L, 39_685L)
+        val roll = onsets.mapIndexed { i, time -> first.copy(id = "roll-$i", atMs = time) }
+        val rapidChart = Chart("Дробь", 127, 41_000, roll)
+        for (forgiving in listOf(false, true)) {
+            val game = RhythmGame(rapidChart, forgiving)
+            for ((i, key) in roll.withIndex()) {
+                // Each tap is still Perfect. A late tap followed by an early one can
+                // leave just 28 ms of real time between two deliberate gestures.
+                val time = key.atMs + if (i % 2 == 0) 45 else -45
+                assertEquals(key, assertIs<TapResult.Hit>(game.tap(time)).note)
+                assertEquals(TapResult.Ignored, game.tap(time + 4))
+            }
+            assertEquals(GameStats(4, perfect = 4, combo = 4, maxCombo = 4), game.finish())
+
+            game.restart()
+            assertEquals(roll[0], assertIs<TapResult.Hit>(game.tap(onsets[0] + 59)).note)
+            assertEquals(TapResult.Ignored, game.tap(onsets[0] + 60))
+            assertEquals(roll[1], assertIs<TapResult.Hit>(game.tap(onsets[1])).note)
+            assertEquals(2, game.finish().missed)
+        }
+    }
+
+    @Test
+    fun anOlderLandingExpiresOnlyAfterItsOwnLateWindowAndPreservesTheLaterHitStreak() {
+        val middle = first.copy(id = "mid", atMs = 2_100)
+        val game = RhythmGame(chart.copy(notes = listOf(first, middle, second)), forgiving = true)
+        assertEquals(middle, assertIs<TapResult.Hit>(game.tap(2_100)).note)
+        assertEquals(1, game.stats.combo)
+        game.advance(2_195)
+        assertEquals(emptyList(), game.takeMisses())
+        game.advance(2_196)
+        assertEquals(listOf(first), game.takeMisses())
+        assertEquals(1, game.stats.combo)
+        assertEquals(second, assertIs<TapResult.Hit>(game.tap(2_500)).note)
+        assertEquals(GameStats(3, perfect = 2, missed = 1, combo = 2, maxCombo = 2), game.finish())
+    }
+
+    @Test
+    fun everyMissKeepsItsOwnOnsetAcrossStallsAndTheLateDownReplacesOnlyItsPanel() {
+        val middle = first.copy(id = "middle", atMs = 2_250)
+        val game = RhythmGame(chart.copy(notes = listOf(first, middle, second)), forgiving = true)
+        game.advance(3_500)
+        assertEquals(listOf(2_000L, 2_250L, 2_500L), game.takeMisses().map { it.atMs })
+        assertEquals(3, game.stats.missed)
+        val corrected = assertIs<TapResult.Hit>(game.tap(2_250))
+        assertEquals(middle.atMs, corrected.note.atMs)
+        assertEquals(2, game.stats.missed)
+        assertEquals(emptyList(), game.takeMisses())
+        assertEquals(TapResult.Ignored, game.tap(2_000))
+        assertEquals(0, game.stats.combo)
+        assertEquals(1, game.stats.maxCombo)
+
+        game.restart()
+        game.advance(3_500)
+        game.tap(2_250)
+        assertEquals(listOf(first, second), game.takeMisses())
+        assertEquals(emptyList(), game.takeMisses())
+    }
+
+    @Test
+    fun tapsCanCrossDeadlinesBetweenFramesAndStraySpamCannotBreakTheNextHit() {
+        val game = RhythmGame(chart, forgiving = true)
+        assertEquals(TapResult.Stray, game.tap(2_250))
+        assertEquals(listOf(first), game.takeMisses())
+        assertEquals(TapResult.Ignored, game.tap(2_256))
+        assertEquals(second, assertIs<TapResult.Hit>(game.tap(2_500)).note)
+        assertEquals(GameStats(2, perfect = 1, missed = 1, stray = 1, combo = 1, maxCombo = 1), game.finish())
+    }
+
+    @Test
+    fun pauseAfterAMissLeavesTheFollowingLandingOpen() {
+        val game = RhythmGame(chart, forgiving = true)
+        game.advance(2_245)
+        assertEquals(listOf(first), game.takeMisses())
+        game.pause()
+        game.resume()
+        assertEquals(second, assertIs<TapResult.Hit>(game.tap(2_500)).note)
+        assertEquals(GameStats(2, perfect = 1, missed = 1, combo = 1, maxCombo = 1), game.finish())
     }
 
     @Test

@@ -1,32 +1,31 @@
 package music.pinch.ui
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.selection.selectableGroup
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
@@ -34,221 +33,42 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import music.pinch.Actions
-import music.pinch.Instrument
-import music.pinch.Pace
-import music.pinch.Song
 import music.pinch.Scene
 import music.pinch.ScreenState
-import kotlin.math.roundToInt
+import music.pinch.StageMode
 
-internal val Ink = Color(0xff11101a)
-internal val Surface = Color(0xff1e1c2a)
-internal val Line = Color(0xff373444)
-internal val White = Color(0xfff6f3fd)
-internal val Muted = Color(0xffb8b2ca)
-internal val Lilac = Color(0xffd7b2ff)
-internal val Coral = Color(0xffffa794)
-internal val Mint = Color(0xff91e6c6)
-internal val DarkText = Color(0xff291339)
+internal val Ink = StudioGraphite
+internal val Surface = Color(0xff202627)
+internal val Line = Color(0xff384140)
+internal val White = StudioIvory
+internal val Muted = Color(0xffb6bcb4)
+internal val DarkText = Color(0xff281b17)
 
 private val AppColors = darkColorScheme(
-    primary = Lilac, onPrimary = DarkText, secondary = Mint, background = Ink,
+    primary = StudioCoral, onPrimary = DarkText, secondary = StudioMint, background = Ink,
     onBackground = White, surface = Surface, onSurface = White, onSurfaceVariant = Muted
 )
 
 @Composable
-fun GameScreen(state: ScreenState, actions: Actions) {
+internal fun GameScreen(state: ScreenState, actions: Actions, positionMs: () -> Long, stage: PreparedStage?) {
+    val showingStage = when (state.scene) {
+        Scene.Menu, Scene.Reference, Scene.Error, Scene.Result -> false
+        else -> true
+    }
+    val orbitAtlas = rememberOrbitAtlas(showingStage && state.stageMode == StageMode.Orbit)
     MaterialTheme(colorScheme = AppColors) {
-        Box(
-            Modifier.fillMaxSize().background(Ink).safeDrawingPadding(),
-            contentAlignment = Alignment.TopCenter
-        ) {
-            Box(Modifier.widthIn(max = 560.dp).fillMaxSize()) {
+        Box(Modifier.fillMaxSize().background(Ink), contentAlignment = Alignment.TopCenter) {
+            val content = when (state.scene) {
+                Scene.Menu, Scene.Reference, Scene.Error, Scene.Result -> Modifier.safeDrawingPadding().widthIn(max = 560.dp)
+                else -> Modifier
+            }
+            Box(content.fillMaxSize()) {
                 when (state.scene) {
-                    Scene.Menu -> Menu(state, actions)
+                    Scene.Menu -> StudioMenu(state, actions)
+                    Scene.Reference -> TapReferenceScreen(state, actions, positionMs)
                     Scene.Error -> ErrorScreen(state, actions)
                     Scene.Result -> ResultScreen(state, actions)
-                    else -> PerformanceScreen(state, actions, state.chart)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun Menu(state: ScreenState, actions: Actions) {
-    var settings by rememberSaveable { mutableStateOf(false) }
-    var library by rememberSaveable { mutableStateOf(false) }
-    val chart = state.chart
-    Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Mark()
-            Spacer(Modifier.width(9.dp))
-            Text("В такт", color = White, fontSize = 30.sp, fontWeight = FontWeight.Black,
-                letterSpacing = (-1.4).sp, modifier = Modifier.semantics { heading() })
-            Spacer(Modifier.weight(1f))
-            TextButton(onClick = { settings = true }) { Text("Настройки", color = Muted) }
-        }
-        TrackCard(state)
-        ActionButton("Выбрать мелодию", onClick = { library = true }, primary = false, enabled = !state.importing)
-        Choices("Инструмент", Instrument.entries, state.instrument, { it.label }, actions::selectInstrument)
-        Choices("Темп", Pace.entries, state.pace, { it.label }, actions::selectPace)
-        if (state.importing) {
-            Row(Modifier.fillMaxWidth().heightIn(min = 54.dp), verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                CircularProgressIndicator(Modifier.size(20.dp), color = Lilac, strokeWidth = 2.dp)
-                Text("Разбираем мелодию…", color = White)
-            }
-        } else if (chart != null) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                ActionButton("Играть", onClick = { actions.start(false) }, modifier = Modifier.weight(1.1f), icon = IconShape.Play)
-                ActionButton("Послушать", onClick = { actions.start(true) }, modifier = Modifier.weight(1f), primary = false)
-            }
-            val imported = state.selectedSong.id in state.importedIds
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                TextButton(onClick = actions::importAudio) {
-                    Text(if (imported) "Заменить запись" else "Выбрать свою запись", color = Muted)
-                }
-                if (imported && state.selectedSong.bundled != null) {
-                    TextButton(onClick = actions::restoreBundled) { Text("Вернуть встроенную", color = Lilac) }
-                }
-            }
-        } else {
-            Caption("Выбери запись песни в MP3, M4A или WAV. Игра выделит основные ноты из короткого фрагмента.")
-            ActionButton("Выбрать аудиофайл", actions::importAudio)
-        }
-        state.bestScore?.let {
-            Rule()
-            ResultRow("Рекорд", number(it), accent = Lilac)
-        }
-    }
-    if (library) {
-        SongPicker(state, onDismiss = { library = false }) {
-            library = false
-            actions.selectSong(it.id)
-        }
-    }
-    state.notice?.let { notice ->
-        AlertDialog(onDismissRequest = actions::dismissNotice, text = { Text(notice) },
-            confirmButton = { TextButton(onClick = actions::dismissNotice) { Text("Понятно") } })
-    }
-    if (settings) {
-        AlertDialog(onDismissRequest = { settings = false }, title = { Text("Настройки") },
-            text = {
-                Column {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("Громкость")
-                        Text("${(state.volume * 100).roundToInt()} %", color = Lilac)
-                    }
-                    Slider(value = state.volume, onValueChange = actions::volume,
-                        modifier = Modifier.semantics { contentDescription = "Громкость" })
-                    Spacer(Modifier.height(12.dp))
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Text("Тактильный отклик", modifier = Modifier.weight(1f))
-                        Switch(checked = state.haptics, onCheckedChange = actions::haptics,
-                            modifier = Modifier.semantics { contentDescription = "Тактильный отклик" })
-                    }
-                }
-            },
-            confirmButton = { TextButton(onClick = { settings = false }) { Text("Готово") } }
-        )
-    }
-}
-
-@Composable
-private fun TrackCard(state: ScreenState) {
-    val shape = RoundedCornerShape(20.dp)
-    val song = state.selectedSong
-    Box(Modifier.fillMaxWidth().heightIn(min = 150.dp).clip(shape).background(Surface).border(1.dp, Line, shape)) {
-        val chart = state.chart
-        val source = if (song.id in state.importedIds) "Из записи" else "Тема"
-        val previewChart = chart ?: state.songs.firstOrNull { it.bundled != null }?.bundled
-        if (previewChart != null) {
-            val pose = previewChart.notes[minOf(4, previewChart.notes.lastIndex)].atMs + 220L
-            Box(Modifier.matchParentSize(), contentAlignment = Alignment.CenterEnd) {
-                MarbleStage(previewChart, pose, Modifier.fillMaxWidth(.54f).fillMaxHeight())
-                Spacer(Modifier.matchParentSize().background(Brush.horizontalGradient(0f to Surface,
-                    .43f to Surface, .74f to Surface.copy(alpha = .6f), 1f to Color.Transparent)))
-            }
-        }
-        Column(Modifier.fillMaxWidth(.79f).heightIn(min = 150.dp).padding(16.dp),
-            verticalArrangement = Arrangement.SpaceBetween) {
-            Text(if (chart != null) "$source · ${chart.bpm} BPM · ${clock(chart.durationMs / 1000)}" else "Нужен аудиофайл",
-                fontSize = 12.sp, color = Lilac, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(14.dp))
-            Column {
-                Text(song.title, color = White, fontSize = 29.sp, lineHeight = 32.sp,
-                    letterSpacing = (-.9).sp, fontWeight = FontWeight.Black)
-                if (song.artist.isNotBlank()) Caption(song.artist, White.copy(alpha = .82f))
-            }
-        }
-    }
-}
-
-@Composable
-private fun <T> Choices(label: String, values: List<T>, selected: T, title: (T) -> String, choose: (T) -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Caption(label, White)
-        Row(Modifier.fillMaxWidth().selectableGroup(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-            values.forEach { value ->
-                val active = value == selected
-                val shape = RoundedCornerShape(12.dp)
-                Box(Modifier.weight(1f).clip(shape).background(if (active) Lilac.copy(alpha = .16f) else Surface)
-                    .border(1.dp, if (active) Lilac.copy(alpha = .65f) else Line, shape)
-                    .selectable(active, role = Role.RadioButton, onClick = { choose(value) })
-                    .heightIn(min = 44.dp).padding(horizontal = 4.dp, vertical = 6.dp),
-                    contentAlignment = Alignment.Center) {
-                    Text(title(value), color = if (active) Lilac else Muted, fontWeight = FontWeight.SemiBold,
-                        fontSize = 14.sp, lineHeight = 16.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SongPicker(state: ScreenState, onDismiss: () -> Unit, select: (Song) -> Unit) {
-    Dialog(onDismissRequest = onDismiss) {
-        Column(Modifier.fillMaxWidth().heightIn(max = 550.dp)
-            .clip(RoundedCornerShape(22.dp)).background(Surface).padding(horizontal = 14.dp, vertical = 10.dp)) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text("Мелодии", color = White, fontWeight = FontWeight.Bold, fontSize = 24.sp, modifier = Modifier.weight(1f))
-                TextButton(onClick = onDismiss) { Text("Закрыть", color = Muted) }
-            }
-            Rule()
-            val hasUnavailable = state.songs.any { it.id !in state.availableIds }
-            LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false).selectableGroup()) {
-                items(state.songs, key = { it.id }) { song ->
-                    val active = song.id == state.selectedSong.id
-                    val ready = song.id in state.availableIds
-                    Row(Modifier.fillMaxWidth().selectable(active, role = Role.RadioButton, onClick = { select(song) })
-                        .padding(horizontal = 4.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text(song.title, color = if (active) Lilac else White, fontSize = 16.sp,
-                                lineHeight = 20.sp, fontWeight = FontWeight.Bold)
-                            if (song.artist.isNotBlank()) Text(song.artist, color = Muted, fontSize = 12.sp, maxLines = 1,
-                                overflow = TextOverflow.Ellipsis)
-                        }
-                        val status = when {
-                            !ready -> "Импорт"
-                            song.id in state.importedIds -> "Своя запись"
-                            hasUnavailable -> "В игре"
-                            else -> null
-                        }
-                        if (status != null) {
-                            Spacer(Modifier.width(6.dp))
-                            Text(status, color = if (ready) Mint else Muted, fontSize = 11.sp,
-                                fontWeight = FontWeight.Medium)
-                        }
-                        if (active) {
-                            Spacer(Modifier.width(8.dp))
-                            Canvas(Modifier.size(8.dp)) { drawCircle(Lilac) }
-                        }
-                    }
-                    Rule()
+                    else -> PerformanceScreen(state, actions, positionMs, stage, orbitAtlas.value)
                 }
             }
         }
@@ -265,38 +85,10 @@ internal fun ResultRow(label: String, value: String, accent: Color = White) {
 }
 
 @Composable
-private fun ResultScreen(state: ScreenState, actions: Actions) {
-    val stats = state.stats ?: return
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(22.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Mark()
-        Heading("Результат")
-        Text(state.title, color = Muted, fontSize = 17.sp)
-        Column(Modifier.fillMaxWidth().background(Surface, RoundedCornerShape(20.dp)).padding(20.dp)) {
-            Caption(if (state.newRecord) "Новый рекорд" else "Счёт", if (state.newRecord) Mint else Muted)
-            Text(number(stats.score), color = Lilac, fontSize = 46.sp, lineHeight = 53.sp, fontWeight = FontWeight.Black)
-            val tenths = (stats.accuracy * 1000).roundToInt()
-            Caption("Точность ${tenths / 10},${tenths % 10} %")
-        }
-        Column {
-            ResultRow("Идеально", stats.perfect.toString(), Mint)
-            ResultRow("Хорошо", stats.good.toString())
-            ResultRow("Попал", stats.okay.toString())
-            ResultRow("Пропущено", stats.missed.toString())
-            ResultRow("Лишние нажатия", stats.stray.toString())
-            Rule()
-            ResultRow("Лучшее комбо", "×${stats.maxCombo}", Lilac)
-        }
-        ActionButton("Ещё раз", actions::restart, icon = IconShape.Play)
-        ActionButton("В меню", actions::menu, primary = false)
-    }
-}
-
-@Composable
 private fun ErrorScreen(state: ScreenState, actions: Actions) {
     Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(22.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Mark()
+        BeatMark(Modifier.size(34.dp))
         Heading("Не удалось запустить трек")
         Text(state.error?.takeIf { it.isNotBlank() } ?: "Проверь файлы мелодии и попробуй ещё раз.",
             color = Muted, fontSize = 16.sp)
@@ -320,18 +112,6 @@ internal fun Heading(text: String) {
 internal fun Rule() = Spacer(Modifier.fillMaxWidth().height(1.dp).background(Line))
 
 internal fun number(n: Int): String = n.toString().reversed().chunked(3).joinToString(" ").reversed()
-
-@Composable
-private fun Mark() {
-    Canvas(Modifier.size(width = 34.dp, height = 28.dp)) {
-        listOf(.28f, .65f, 1f, .52f, .3f).forEachIndexed { i, h ->
-            val x = size.width * (.08f + .21f * i)
-            drawLine(if (i == 2) Lilac else Mint,
-                Offset(x, size.height * (.5f - .36f * h)), Offset(x, size.height * (.5f + .36f * h)),
-                strokeWidth = 3.dp.toPx(), cap = StrokeCap.Round)
-        }
-    }
-}
 
 internal enum class IconShape { Play, Pause }
 
@@ -358,12 +138,30 @@ internal fun Symbol(icon: IconShape, tint: Color) {
 @Composable
 internal fun ActionButton(
     label: String, onClick: () -> Unit, modifier: Modifier = Modifier,
-    primary: Boolean = true, icon: IconShape? = null, enabled: Boolean = true
+    primary: Boolean = true, icon: IconShape? = null, enabled: Boolean = true, accent: Color = StudioCoral,
 ) {
     val shape = RoundedCornerShape(14.dp)
     val fg = if (primary) DarkText else White
-    Row(modifier.fillMaxWidth().clip(shape).background(if (primary) Lilac else Surface)
-        .border(1.dp, if (primary) Lilac else Line, shape).clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+    var pressed by remember { mutableStateOf(false) }
+    val scale = animateFloatAsState(if (pressed && enabled) .975f else 1f, tween(95), label = "Нажатие")
+    Row(modifier.fillMaxWidth().graphicsLayer {
+            scaleX = scale.value
+            scaleY = scale.value
+            alpha = if (enabled) 1f else .50f
+        }
+        .clip(shape).background(if (primary) accent else Surface)
+        .border(1.dp, if (primary) accent else Line, shape)
+        // Scrollable parents delay the default ripple. Show contact on down while
+        // letting clickable own activation, keyboard semantics and scroll cancellation.
+        .pointerInput(enabled) {
+            if (!enabled) return@pointerInput
+            awaitEachGesture {
+                awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                pressed = true
+                try { waitForUpOrCancellation() } finally { pressed = false }
+            }
+        }
+        .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
         .heightIn(min = 50.dp).padding(vertical = 10.dp, horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
         if (icon != null) {

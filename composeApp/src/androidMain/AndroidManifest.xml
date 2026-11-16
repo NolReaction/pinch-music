@@ -4,7 +4,7 @@
         android:allowBackup="false"
         android:icon="@drawable/ic_launcher"
         android:label="В такт"
-        android:theme="@android:style/Theme.Material.NoActionBar">
+        android:theme="@style/BeatTheme">
         <activity
             android:name="music.pinch.MainActivity"
             android:exported="true"

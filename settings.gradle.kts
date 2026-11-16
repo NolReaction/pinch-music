@@ -26,4 +26,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "PinchMusic"
-include(":composeApp")
+include(":composeApp", ":arranger")
