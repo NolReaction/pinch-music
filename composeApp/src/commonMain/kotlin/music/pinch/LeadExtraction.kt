@@ -3,13 +3,13 @@ package music.pinch
 import kotlin.math.*
 import music.pinch.core.Chart
 import music.pinch.core.Note
+import music.pinch.core.markDetectedLandings
 
 private const val analysisRate = 11025
 private const val frameSize = 1024
 private const val hopSize = 256
 private const val minimumPitch = 48
 private const val maximumPitch = 91
-private const val minimumTapGap = 580L
 private data class PitchFrame(val midi: Int, val strength: Double, val rms: Double)
 private data class Attack(val timeMs: Long, val midi: Int, val lengthMs: Long, val strength: Double)
 
@@ -46,31 +46,19 @@ internal fun extractLeadChart(samples: FloatArray, sampleRate: Int, title: Strin
         "Не удалось выделить мелодию. Выбери фрагмент, где хорошо слышен голос или ведущий инструмент."
     }
 
-    // Thin dense passages for one-finger play while retaining the source time of each chosen attack.
-    val chosen = mutableListOf(attacks.first())
-    var index = 1
-    while (index < attacks.size) {
-        val threshold = chosen.last().timeMs + minimumTapGap
-        while (index < attacks.size && attacks[index].timeMs < threshold) index++
-        if (index >= attacks.size) break
-        var best = attacks[index++]
-        val horizon = best.timeMs + 130
-        while (index < attacks.size && attacks[index].timeMs < horizon) {
-            val candidate = attacks[index++]
-            if (candidate.lengthMs.coerceAtMost(600) * candidate.strength >
-                best.lengthMs.coerceAtMost(600) * best.strength * 1.25) best = candidate
-        }
-        chosen += best
+    val bpm = estimatePulse(attacks)
+    val beat = 60_000.0 / bpm
+    val notes = attacks.mapIndexed { index, attack ->
+        val time = 2200L + attack.timeMs - attacks.first().timeMs
+        val gain = sqrt(attack.strength.coerceIn(0.0, 1.0))
+        // A briefly changing pitch at a syllable boundary is less reliable than a sustained tone.
+        val clear = attack.lengthMs >= beat * .25 || (attack.lengthMs >= beat * .16 && gain >= .75)
+        Note("local-${index + 1}", time, attack.midi, attack.lengthMs, (.62 + .34 * gain).toFloat(), clear)
     }
-    require(chosen.size >= 3) { "Слишком мало различимых ударов. Попробуй более длинный фрагмент." }
-    val onset = chosen.map { 2200L + (it.timeMs - chosen.first().timeMs) }
-    val notes = chosen.mapIndexed { i, attack ->
-        val next = onset.getOrNull(i + 1) ?: (onset[i] + 1000)
-        val duration = attack.lengthMs.coerceIn(100, next - onset[i])
-        val gain = (0.68 + 0.25 * sqrt(attack.strength.coerceIn(0.0, 1.0))).toFloat()
-        Note("local-${i + 1}", onset[i], attack.midi, duration, gain)
-    }
-    return Chart(title, estimatePulse(attacks), notes.last().atMs + notes.last().durationMs + 1200, notes)
+    val duration = notes.last().let { it.atMs + it.durationMs + 1200 }
+    val chart = Chart(title, bpm, duration, notes).markDetectedLandings()
+    require(chart.notes.count { it.playable } >= 3) { "Слишком мало различимых ударов. Попробуй более длинный фрагмент." }
+    return chart
 }
 
 /** Use source onsets, before thinning for one finger. Pitched onsets alone cannot disambiguate

@@ -6,6 +6,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import music.pinch.ui.AppleCascadeSurface
 import music.pinch.ui.LocalCascadeFactory
 import androidx.compose.ui.window.ComposeUIViewController
+import music.pinch.core.Chart
 import platform.Foundation.NSProcessInfo
 import platform.Foundation.NSUserDefaults
 import platform.UIKit.UISelectionFeedbackGenerator
@@ -23,7 +24,7 @@ interface AppleInterruptListener {
 
 interface AppleMediaSession {
     fun includeSample(midi: Int, root: Int)
-    fun prepare(backingAsset: String?)
+    fun prepare(backingAsset: String?, arrangementPath: String?)
     fun setBackingVolume(gain: Float)
     val ready: Boolean
     val backingPositionMs: Long
@@ -32,7 +33,7 @@ interface AppleMediaSession {
     val failure: String?
     fun activate(): Boolean
     fun silence()
-    fun note(midi: Int, gain: Float)
+    fun note(midi: Int, gain: Float, durationMs: Int)
     fun strike(gain: Float)
     fun close()
 }
@@ -50,6 +51,8 @@ private class IosPlatform(private val factory: AppleMediaFactoryProtocol) : Plat
     private val selectionFeedback = UISelectionFeedbackGenerator()
 
     override suspend fun pickAudio() = pickLocalSong(factory::pickAudio)
+    override suspend fun arrangementTrack(chart: Chart, bundledId: String?, previewInstrument: Instrument?) =
+        appleArrangementTrack(chart, bundledId, previewInstrument)
     override fun readValue(key: String): String? = defaults.stringForKey(key)
     override fun writeValue(key: String, value: String) = defaults.setObject(value, forKey = key)
 
@@ -72,6 +75,8 @@ private class IosMedia(factory: AppleMediaFactoryProtocol, private val durationM
     private val backingClock = BackingClock(durationMs)
     private val session = factory.createMedia(instrument.name.lowercase(), this)
     private var backingAsset: String? = null
+    private var arrangementPath: String? = null
+    private val hasTrack get() = backingAsset != null || arrangementPath != null
     private var preparationRequested = false
     private var closed = false
     override var onInterrupted: (() -> Unit)? = null
@@ -84,16 +89,17 @@ private class IosMedia(factory: AppleMediaFactoryProtocol, private val durationM
         onInterrupted?.invoke()
     }
 
-    override fun prepare(pitches: Set<Int>, backingAsset: String?) {
+    override fun prepare(pitches: Set<Int>, backingAsset: String?, arrangement: ArrangementTrack?) {
         if (preparationRequested || closed) return
         preparationRequested = true
         for (pitch in pitches) session.includeSample(pitch, instrumentRoot(pitch))
         this.backingAsset = backingAsset
-        session.prepare(backingAsset)
+        this.arrangementPath = arrangement?.path
+        session.prepare(backingAsset, arrangementPath)
     }
 
     override fun prepareResume() {
-        if (preparationRequested && !closed) session.prepare(backingAsset)
+        if (preparationRequested && !closed) session.prepare(backingAsset, arrangementPath)
     }
 
     override fun setBackingVolume(volume: Float) {
@@ -104,7 +110,7 @@ private class IosMedia(factory: AppleMediaFactoryProtocol, private val durationM
         val now = uptimeMs()
         val failure = session.failure
         val ready = !closed && session.ready
-        if (backingAsset == null) return clock.snapshot(now, ready, failure)
+        if (!hasTrack) return clock.snapshot(now, ready, failure)
         val ended = session.backingEnded
         if (ended || !ready || failure != null) {
             val position = if (ended) durationMs else session.backingPositionMs.coerceIn(0L, durationMs)
@@ -120,7 +126,7 @@ private class IosMedia(factory: AppleMediaFactoryProtocol, private val durationM
     override fun play() {
         if (closed || !session.ready) return
         backingClock.reset()
-        if (session.activate() && backingAsset == null) clock.play(uptimeMs())
+        if (session.activate() && !hasTrack) clock.play(uptimeMs())
     }
 
     override fun pause() {
@@ -129,8 +135,8 @@ private class IosMedia(factory: AppleMediaFactoryProtocol, private val durationM
         session.silence()
     }
 
-    override fun note(midi: Int, gain: Float) {
-        if (!closed) session.note(midi, gain)
+    override fun note(midi: Int, gain: Float, durationMs: Int) {
+        if (!closed) session.note(midi, gain, durationMs)
     }
 
     override fun strike(gain: Float) {

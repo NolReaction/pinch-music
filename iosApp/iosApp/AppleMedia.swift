@@ -72,12 +72,12 @@ private final class NativeMedia: NSObject, @preconcurrency AppleMediaSession {
 
     func includeSample(midi: Int32, root: Int32) { roots[midi] = root }
 
-    func prepare(backingAsset: String?) {
+    func prepare(backingAsset: String?, arrangementPath: String? = nil) {
         guard !closed, !backingEnded, graph == nil, preparation == nil, failure == nil else { return }
         guard foreground(), mediaServicesAvailable else { interrupt(); return }
-        preparation = Task { [weak self, instrument, roots, backingAsset, savedFrame] in
+        preparation = Task { [weak self, instrument, roots, backingAsset, arrangementPath, savedFrame] in
             do {
-                let graph = try await GameAudioLoader.shared.load(instrument, roots: roots, backingAsset: backingAsset, from: savedFrame)
+                let graph = try await GameAudioLoader.shared.load(instrument, roots: roots, backingAsset: backingAsset, arrangementPath: arrangementPath, from: savedFrame)
                 guard !Task.isCancelled, let self else { return }
                 self.preparation = nil
                 guard self.foreground(), self.mediaServicesAvailable else { self.interrupt(); return }
@@ -159,8 +159,8 @@ private final class NativeMedia: NSObject, @preconcurrency AppleMediaSession {
         }
     }
 
-    func note(midi: Int32, gain: Float) {
-        if wantsPlayback && foreground() { graph?.play(midi, gain: gain) }
+    func note(midi: Int32, gain: Float, durationMs: Int32) {
+        if wantsPlayback && foreground() { graph?.play(midi, gain: gain, durationMs: durationMs) }
     }
     func strike(gain: Float) {
         if wantsPlayback && foreground() { graph?.strike(gain: gain) }
@@ -266,13 +266,18 @@ private actor GameAudioLoader {
 
     private init() { samples.totalCostLimit = 24 * 1024 * 1024 }
 
-    func load(_ instrument: String, roots: [Int32: Int32], backingAsset: String?,
+    func load(_ instrument: String, roots: [Int32: Int32], backingAsset: String?, arrangementPath: String?,
               from frame: AVAudioFramePosition) throws -> GameAudioGraph {
         try Task.checkCancellation()
         var track: AVAudioFile?
-        if let asset = backingAsset {
+        var sourceURL: URL?
+        if let path = arrangementPath {
+            sourceURL = URL(fileURLWithPath: path)
+        } else if let asset = backingAsset {
             guard let folder = Bundle.main.resourceURL else { throw AudioFailure("Отсутствуют ресурсы игры.") }
-            let url = folder.appendingPathComponent("media").appendingPathComponent(asset)
+            sourceURL = folder.appendingPathComponent("media").appendingPathComponent(asset)
+        }
+        if let url = sourceURL {
             let file = try AVAudioFile(forReading: url, commonFormat: .pcmFormatFloat32, interleaved: false)
             guard file.length > 0, file.length <= Int64(UInt32.max) else {
                 throw AudioFailure("Недопустимая длина аккомпанемента.")
@@ -343,6 +348,9 @@ private final class GameAudioGraph: @unchecked Sendable {
     private var presentationDelay = 0.0
     private let buffers: [Int32: AVAudioPCMBuffer]
     private let contact: AVAudioPCMBuffer?
+    // The immutable gated buffers may still be in the render pipeline after a
+    // voice is stolen. Let AVAudioEngine retain each scheduled buffer until done.
+    private let gated = NSCache<NSNumber, AVAudioPCMBuffer>()
     private var nodes = [AVAudioPlayerNode]()
     private var next = 0
 
@@ -378,6 +386,7 @@ private final class GameAudioGraph: @unchecked Sendable {
         }
         self.buffers = buffers
         self.contact = contact
+        gated.totalCostLimit = 6 * 1024 * 1024
         if let track {
             engine.attach(backingNode)
             engine.connect(backingNode, to: engine.mainMixerNode, format: track.processingFormat)
@@ -441,8 +450,33 @@ private final class GameAudioGraph: @unchecked Sendable {
         }
     }
 
-    func play(_ pitch: Int32, gain: Float) {
-        if let buffer = buffers[pitch] { schedule(buffer, gain: gain) }
+    func play(_ pitch: Int32, gain: Float, durationMs: Int32) {
+        guard let sample = buffers[pitch] else { return }
+        let rate = sample.format.sampleRate
+        let hold = max(1, Int(Double(durationMs) * rate / 1000))
+        let release = max(2, Int(rate * 0.016))
+        let count = min(Int(sample.frameLength), hold + release)
+        if count == Int(sample.frameLength) {
+            schedule(sample, gain: gain)
+            return
+        }
+        let key = NSNumber(value: Int64(pitch) << 32 | Int64(count))
+        if let cached = gated.object(forKey: key) {
+            schedule(cached, gain: gain)
+            return
+        }
+        guard let clipped = AVAudioPCMBuffer(pcmFormat: sample.format, frameCapacity: AVAudioFrameCount(count)),
+              let source = sample.floatChannelData, let dest = clipped.floatChannelData else { return }
+        let channels = Int(sample.format.channelCount)
+        for channel in 0..<channels {
+            dest[channel].update(from: source[channel], count: count)
+            for i in hold..<count {
+                dest[channel][i] *= Float(count - 1 - i) / Float(release - 1)
+            }
+        }
+        clipped.frameLength = AVAudioFrameCount(count)
+        gated.setObject(clipped, forKey: key, cost: count * channels * MemoryLayout<Float>.stride)
+        schedule(clipped, gain: gain)
     }
     func strike(gain: Float) {
         if let buffer = contact { schedule(buffer, gain: gain) }

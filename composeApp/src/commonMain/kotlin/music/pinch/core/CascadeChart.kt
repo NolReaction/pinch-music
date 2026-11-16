@@ -5,8 +5,23 @@ import kotlin.math.roundToLong
 
 /** Select landings on real onsets. The full score is retained separately for the soundtrack. */
 internal fun Chart.cascadeChart(): Chart {
+    if (authoredLandings) {
+        if (notes.all { it.playable }) return this
+        return copy(notes = notes.filter { it.playable })
+    }
     val beatMs = 60_000.0 / bpm
-    val minFlightMs = (beatMs * .90).roundToLong().coerceIn(400L, 580L)
+    return fitLandings(beatMs, (beatMs * .90).roundToLong().coerceIn(400L, 580L))
+}
+
+/** Give clear eighth-note answers room in a new recording while keeping every detected note for listening. */
+internal fun Chart.markDetectedLandings(): Chart {
+    val beatMs = 60_000.0 / bpm
+    val gap = (beatMs * .44).roundToLong().coerceIn(205L, 350L)
+    val keys = fitLandings(beatMs, gap).notes.mapTo(HashSet()) { it.id }
+    return copy(notes = notes.map { it.copy(playable = it.id in keys) }, authoredLandings = true)
+}
+
+private fun Chart.fitLandings(beatMs: Double, minFlightMs: Long): Chart {
     if ((1 until notes.size).all { notes[it].atMs - notes[it - 1].atMs >= minFlightMs }) return this
 
     // A chord has one landing. Keep its written target, then the strongest sustained voice.

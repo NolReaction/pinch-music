@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Color
 import android.media.AudioManager
 import android.os.Bundle
+import music.pinch.core.Chart
 import android.view.HapticFeedbackConstants
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
@@ -57,6 +58,8 @@ private class AndroidPlatform(private val activity: MainActivity) : Platform {
     }
 
     override suspend fun pickAudio() = songImport.pickAudio()
+    override suspend fun arrangementTrack(chart: Chart, bundledId: String?, previewInstrument: Instrument?) =
+        AndroidAccompaniment.track(activity, chart, bundledId, previewInstrument)
     override fun readValue(key: String): String? = settings.getString(key, null)
     override fun writeValue(key: String, value: String) {
         settings.edit().putString(key, value).apply()

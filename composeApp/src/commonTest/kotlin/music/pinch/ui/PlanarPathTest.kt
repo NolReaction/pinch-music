@@ -208,6 +208,30 @@ class PlanarPathTest {
         }
     }
 
+    @Test fun quickMelodicAnswersRecoilBetweenFacingBanksWhileAScaleCanContinue() {
+        val pitches = listOf(62, 69, 62, 69, 62, 69, 62, 69, 67, 65, 64, 62)
+        val times = listOf(1600L, 1836L, 2072L, 2308L, 2544L, 2780L, 3016L, 3252L,
+            4052L, 4382L, 4712L, 5042L)
+        val notes = times.mapIndexed { i, t -> Note(i.toString(), t, pitches[i], 170, .85f) }
+        val chart = Chart("Call and answer", 126, 5600, notes, authoredLandings = true)
+        val path = PlanarPath(chart)
+        assertEquals(times, path.attacks.map { it.atMs })
+        for (i in 2..6) {
+            val panel = path.panels[i]
+            val returnTo = path.attacks[i - 1].x
+            assertTrue(panel.left != path.panels[i - 1].left)
+            assertTrue(abs(panel.slope) > 1.2f, "turning face too flat at $i")
+            assertTrue(abs(path.attacks[i + 1].x - returnTo) < .20f, "left the facing bank at $i")
+            val t = times[i]
+            val contact = path.frame(t).marble
+            val inX = contact.x - path.frame(t - 3).marble.x
+            val outX = path.frame(t + 3).marble.x - contact.x
+            assertTrue(inX * outX < 0, "lateral velocity must reverse at contact")
+        }
+        assertTrue((8..10).zipWithNext().any { (a, b) -> path.panels[a].left == path.panels[b].left })
+        assertCourseClear(chart, chart.title)
+    }
+
     @Test fun gravityDrivesTheFlightsAndInteriorLandingsDissipateEnergy() {
         for (song in songLibrary) {
             val path = PlanarPath(requireNotNull(song.bundled))

@@ -70,7 +70,7 @@ static GLuint compile(GLenum kind, const char* source) {
 }
 struct Program {
     GLuint id = 0;
-    GLint lens = -1, offset = -1, tilt = -1, key = -1, ball = -1, spin = -1, paint = -1, accent = -1, phase = -1, decals = -1;
+    GLint lens = -1, offset = -1, tilt = -1, key = -1, ball = -1, spin = -1, paint = -1, accent = -1, phase = -1, decals = -1, shadowAxes = -1;
     ~Program() {
         if (id)
             glDeleteProgram(id);
@@ -111,6 +111,7 @@ struct Program {
         accent = glGetUniformLocation(id, "uAccent");
         phase = glGetUniformLocation(id, "uPhase");
         decals = glGetUniformLocation(id, "uDecals[0]");
+        shadowAxes = glGetUniformLocation(id, "uShadowAxes[0]");
         return true;
     }
 };
@@ -140,35 +141,30 @@ struct Stage {
         if (!relief) glGenTextures(1, &relief);
         glBindTexture(GL_TEXTURE_2D, relief);
         if (reliefMotif == motif) return;
-        // Bake the joints, recesses and bevels once for this song. One filtered
-        // luminance sample per pixel is enough to light the patterned wall.
+        // Seamless mineral grain and a finer directional tooth. Both the wall
+        // and the brushed faces use this small swatch at their own physical scales.
         constexpr int side = 128;
         std::vector<uint8_t> texels(side * side);
-        auto smooth = [](float a, float b, float v) {
-            const float t = std::clamp((v - a) / (b - a), 0.f, 1.f);
-            return t * t * (3.f - 2.f * t);
+        const unsigned seed = (static_cast<unsigned>(motif) + 1u) * 1447u;
+        auto noise = [seed](int x, int y) {
+            unsigned n = (static_cast<unsigned>(x) * 1973u + static_cast<unsigned>(y) * 9277u + seed);
+            n = (n ^ (n >> 11u)) * 0x7feb352du;
+            n = (n ^ (n >> 15u)) * 0x846ca68bu;
+            return static_cast<float>((n ^ (n >> 16u)) & 255u) / 255.f;
         };
-        for (int j = 0; j < side; ++j) {
-            const float y = (j + .5f) * 2.f / side - 1.f;
-            for (int i = 0; i < side; ++i) {
-                const float x = (i + .5f) * 2.f / side - 1.f;
-                const float ax = std::abs(x), ay = std::abs(y);
-                float d;
-                switch (motif) {
-                case 0: d = std::abs(std::abs(x + y) - .72f) - .08f; break; // diagonal vents
-                case 1: d = std::abs(ax - .66f) - .115f; break;             // vertical flutes
-                case 2: d = std::abs(ax + .65f * y - .53f) - .10f; break;    // chevrons
-                case 3: d = std::max(ay - .22f, ax - .76f); break;           // shelves
-                case 4: d = std::abs(std::hypot(x, y) - .64f) - .12f; break; // round coffers
-                case 5: d = std::abs(y + .48f * x) - .17f; break;            // tilted louvers
-                case 6: d = std::hypot(.85f * x, 1.4f * y) - .51f; break;    // oval cavities
-                default: d = std::abs(std::max(ax, ay) - .70f) - .095f; break;
-                }
-                const float face = smooth(-.02f, .022f, d);
-                const float bevel = 1.f - smooth(.01f, .055f, std::abs(d - .025f));
-                const float seam = 1.f - smooth(.007f, .032f, 1.f - std::max(ax, ay));
-                const float light = .65f * (1.f - face) + (1.f - .19f * seam) * face + .08f * bevel;
-                texels[j * side + i] = static_cast<uint8_t>(255.f * std::min(1.f, .90f * light));
+        auto cloud = [&](int x, int y, int step) {
+            int n = side / step, a = x / step, b = y / step;
+            float u = (x % step) / static_cast<float>(step), v = (y % step) / static_cast<float>(step);
+            u *= u * (3.f - 2.f * u);
+            v *= v * (3.f - 2.f * v);
+            float low = (1.f - u) * noise(a, b) + u * noise((a + 1) % n, b);
+            float high = (1.f - u) * noise(a, (b + 1) % n) + u * noise((a + 1) % n, (b + 1) % n);
+            return (1.f - v) * low + v * high;
+        };
+        for (int y = 0; y < side; ++y) {
+            for (int x = 0; x < side; ++x) {
+                float grain = .46f * noise(x, y) + .32f * cloud(x, y, 8) + .22f * cloud(x, y, 32);
+                texels[y * side + x] = static_cast<uint8_t>(255.f * grain);
             }
         }
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -184,7 +180,7 @@ struct Stage {
         constexpr int columns = 16, rows = 24, segments = 16, rings = 5;
         for (int y = 0; y <= rows; ++y)
             for (int x = 0; x <= columns; ++x)
-                w.point({2.f * x / columns - 1, 2.f * y / rows - 1, 0}, {0, 0, 1}, Enamel);
+                w.point({2.f * x / columns - 1, 2.f * y / rows - 1, 0}, {0, 0, 1}, Face);
         for (int y = 0; y < rows; ++y)
             for (int x = 0; x < columns; ++x) {
                 int a = y * (columns + 1) + x;
@@ -195,7 +191,7 @@ struct Stage {
             int center = w.point({0, 0, 0}, {1, 0, 0}, Skirt, slot);
             for (int j = 1; j <= rings; ++j) {
                 float r = static_cast<float>(j) / rings;
-                float t = std::max(0.f, (r - .14f) / .86f);
+                float t = std::max(0.f, (r - .40f) / .60f);
                 float opacity = 1 - t * t * (3 - 2 * t);
                 for (int k = 0; k < segments; ++k) {
                     float a = 2.f * Pi * k / segments;
@@ -301,32 +297,62 @@ struct Stage {
         glDrawElements(GL_TRIANGLES, backdropIndices, GL_UNSIGNED_SHORT, nullptr);
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        float decals[16 * 4];
+        float decals[16 * 4], axes[16 * 4];
         int used = 0;
         auto flush = [&]() {
             if (!used)
                 return;
             glUniform4fv(wall.decals, used, decals);
+            glUniform4fv(wall.shadowAxes, used, axes);
             glDrawElements(GL_TRIANGLES, used * shadowIndices, GL_UNSIGNED_SHORT,
                            reinterpret_cast<void*>(backdropIndices * sizeof(uint16_t)));
             used = 0;
         };
-        auto shadow = [&](float x, float y, float ballType, float slope) {
-            decals[4 * used] = x;
-            decals[4 * used + 1] = y;
-            decals[4 * used + 2] = ballType;
-            decals[4 * used + 3] = slope;
-            if (++used == 16)
-                flush();
+        // Project onto the wall along the same studio light that shades the metal.
+        constexpr float castX = -.92f, castY = .34f;
+        auto shadow = [&](float x, float y, float ux, float uy, float vx, float vy, float square, float alpha) {
+            int n = 4 * used;
+            decals[n] = x; decals[n + 1] = y; decals[n + 2] = square; decals[n + 3] = alpha;
+            axes[n] = ux; axes[n + 1] = uy; axes[n + 2] = vx; axes[n + 3] = vy;
+            if (++used == 16) flush();
+        };
+        auto lineShadow = [&](V a, V b, float penumbra, float alpha) {
+            const V d = b - a;
+            const float length = std::hypot(d.x, d.y);
+            if (length <= .001f) return;
+            float extend = .5f + .50f * penumbra / length;
+            shadow((a.x + b.x) * .5f, (a.y + b.y) * .5f, d.x * extend, d.y * extend,
+                   -d.y * penumbra / length, d.x * penumbra / length, 2.f, alpha);
         };
         for (auto it = lo; it != hi; ++it) {
-            if (it->style < 0.f)
-                continue;
-            float center = keyCenterX(it->route.size() >= 2, it->side);
-            shadow(it->x - cameraX + center * it->tiltCos,
-                   it->y - cameraY + center * it->tiltSin, 0, it->slope);
+            const V origin{it->x - cameraX, it->y - cameraY, 0};
+            const bool guided = it->route.size() >= 2;
+            if (it->style >= 0.f) {
+                const float w = guided ? .23f : .35f, center = keyCenterX(guided, it->side);
+                const float cs = it->tiltCos, sn = it->tiltSin, depth = it->style > .5f ? .36f : .215f;
+                const float back = guided ? -.585f : -.66f, zLength = .25f - back;
+                const float lift = (.25f + back) * .5f - WallZ;
+                const float mountX = origin.x + center * cs - (depth + .092f) * sn;
+                const float mountY = origin.y + center * sn + (depth + .092f) * cs;
+                lineShadow({mountX,mountY,0}, {mountX + castX * .99f,mountY + castY * .99f,0}, .075f, .22f);
+                const float turn = castY * cs - castX * sn >= 0.f ? 1.f : -1.f;
+                shadow(origin.x + center * cs - depth * .5f * sn + castX * lift,
+                       origin.y + center * sn + depth * .5f * cs + castY * lift,
+                       cs * (w + .10f), sn * (w + .10f), castX * zLength * .5f - turn * sn * (depth * .5f + .12f),
+                       castY * zLength * .5f + turn * cs * (depth * .5f + .12f), .68f, .27f);
+            }
+            if (guided) {
+                V projected = origin + V{castX * -WallZ, castY * -WallZ + .21f, 0};
+                size_t start = 0;
+                while (start + 1 < it->route.size()) {
+                    size_t end = std::min(start + 6, it->route.size() - 1);
+                    lineShadow(projected + it->route[start], projected + it->route[end], .075f, .15f);
+                    start = end;
+                }
+            }
         }
-        shadow(ball.x, ball.y, 1, 0);
+        shadow(ball.x + castX * -WallZ, ball.y + castY * -WallZ,
+               .35f, -.04f, -.07f, .34f, 0.f, .23f);
         flush();
         glDisable(GL_BLEND);
         glEnable(GL_DEPTH_TEST);
@@ -347,7 +373,7 @@ struct Stage {
             const V mid = (p.routeMax + p.routeMin) * .5f;
             const V half = (p.routeMax - p.routeMin) * .5f;
             V center{p.x - cameraX + mid.x, p.y - cameraY + .22f + mid.y, -.32f};
-            V halfSize{.76f + half.x, .64f + half.y, 1.06f};
+            V halfSize{.83f + half.x, .91f + half.y, 1.06f};
             bool clipped = false;
             for (float sign : {-1.f, 1.f}) {
                 const V plane =

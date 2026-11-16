@@ -64,6 +64,3 @@ internal fun Playback.visualPosition(previous: Playback?, drawnMs: Long, duratio
     val correction = maxOf(1L, elapsed / 4)
     return (predicted + error.coerceIn(-correction, correction)).coerceIn(drawnMs, durationMs)
 }
-
-// Sparse octave samples cover MIDI 0…127 with no more than seven semitones of resampling.
-internal fun instrumentRoot(midi: Int): Int = (((midi + 6) / 12) * 12).coerceIn(0, 120)

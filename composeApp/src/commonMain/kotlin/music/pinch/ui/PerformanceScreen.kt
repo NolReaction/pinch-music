@@ -18,6 +18,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import music.pinch.resources.Res
+import music.pinch.resources.studio_marble
+import org.jetbrains.compose.resources.imageResource
 import androidx.compose.ui.input.pointer.changedToDown
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.Role
@@ -39,7 +43,9 @@ private val HeaderShade = Brush.verticalGradient(listOf(Color(0xe3141220), Color
 private val FooterShade = Brush.verticalGradient(listOf(Color(0x00141220), Color(0xdf141220)))
 
 @Composable
-internal fun PerformanceScreen(state: ScreenState, actions: Actions, positionMs: () -> Long, stage: PreparedStage?) {
+internal fun PerformanceScreen(state: ScreenState, actions: Actions, positionMs: () -> Long, stage: PreparedStage?,
+    orbitAtlas: Result<ImageBitmap>?,
+) {
     Box(Modifier.fillMaxSize()) {
         val countingIn = state.scene == Scene.CountIn
         val live = state.scene == Scene.Playing || countingIn
@@ -50,8 +56,11 @@ internal fun PerformanceScreen(state: ScreenState, actions: Actions, positionMs:
                 val attempt = state.attempt
                 val presented = remember(actions, attempt) { { actions.stagePresented(attempt) } }
                 when (stage) {
-                    is PreparedStage.Orbit -> MarbleStage(stage.path, positionMs, Modifier.matchParentSize(),
-                        feedback = state.panelFeedback, theme = theme, onPresented = presented)
+                    is PreparedStage.Orbit -> if (orbitAtlas != null) {
+                        val atlas = orbitAtlas.getOrNull() ?: imageResource(Res.drawable.studio_marble)
+                        MarbleStage(stage.meshes, positionMs, Modifier.matchParentSize(), feedback = state.panelFeedback,
+                            theme = theme, atlas = atlas, onPresented = presented)
+                    }
                     is PreparedStage.Cascade -> PlanarStage(stage, positionMs, Modifier.matchParentSize(),
                         animate = live, feedback = state.panelFeedback, theme = theme, onPresented = presented)
                 }
@@ -94,7 +103,7 @@ internal fun PerformanceScreen(state: ScreenState, actions: Actions, positionMs:
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         CircularProgressIndicator(Modifier.size(26.dp), color = Lilac, strokeWidth = 2.dp)
-                        Caption("Готовим мелодию", White)
+                        Caption(if (state.renderingAudio) "Готовим аудиодорожку" else "Готовим мелодию", White)
                         TextButton(onClick = actions::menu) { Text("В меню", color = White) }
                     }
                     else -> Unit
@@ -137,7 +146,7 @@ private fun SessionHeader(state: ScreenState, actions: Actions, positionMs: () -
                     val section by remember(positionMs) { derivedStateOf { stereoLoveSectionAt(positionMs()) } }
                     Text(section, color = accent, fontSize = 12.sp, lineHeight = 15.sp, maxLines = 1)
                 } else if (state.recordedAsset != null && state.backingAsset == null) {
-                    Text("${state.instrument.label} · соло", color = accent, fontSize = 12.sp,
+                    Text("${state.instrument.label} · мелодия", color = accent, fontSize = 12.sp,
                         lineHeight = 15.sp, maxLines = 1)
                 }
             }

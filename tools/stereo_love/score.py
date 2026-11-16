@@ -98,7 +98,6 @@ class Attack:
     length: float
     voice: str
     gain: float
-    panel: bool = False
 
 
 def section_at(bar):
@@ -141,26 +140,10 @@ def lead_attacks():
         section = section_at(bar)
         local = bar - section.bar
         phrase, voice = phrase_at(section, local)
-        # A two-beat phrase, then a rolling answer. Several downbeats are left
-        # unscored. In busier passages occasional quicker pairs land a beat apart.
-        if section.groove in ("club", "peak", "final"):
-            selected = ((0, 8), (4, 12), (0, 9), (0, 4, 11))[local % 4]
-        elif section.groove in ("soft", "break", "intro", "outro"):
-            selected = ((0,), (0, 8), (12,), (0,))[local % 4]
-        else:
-            selected = ((0, 9), (4,), (0, 8), (4, 12))[local % 4]
-        selected_indexes = set()
-        for target in selected:
-            closest = min(range(len(phrase)), key=lambda i: abs(phrase[i][0] - target))
-            if abs(phrase[closest][0] - target) <= 2:
-                selected_indexes.add(closest)
-        for i, (offset, midi, length) in enumerate(phrase):
+        for offset, midi, length in phrase:
             tick = bar * 16 + offset
-            panel = i in selected_indexes and tick >= 24
-            if panel and any(n.panel and tick - n.tick < 4 for n in notes[-8:]):
-                panel = False
             velocity = (0.82 if offset % 4 == 0 else 0.71) + (0.05 if length >= 2 else 0)
-            notes.append(Attack(tick, midi, length, voice, velocity, panel))
+            notes.append(Attack(tick, midi, length, voice, velocity))
     return notes
 
 
@@ -171,14 +154,79 @@ def score_tag():
     return "pinch-lead-sha256=" + sha256(serialized).hexdigest()
 
 
+# Tap the pitches a listener would sing. Keep the pickup and each turn in the
+# accordion hook, but give a single key to a rapid reiteration of the same reed.
+# Other phrases leave space around a held syllable and keep their cadences.
+LANDINGS = {
+    **dict(zip(HOOK, (
+        (0, 3, 6, 8, 10, 12, 14), (0, 2, 4, 6, 8, 10, 12, 14),
+        (0, 3, 7, 9, 13), (0, 4, 11, 14),
+    ))),
+    **dict(zip(OPENING, (
+        (0, 3, 7, 11, 14), (0, 4, 8), (12, 14), (0, 8, 12),
+        (0, 5, 7, 9, 12), (0, 6, 10), (0, 8, 12), (0, 8),
+    ))),
+    **dict(zip(VERSE, (
+        (0, 2, 4, 9, 14), (0, 2, 4, 9), (0, 2, 4, 9, 11, 13), (0, 4, 8),
+    ))),
+    **dict(zip(RISE, (
+        (0, 5, 8, 11, 13), (0, 3, 5, 8), (0, 3, 5, 8, 11, 13), (0, 4, 8),
+    ))),
+    **dict(zip(BRIDGE, (
+        (0, 2, 4, 10, 13), (0, 4, 7, 10, 14), (0, 4, 8, 11, 13), (0, 3, 7, 10),
+    ))),
+}
+
+
+def landing_ticks():
+    taps = []
+    for bar in range(BAR_COUNT):
+        section = section_at(bar)
+        phrase, _ = phrase_at(section, bar - section.bar)
+        available = {offset for offset, _, _ in phrase}
+        # The short turnaround and the last sustained tonic have no ornaments.
+        offsets = LANDINGS.get(phrase, sorted(available))
+        if not available.issuperset(offsets):
+            raise ValueError(f"Landing is missing its sounding note in bar {bar + 1}")
+        taps.extend(bar * 16 + offset for offset in offsets)
+    if any(b - a < 2 for a, b in zip(taps, taps[1:])):
+        raise ValueError("Landings must leave a playable eighth note between contacts")
+    return set(taps)
+
+
+def check_backing():
+    tag = score_tag()
+    data = BACKING.read_bytes()
+    if tag.encode() in data:
+        return
+    # The shipped recording also hashed its obsolete gameplay flags. The
+    # fingerprint on the left includes only the actual performance and tempo.
+    legacy = {
+        "pinch-lead-sha256=fbe6f26433c4d26707c16373b5791591373fd6557b0ea4b06625c8bd2276f7e4":
+            b"pinch-lead-sha256=f76d90cb053d7efbd95562c281b02da1cc01adfda00f3022c888ce1ff7834268",
+    }
+    if tag not in legacy or legacy[tag] not in data:
+        raise SystemExit("The backing does not match this score. Run render.py.")
+
+
 def kotlin_source():
     attacks = lead_attacks()
     section_rows = "\n".join(
         f'    {s.bar * 16} to "{s.label}",' for s in FORM
     )
+    chord_numbers = {name: i for i, name in enumerate(HARMONY)}
+    chords = ",\n".join(f'            intArrayOf({root}, {", ".join(map(str, voices))})'
+                          for root, voices in HARMONY.values())
+    band_sections = []
+    for i, section in enumerate(FORM):
+        end = FORM[i + 1].bar if i + 1 < len(FORM) else BAR_COUNT
+        chord_ids = (chord_numbers[chord_at(section, n)] for n in range(end - section.bar))
+        band_sections.append(f'            StereoBandSection(StereoGroove.{section.groove.title()}, '
+                             f'intArrayOf({", ".join(map(str, chord_ids))})),')
     rows = []
+    taps = landing_ticks()
     for n in attacks:
-        manual = ", playable = true" if n.panel else ""
+        manual = ", playable = true" if n.tick in taps else ""
         rows.append(f"    strike({n.tick}, {n.midi}, {float(n.length)}, {n.gain:.2f}f{manual}),")
     return f'''// Generated from tools/stereo_love/score.py. Both the backing and the panels use these ticks.
 package music.pinch
@@ -200,22 +248,29 @@ private val stereoSections = listOf(
 internal fun stereoLoveSectionAt(positionMs: Long): String =
     stereoSections.lastOrNull {{ millisAtTick(it.first) <= positionMs }}?.second ?: stereoSections.first().second
 
-private val stereoMelody = listOf(
+private fun stereoMelody() = listOf(
 {chr(10).join(rows)}
 )
 
-internal val stereoLoveSong = Song(
+internal val stereoLoveSong = Song.arranged(
     id = "stereo-love",
     title = "Stereo Love",
     artist = "Edward Maya & Vika Jigulina",
-    bundled = Chart(
-        "Stereo Love",
-        stereoBpm,
-        {DURATION_MS:_}L,
-        stereoMelody,
-    ),
+    bpm = stereoBpm,
+    durationMs = {DURATION_MS:_}L,
     backingAsset = "backing/stereo-love.m4a",
-)
+    bundledRevision = 2,
+) {{
+    val band = stereoBand(stereoBpm,
+        arrayOf(
+{chords},
+        ),
+        listOf(
+{chr(10).join(band_sections)}
+        ),
+    )
+    Chart("Stereo Love", stereoBpm, {DURATION_MS:_}L, stereoMelody(), band, authoredLandings = true)
+}}
 '''
 
 
@@ -224,7 +279,6 @@ if __name__ == "__main__":
     if "--check" in sys.argv:
         if GRID.read_text() != generated:
             raise SystemExit("StereoLove.kt and score.py disagree, regenerate the chart.")
-        if score_tag().encode() not in BACKING.read_bytes():
-            raise SystemExit("The backing does not match this score. Run render.py.")
+        check_backing()
     else:
         GRID.write_text(generated)

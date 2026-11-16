@@ -1,7 +1,8 @@
 package music.pinch
 
 import android.content.Context
-import android.content.res.AssetFileDescriptor
+import java.io.FileDescriptor
+import java.io.FileInputStream
 import android.media.MediaPlayer
 import android.os.SystemClock
 import kotlinx.coroutines.CancellationException
@@ -37,16 +38,24 @@ internal class AndroidMedia(
 
     override var onInterrupted: (() -> Unit)? = null
 
-    override fun prepare(pitches: Set<Int>, backingAsset: String?) {
+    override fun prepare(pitches: Set<Int>, backingAsset: String?, arrangement: ArrangementTrack?) {
         if (closed || preparation != null || error != null) return
         focus.observe()
         preparation = CoroutineScope(Dispatchers.Main.immediate).launch {
             try {
-                if (backingAsset != null) {
+                val asset = backingAsset ?: arrangement?.takeIf { it.bundledAsset }?.path
+                if (asset != null) {
                     withContext(Dispatchers.IO) {
-                        context.assets.openFd(backingAsset).use { fd ->
+                        context.assets.openFd(asset).use { fd ->
                             // MediaPlayer and its listeners stay on their owning looper.
-                            withContext(Dispatchers.Main.immediate) { prepareBacking(fd) }
+                            withContext(Dispatchers.Main.immediate) { prepareBacking(fd.fileDescriptor, fd.startOffset, fd.length) }
+                        }
+                    }
+                } else if (arrangement != null) {
+                    withContext(Dispatchers.IO) {
+                        FileInputStream(arrangement.path).use { input ->
+                            val length = input.channel.size()
+                            withContext(Dispatchers.Main.immediate) { prepareBacking(input.fd, 0, length) }
                         }
                     }
                 }
@@ -61,7 +70,7 @@ internal class AndroidMedia(
         if (!foreground()) interrupt()
     }
 
-    private fun prepareBacking(fd: AssetFileDescriptor) {
+    private fun prepareBacking(fd: FileDescriptor, offset: Long, length: Long) {
         val player = MediaPlayer()
         backing = player
         player.setAudioAttributes(gameAudioAttributes())
@@ -81,7 +90,7 @@ internal class AndroidMedia(
             backingStarted = false
             backingEnded = true
         }
-        player.setDataSource(fd.fileDescriptor, fd.startOffset, fd.length)
+        player.setDataSource(fd, offset, length)
         player.prepareAsync()
     }
 
@@ -147,8 +156,8 @@ internal class AndroidMedia(
         pause()
     }
 
-    override fun note(midi: Int, gain: Float) {
-        if ((backingStarted || clock.running) && ready && !closed && error == null) voices?.play(midi, gain)
+    override fun note(midi: Int, gain: Float, durationMs: Int) {
+        if ((backingStarted || clock.running) && ready && !closed && error == null) voices?.play(midi, gain, durationMs)
     }
 
     override fun strike(gain: Float) {

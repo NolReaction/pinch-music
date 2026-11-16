@@ -7,6 +7,15 @@ plugins {
     id("com.android.application")
 }
 
+// The host generator publishes a directory with the same relative asset paths on both platforms.
+val arrangedAudio = configurations.create("arrangedAudio") {
+    isCanBeResolved = true
+    isCanBeConsumed = false
+}
+dependencies {
+    add(arrangedAudio.name, project(path = ":arranger", configuration = "audioAssets"))
+}
+
 kotlin {
     androidTarget {
         compilerOptions {
@@ -59,6 +68,7 @@ android {
         versionName = "0.4.0"
     }
     sourceSets["main"].assets.srcDir(rootProject.file("media"))
+    sourceSets["main"].assets.srcDir(project(":arranger").layout.buildDirectory.dir("generated/assets"))
     sourceSets["test"].resources.srcDir("src/androidUnitTest/resources")
     androidResources.noCompress += listOf("wav", "m4a", "mp4")
     compileOptions {
@@ -67,6 +77,24 @@ android {
     }
 }
 
+// AGP snapshots static roots when configuring KMP variants. Attach their producer to every asset merger.
+tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }.configureEach {
+    dependsOn(arrangedAudio)
+}
+
 compose.resources {
     packageOfResClass = "music.pinch.resources"
+}
+
+// The existing Xcode build phase runs embedAndSign before Xcode signs the application.
+val xcodeArrangements = providers.environmentVariable("TARGET_BUILD_DIR")
+    .zip(providers.environmentVariable("UNLOCALIZED_RESOURCES_FOLDER_PATH")) { products, resources ->
+        File(products, resources).resolve("arrangements")
+    }
+val installXcodeArrangements = tasks.register<Sync>("installXcodeArrangements") {
+    from(arrangedAudio.elements.map { it.single().asFile.resolve("arrangements") })
+    into(xcodeArrangements)
+}
+tasks.matching { it.name == "embedAndSignAppleFrameworkForXcode" }.configureEach {
+    if (xcodeArrangements.isPresent) dependsOn(installXcodeArrangements)
 }

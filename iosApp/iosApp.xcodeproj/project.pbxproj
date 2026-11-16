@@ -93,7 +93,7 @@
             outputPaths = ();
             runOnlyForDeploymentPostprocessing = 0;
             shellPath = "/bin/sh";
-            shellScript = "set -e\nif [ \"$OVERRIDE_KOTLIN_BUILD_IDE_SUPPORTED\" = \"YES\" ]; then exit 0; fi\ncd \"$SRCROOT/..\"\nif [ -z \"${JAVA_HOME:-}\" ] || ! grep -Eq '^JAVA_VERSION=\"17([.+-]|\")' \"$JAVA_HOME/release\" 2>/dev/null; then\n  JAVA_HOME=\"$(unset JAVA_HOME JAVA_VERSION; /usr/libexec/java_home -F -v 17)\" || {\n    echo \"error: Install JDK 17 (brew install --cask temurin@17) and run the build again.\" >&2\n    exit 1\n  }\nfi\nexport JAVA_HOME\n\"$JAVA_HOME/bin/java\" -version\nexec ./gradlew :composeApp:embedAndSignAppleFrameworkForXcode\n";
+            shellScript = "set -e\ncd \"$SRCROOT/..\"\nif [ -z \"${JAVA_HOME:-}\" ] || ! grep -Eq '^JAVA_VERSION=\"17([.+-]|\")' \"$JAVA_HOME/release\" 2>/dev/null; then\n  JAVA_HOME=\"$(unset JAVA_HOME JAVA_VERSION; /usr/libexec/java_home -F -v 17)\" || {\n    echo \"error: Install JDK 17 (brew install --cask temurin@17) and run the build again.\" >&2\n    exit 1\n  }\nfi\nexport JAVA_HOME\n\"$JAVA_HOME/bin/java\" -version\nif [ \"$OVERRIDE_KOTLIN_BUILD_IDE_SUPPORTED\" = \"YES\" ]; then\n  exec ./gradlew :composeApp:installXcodeArrangements\nfi\nexec ./gradlew :composeApp:embedAndSignAppleFrameworkForXcode\n";
         };
         5A0000000000000000000002 /* Sources */ = {
             isa = PBXSourcesBuildPhase;

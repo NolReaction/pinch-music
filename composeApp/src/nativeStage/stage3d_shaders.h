@@ -45,44 +45,39 @@ uniform mediump vec4 uBall;
 uniform mediump vec2 uSpin; // cos, sin
 uniform lowp vec3 uPaint;
 uniform lowp vec3 uAccent;
+uniform sampler2D uGrain;
 const vec3 eye=vec3(2.80,-4.88,8.20);
-const vec3 L=vec3(-.538,-.715,.447);
+const vec3 L=vec3(.657,-.243,.714);
 float strip(float x,float halfWidth,float blur){
     return 1.-smoothstep(halfWidth,halfWidth+blur,abs(x));
 }
-// Analytic studio cards in reflected direction space: a broad ceiling box,
-// a narrow white strip at camera-left and a lavender kicker at camera-right.
+// Large softboxes, a dark flag and the lit plaster floor remain fixed in the
+// reflection. A change of key pitch therefore changes the finish visibly.
 vec3 studio(vec3 r){
-    float roof=smoothstep(.00,.68,-r.y);
-    vec3 c=mix(vec3(.070,.085,.125),vec3(.43,.49,.63),roof);
-    float window=strip(r.x+.53,.13,.12)*strip(r.y+.43,.31,.11)*smoothstep(-.1,.6,r.z);
-    float bar=strip(r.y+.67+.22*r.x,.024,.045)*smoothstep(-.30,.34,r.z);
-    float violet=strip(r.x-.68,.15,.14)*strip(r.y+.13,.34,.15)*smoothstep(-.1,.45,r.z);
-    return c+vec3(.61,.67,.78)*window+vec3(.83,.82,.76)*bar+
-           vec3(.18,.09,.29)*violet;
+    float ceiling=smoothstep(-.42,.73,-r.y);
+    vec3 room=mix(vec3(.29,.30,.32),vec3(.81,.83,.84),ceiling);
+    float flag=strip(r.x+.19*r.z-.13,.14,.19)*smoothstep(-.38,.18,-r.z);
+    room*=1.-.73*flag;
+    float window=strip(r.x+.48+.18*r.y,.17,.12)*smoothstep(-.38,.36,r.z);
+    float bar=strip(r.y+.53+.24*r.x,.045,.055);
+    return room+vec3(.46,.45,.42)*window+vec3(.55,.58,.63)*bar;
 }
 void main(){
     vec3 n=normalize(vN), v=normalize(eye-vPos), r=reflect(-v,n);
     float mat=vMat.x;
     if(mat>7.5 && mat<8.5) {
-        // Polished ruby marble. The inclusion rotates with the ball inside
-        // the clear glass skin; the studio reflections remain in world space.
+        // A rotating glass marble with a pearl/violet inclusion. The clear
+        // outer skin reflects the room independently of the coloured core.
         vec3 bn=vec3(n.x*uSpin.x+n.y*uSpin.y,-n.x*uSpin.y+n.y*uSpin.x,n.z);
-        vec3 refr=refract(-v,n,.67);
-        float fres=pow(1.-max(0.,dot(n,v)),4.);
-        float ribbon=bn.y+.40*bn.x+.23*sin(3.85*bn.x+2.17*bn.z);
-        float lightBand=strip(ribbon-.03,.12,.13);
-        float redBand=smoothstep(.07,.23,ribbon)*(.55+.45*bn.z);
-        vec3 body=mix(vec3(.105,.018,.085),vec3(.43,.037,.115),.5+.5*bn.z);
-        body=mix(body,vec3(.69,.12,.095),redBand);
-        vec3 inner=studio(reflect(refr,normalize(vec3(bn.x*.50,-.80,bn.z*.49))));
-        body=mix(body,vec3(.23,.22,.32)+inner*.43,lightBand*.85);
-        float baseGlint=strip(ribbon+.13,.016,.041)*(.55+.45*r.z);
-        vec3 color=body*(.69+.25*max(0.,dot(n,L)))+vec3(.38,.16,.16)*baseGlint;
-        vec3 env=studio(r);
-        color+=env*(.39+.64*fres);
-        color+=vec3(.93,.64,.70)*pow(max(dot(reflect(-L,n),v),0.),94.);
-        color+=vec3(.20,.02,.13)*uBall.w*max(n.y,0.);
+        float ribbon=bn.y+.31*bn.x+.34*sin(3.58*bn.z+2.10*bn.x);
+        float pearl=smoothstep(-.16,.16,ribbon);
+        vec3 wine=mix(vec3(.14,.060,.23),vec3(.58,.083,.33),smoothstep(-.44,.47,bn.z+.52*bn.x));
+        vec3 body=mix(wine,vec3(.87,.86,.79),pearl);
+        body=mix(body,vec3(.29,.068,.19),.82*strip(ribbon-.47,.063,.064)*smoothstep(-.35,.22,bn.x));
+        float fres=.11+.62*pow(1.-max(0.,dot(n,v)),3.);
+        vec3 color=mix(body*(.65+.34*max(0.,dot(n,L))),studio(r),fres);
+        color+=vec3(.90,.89,.83)*pow(max(dot(reflect(-L,n),v),0.),92.);
+        color+=vec3(.29,.31,.35)*strip(r.y+.55+.24*r.x,.018,.025);
         gl_FragColor=vec4(color,1.); return;
     }
     vec3 env=studio(r);
@@ -93,15 +88,15 @@ void main(){
     float impact=uKey.x,preview=uKey.z;
     vec3 col;
     if(mat<1.5) {
-        // Black lacquer over a dark resin core. The playing surface illuminates
-        // across its full area at contact, including the rounded leading edge.
         float top=1.-step(.5,mat);
-        float ao=1.-.43*exp(-14.*dot(vPos.xz-uBall.xz,vPos.xz-uBall.xz))*
-                     (1.-smoothstep(.24,.83,abs(vPos.y-uBall.y)));
-        col=(uPaint*(.31+.40*nl)+vec3(.016,.020,.026)+
-             env*(.105+.23*edge)+vec3(.23,.22,.27)*spec)*ao;
-        col*=.62+.38*top;
-        col=mix(col,accent*(.37+.15*nl)+env*.09,preview*.33*top);
+        float ao=1.-.38*exp(-17.*dot(vPos.xz-uBall.xz,vPos.xz-uBall.xz))*
+                     (1.-smoothstep(.22,.64,abs(vPos.y-uBall.y)));
+        float brush=texture2D(uGrain,vFace*vec2(1.05,.14)+vec2(.23,.31)).r-.5;
+        vec3 alloy=mix(vec3(.62,.64,.64),uPaint,.26);
+        vec3 face=env*(.54+.19*edge)+alloy*(.20+.16*nl)+vec3(brush*.12+spec*.21);
+        vec3 under=vec3(.05,.06,.072)+env*(.105+.18*edge)+alloy*.06;
+        col=mix(under,face,top)*ao;
+        col=mix(col,mix(uAccent,col,.67),preview*top*.63);
         // A single pressure wave expands from the tangent point on the playing face.
         // Its light decays independently of the mechanical return and score.
         float arrival=abs(length(vFace)-.96*(1.-impact));
@@ -111,22 +106,18 @@ void main(){
         col=mix(col,accent*(.38+.48*top+.14*nl)+env*.075,min(1.,flash));
         col+=vec3(.37,.29,.18)*release*wave*top;
     } else if(mat<2.5) {
-        col=mix(vec3(.085,.096,.128)+env*.16,accent,
-                min(1.,impact*1.25+preview*.97));
+        col=mix(mix(vec3(.060,.069,.075),accent,.27),accent,min(1.,impact+preview*.98));
     } else if(mat<3.5 || (mat>4.5 && mat<5.5) || (mat>6.5 && mat<7.5)) {
-        float polished=mat<3.5 ? .75 : (mat<5.5 ? 1.07 : .86);
-        col=vec3(.042,.060,.088)+min(env,vec3(.78))*polished+vec3(.11,.13,.16)*spec;
+        float polished=mat<3.5 ? .93 : (mat<5.5 ? 1.12 : .88);
+        col=vec3(.032,.041,.050)+env*polished+vec3(.23,.24,.25)*spec;
         if(mat>6.5) {
-            // A soft ruby reflection follows the real ball on both metal runners,
-            // growing on approach and falling away naturally beyond the lip.
-            float nearBall=1.-smoothstep(.25,.58,length(vPos-uBall.xyz));
-            col=mix(col,vec3(.24,.28,.32),.24)+vec3(.35,.105,.14)*nearBall;
+            float nearBall=1.-smoothstep(.25,.56,length(vPos-uBall.xyz));
+            col=mix(col,vec3(.42,.24,.40),nearBall*.30);
         }
-
     } else if(mat<4.5) {
-        col=vec3(.025,.032,.046)+env*.23;
+        col=vec3(.032,.039,.047)+env*.26;
     } else if(mat<6.5) {
-        col=mix(vec3(.20,.135,.052),accent,min(1.,preview*.84+impact+.28));
+        col=mix(vec3(.13,.14,.145),accent,min(1.,.48+preview*.52+impact));
     } else {
         col=vec3(.22,.085,.037)+env*vec3(.75,.38,.20)+vec3(.34,.18,.093)*spec;
     }
@@ -147,7 +138,8 @@ attribute highp vec3 aPos;
 attribute mediump vec3 aNormal;
 attribute mediump vec2 aMat;
 uniform highp vec4 uLens;
-uniform highp vec4 uDecals[16]; // x, y, type (0 key, 1 ball), face slope
+uniform highp vec4 uDecals[16]; // centre, corner shape, opacity
+uniform highp vec4 uShadowAxes[16];
 uniform lowp vec3 uPaint;
 uniform lowp vec3 uAccent;
 uniform mediump vec3 uPhase; // camera position modulo the wall period, theme motif
@@ -168,23 +160,30 @@ void main(){
         vec3 ray=forward+right*aPos.x/uLens.x+up*aPos.y/uLens.y;
         vec2 slope=ray.xy/min(-.09,ray.z);
         vec2 origin=uPhase.xy+eye.xy;
-        vReliefUV=(origin+slope*(-1.35-eye.z))/6.;
-        vec2 farTile=abs(fract((origin+slope*(-2.55-eye.z))/6.)*2.-1.);
-        float farLight=1.-smoothstep(.15,.55,min(farTile.x,farTile.y));
-        vec2 pool=uv-vec2(.64,.66);
-        float light=.26+.44*uv.y+.26*(1.-smoothstep(0.,.57,dot(pool,pool)));
-        vec3 col=mix(uPaint,uAccent,light)*(.966+.047*farLight);
+        vReliefUV=(origin+slope*(-1.35-eye.z))*.625;
+        vec2 bounce=origin+slope*(-2.55-eye.z);
+        float farLight=.5+.5*sin((bounce.x+bounce.y)*.2617994);
+        float light=.27+.48*uv.y+.14*uv.x;
+        vec3 col=mix(uPaint,uAccent,light)*(.982+.029*farLight);
         gl_Position=vec4(aPos.xy,0.,1.); vColor=vec4(col,1.); return;
     }
-    vec4 data=uDecals[int(aMat.y+.5)];
-    float ball=data.z;
-    vec2 p=data.xy+mix(vec2(.08,.19),vec2(.13,.23),ball);
-    p.x+=aPos.x*mix(.75,.38,ball)+aPos.y*mix(.26,.04,ball);
-    p.y+=aPos.y*mix(.69,.38,ball)+aPos.x*.75*data.w;
+    int idx=int(aMat.y+.5);
+    vec4 data=uDecals[idx], axes=uShadowAxes[idx];
+    vec2 q=aPos.xy;
+    float radius=length(q), side=max(.001,max(abs(q.x),abs(q.y)));
+    if(data.z>1.5) {
+        // Soften in physical units at the ends of a continuous rail shadow.
+        // A long segment must not fade through its whole length at each joint.
+        float feather=min(1.,length(axes.zw)/max(.001,length(axes.xy)));
+        q=vec2(q.x/side*mix(1.-feather,1.,radius),q.y/side*radius);
+    } else {
+        q*=mix(1.,radius/side,data.z);
+    }
+    vec2 p=data.xy+axes.xy*q.x+axes.zw*q.y;
     vec3 d=vec3(p,-1.347)-eye;
     float z=dot(d,forward);
     gl_Position=vec4(dot(d,right)*uLens.x,dot(d,up)*uLens.y,0.,z);
-    vColor=vec4(.054,.072,.122,aNormal.x*mix(.23,.16,ball));
+    vColor=vec4(.125,.145,.174,aNormal.x*data.w);
 }
 )GL";
 static const char* wallFS = R"GL(
@@ -202,7 +201,7 @@ varying mediump vec2 vReliefUV;
 uniform sampler2D uRelief;
 void main(){
     if(vColor.a<.99) { gl_FragColor=vColor; return; }
-    vec3 col=vColor.rgb*(1.11*texture2D(uRelief,vReliefUV).r);
+    vec3 col=vColor.rgb*(.967+.066*texture2D(uRelief,vReliefUV).r);
     gl_FragColor=vec4(col,1.);
 }
 )GL";

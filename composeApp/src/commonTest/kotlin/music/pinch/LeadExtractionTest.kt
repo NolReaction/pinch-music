@@ -2,6 +2,10 @@ package music.pinch
 
 import kotlin.math.*
 import kotlin.test.*
+import music.pinch.core.Chart
+import music.pinch.core.Note
+import music.pinch.core.cascadeChart
+import music.pinch.core.markDetectedLandings
 
 class LeadExtractionTest {
     @Test fun preservesPitchPhraseAndEnforcesComfortablePacing() {
@@ -21,7 +25,7 @@ class LeadExtractionTest {
         assertTrue(chart.notes.zipWithNext().all { (a,b) -> b.atMs - a.atMs >= 579 })
         assertTrue(chart.notes.first().atMs >= 2000)
     }
-    @Test fun fastSourcesKeepOriginalOnsetsWhenDenseNotesAreThinned() {
+    @Test fun aClearQuarterNotePhraseKeepsEveryBeatAtItsOriginalOnset() {
         val rate = 11_025
         val stepSamples = (rate * 60.0 / 127).roundToInt()
         val pitches = listOf(60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74)
@@ -34,7 +38,7 @@ class LeadExtractionTest {
             }
         }
         val chart = extractLeadChart(samples, rate, "Быстрая фраза")
-        assertTrue(chart.notes.size in 3 until pitches.size)
+        assertEquals(pitches, chart.notes.filter { it.playable }.map { it.midi })
         assertTrue(chart.bpm in 123..131, "Estimated BPM from original onsets: ${chart.bpm}")
         val firstPitch = chart.notes.first().midi
         for (note in chart.notes) {
@@ -42,6 +46,19 @@ class LeadExtractionTest {
             val actualGapMs = note.atMs - chart.notes.first().atMs
             assertTrue(abs(expectedGapMs - actualGapMs) <= 100, "pitch ${note.midi}: $actualGapMs vs $expectedGapMs")
         }
+    }
+
+    @Test fun aRapidCallAndAnswerSurvivesImportAndReloadWithThePickupStillAudible() {
+        val eighths = (0 until 8).map {
+            Note("lead-$it", 2200L + (it * 60_000.0 / 127 / 2).roundToLong(),
+                listOf(68, 73, 72, 70)[it % 4], 172, .94f)
+        }
+        val pickup = Note("passing", 2293, 70, 74, .67f, playable = false)
+        val source = Chart("Ответ", 127, 5200, (eighths + pickup).sortedBy { it.atMs })
+        val marked = source.markDetectedLandings()
+        val loaded = decodeChart(encodeChart(marked), marked.title)
+        assertEquals(eighths.map { it.atMs }, loaded.cascadeChart().notes.map { it.atMs })
+        assertEquals(source.notes.map { it.atMs to it.midi }, loaded.notes.map { it.atMs to it.midi })
     }
 
     @Test fun refusesQuietAudioAndIsolatedDrumLikeClicks() {

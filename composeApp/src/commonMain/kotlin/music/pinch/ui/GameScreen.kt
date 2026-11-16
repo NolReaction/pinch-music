@@ -77,6 +77,7 @@ private val AppColors = darkColorScheme(
 
 @Composable
 internal fun GameScreen(state: ScreenState, actions: Actions, positionMs: () -> Long, stage: PreparedStage?) {
+    val orbitAtlas = rememberOrbitAtlas(state.stageMode == StageMode.Orbit)
     MaterialTheme(colorScheme = AppColors) {
         Box(Modifier.fillMaxSize().background(Ink), contentAlignment = Alignment.TopCenter) {
             val content = when (state.scene) {
@@ -88,7 +89,7 @@ internal fun GameScreen(state: ScreenState, actions: Actions, positionMs: () -> 
                     Scene.Menu -> Menu(state, actions)
                     Scene.Error -> ErrorScreen(state, actions)
                     Scene.Result -> ResultScreen(state, actions)
-                    else -> PerformanceScreen(state, actions, positionMs, stage)
+                    else -> PerformanceScreen(state, actions, positionMs, stage, orbitAtlas.value)
                 }
             }
         }
@@ -99,7 +100,6 @@ internal fun GameScreen(state: ScreenState, actions: Actions, positionMs: () -> 
 private fun Menu(state: ScreenState, actions: Actions) {
     var settings by rememberSaveable { mutableStateOf(false) }
     var library by rememberSaveable { mutableStateOf(false) }
-    val chart = state.chart
     val songAccent = stageColor(stageTheme(state.selectedSong.id).accent)
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 12.dp),
@@ -121,7 +121,7 @@ private fun Menu(state: ScreenState, actions: Actions) {
                 { it?.label ?: "Оригинал" }, { voice ->
                     if (voice == null) actions.selectRecording() else actions.selectInstrument(voice)
                 }, columns = 2)
-        } else if (chart != null) {
+        } else if (state.hasScore) {
             Choices("Инструмент", Instrument.entries, state.instrument, { it.label }, actions::selectInstrument)
         }
         if (state.importing) {
@@ -130,7 +130,7 @@ private fun Menu(state: ScreenState, actions: Actions) {
                 CircularProgressIndicator(Modifier.size(20.dp), color = Lilac, strokeWidth = 2.dp)
                 Text("Разбираем мелодию…", color = White)
             }
-        } else if (chart != null) {
+        } else if (state.hasScore) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 ActionButton("Играть", onClick = { actions.start(false) }, modifier = Modifier.weight(1.1f),
                     icon = IconShape.Play, accent = songAccent)
@@ -142,7 +142,7 @@ private fun Menu(state: ScreenState, actions: Actions) {
                 TextButton(onClick = actions::importAudio) {
                     Text(if (imported) "Заменить запись" else "Выбрать свою запись", color = Muted)
                 }
-                if (imported && state.selectedSong.bundled != null) {
+                if (imported && state.selectedSong.hasBundled) {
                     TextButton(onClick = actions::restoreBundled) { Text("Вернуть встроенную", color = Lilac) }
                 }
             }
@@ -248,12 +248,11 @@ private fun TrackCard(state: ScreenState) {
     val theme = stageTheme(song.id)
     val accent = stageColor(theme.accent)
     Box(Modifier.fillMaxWidth().heightIn(min = 150.dp).clip(shape).background(Surface).border(1.dp, Line, shape)) {
-        val chart = state.chart
         val source = when {
-            chart == null -> "Нужен аудиофайл"
+            !state.hasScore -> "Нужен аудиофайл"
             imported -> "Из записи"
             state.backingAsset != null -> "Полный инструментал"
-            state.recordedAsset != null -> "Мелодия соло"
+            state.recordedAsset != null -> "Мелодия с ритм-секцией"
             else -> "Фрагмент"
         }
         Box(Modifier.matchParentSize(), contentAlignment = Alignment.CenterEnd) {
@@ -268,10 +267,10 @@ private fun TrackCard(state: ScreenState) {
                 Text(song.title, color = White, fontSize = 29.sp, lineHeight = 32.sp,
                     letterSpacing = (-.9).sp, fontWeight = FontWeight.Black)
                 if (song.artist.isNotBlank()) Caption(song.artist, White.copy(alpha = .82f))
-                if (chart != null) {
+                if (state.durationMs > 0L) {
                     Spacer(Modifier.height(6.dp))
-                    val bpm = if (imported) "≈ ${chart.bpm}" else chart.bpm.toString()
-                    Text("$bpm BPM  ·  ${durationClock(chart.durationMs)}",
+                    val bpm = if (imported) "≈ ${state.bpm}" else state.bpm.toString()
+                    Text("$bpm BPM  ·  ${durationClock(state.durationMs)}",
                         fontSize = 12.sp, color = accent, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
                 }
             }
@@ -399,8 +398,7 @@ private fun SongPicker(state: ScreenState, onDismiss: () -> Unit, select: (Song)
                         val status = when {
                             !ready -> "Импорт"
                             song.id in state.importedIds -> "Своя запись"
-                            song.bundled != null -> durationClock(song.bundled.durationMs)
-                            else -> null
+                            else -> song.bundledDurationMs?.let(::durationClock)
                         }
                         if (status != null) {
                             Spacer(Modifier.width(6.dp))

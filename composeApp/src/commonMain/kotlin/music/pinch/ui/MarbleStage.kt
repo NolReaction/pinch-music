@@ -82,7 +82,7 @@ private class Camera(size: Size, target: StagePoint) {
 }
 
 /** Fixed material tables keep lighting transitions cheap even on dense runs of short notes. */
-private class Finish(rest: Color, val tint: Color) {
+internal class Finish(rest: Color, tint: Color) {
     val tops = Array(LightSteps+1) { i -> lerp(rest, tint, i / LightSteps.toFloat()) }
     val bevels = Array(LightSteps+1) { i -> lerp(lerp(rest, PinLight, .31f), lerp(tint, PinLight, .33f), i / LightSteps.toFloat()) }
     val faces = Array(LightSteps+1) { i ->
@@ -99,14 +99,13 @@ private class Finish(rest: Color, val tint: Color) {
             else -> lerp(BlackNickel, faces[light], .52f*shade)
         }
     }
-    val emission = Brush.radialGradient(listOf(tint.copy(alpha=.36f), tint.copy(alpha=.16f), tint.copy(alpha=0f)), Offset.Zero, 1f)
 }
 
-private val Maple = Finish(Color(0xff90644f), Color(0xffffbd84))
-private val DrumShell = Finish(Color(0xffad7967), Color(0xffffa28e))
-private val BrushedSteel = Finish(Color(0xff536a83), Color(0xffa8ddfd))
+private val Maple = Finish(Color(0xffa38c77), Color(0xffe8d7be))
+private val DrumShell = Finish(Color(0xff929295), Color(0xffdbdad5))
+private val BrushedSteel = Finish(Color(0xff8b9499), Color(0xffe6e9e7))
 private val DrumSkin = Array(LightSteps+1) { i ->
-    lerp(Color(0xff777381), Color(0xffffe6d0), i / LightSteps.toFloat())
+    lerp(Color(0xffaaa7a2), Color(0xffebe8d9), i / LightSteps.toFloat())
 }
 private val HitColor = stageColor(0x6FF1AC)
 private val MissColor = stageColor(0xFF494C)
@@ -125,14 +124,14 @@ private class Room(size: Size, theme: StageTheme) {
         image.prepareToDraw()
     }
     val sheen = Brush.linearGradient(
-        listOf(Color(0x237d899b), Color(0x035a6277), Color(0x137a6e80), Color.Transparent),
+        listOf(Color(0x310e151d), Color(0x047c878b), Color(0x3ef8f9f3), Color.Transparent),
         Offset(0f, size.height*.26f), Offset(size.width, size.height*.49f)
     )
 }
 
 private fun shadow(p: StagePoint): StagePoint {
     val distance = p.z - WallZ
-    return StagePoint(p.x + distance*.17f, p.y + distance*.20f, WallZ)
+    return StagePoint(p.x - distance*.92f, p.y + distance*.34f, WallZ)
 }
 
 // The fork is one machined piece. Its two free ends start beyond the strike point.
@@ -147,7 +146,7 @@ private val Circle = Array(Corners) { i ->
     Offset(cos(angle), sin(angle))
 }
 
-private class Bar(val key: StageKey, index: Int) {
+internal class Bar(val key: StageKey, index: Int) {
     val finish = when (key.shape) {
         PanelShape.WoodBar -> Maple
         PanelShape.Drum -> DrumShell
@@ -212,16 +211,16 @@ private class Bar(val key: StageKey, index: Int) {
     val stemLength = .09f + (index%4)*.025f
     val anchors = arrayOf(key.point(mountX-mountSpacing, thickness-.01f, 0f), key.point(mountX+mountSpacing, thickness-.01f, 0f))
     val lower = Array(2) { n -> anchors[n] + StagePoint(0f,stemLength,-.055f) }
-    val socket = shadow(key.point(0f,thickness-.02f,0f))
     val join = key.point(mountX,thickness+stemLength,-.055f)
     val knee = StagePoint(join.x, join.y+.035f, max(WallZ+.055f,join.z-.28f))
+    val socket = StagePoint(knee.x, knee.y, WallZ)
     // Wall braces belong to the rear lane. A brace across the front lane
     // would cross the path of the descending ball on the opposite turn.
     val wallBracket = index%5 == 1 && key.center.z <= .80f
     val bridge = index%3 != 1 || wallBracket
 }
 
-private class Rail(run: CourseRun) {
+internal class Rail(run: CourseRun) {
     val stations = if (run.railEnd<=0f || run.durationMs<=0L) emptyArray() else {
         val samples = ceil(run.durationMs*run.railEnd/85f).toInt().coerceIn(3, 240)
         Array(samples+1) { i -> run.point(run.railEnd*i/samples) }
@@ -238,11 +237,26 @@ private class Rail(run: CourseRun) {
     val right = Array(stations.size) { i -> stations[i] + normals[i]*height + offset[i] }
 }
 
-internal class MarbleScene(private val path: MarblePath, private val marbleAtlas: ImageBitmap, private val theme: StageTheme) {
-    private val lacquer = stageColor(theme.panel)
-    private val accent = stageColor(theme.accent)
+/** The preparation worker builds the opening view. Later bands are filled as they enter the camera. */
+internal class OrbitMeshes(val path: MarblePath) {
     private val bars = arrayOfNulls<Bar>(path.keys.size)
     private val rails = arrayOfNulls<Rail>(path.spans.size)
+
+    init {
+        for (i in 0..min(bars.lastIndex, VisibleLimit / 2)) barAt(i)
+        for (i in 0..min(rails.lastIndex, VisibleLimit / 2 + 1)) {
+            if (path.spans[i].railEnd > 0f) railAt(i)
+        }
+    }
+
+    fun barAt(i: Int) = bars[i] ?: Bar(path.keys[i], i).also { bars[i] = it }
+    fun railAt(i: Int) = rails[i] ?: Rail(path.spans[i]).also { rails[i] = it }
+}
+
+internal class MarbleScene(private val meshes: OrbitMeshes, private val marbleAtlas: ImageBitmap, private val theme: StageTheme) {
+    private val path = meshes.path
+    private val lacquer = stageColor(theme.panel)
+    private val accent = stageColor(theme.accent)
     private val outline = Path()
     private val detail = Path()
     private val projectedX = FloatArray(Levels*Corners)
@@ -251,17 +265,6 @@ internal class MarbleScene(private val path: MarblePath, private val marbleAtlas
     private val depths = FloatArray(VisibleLimit)
     private var roomSize = Size.Zero
     private var room: Room? = null
-
-    // Keep the inexpensive contact list for the entire song. Construct each detailed mesh
-    // the first time it enters the camera's bounds, including the offscreen padding below.
-    private fun barAt(i: Int) = bars[i] ?: Bar(path.keys[i], i).also { bars[i] = it }
-
-    private fun DrawScope.halo(p: Offset, radius: Float, brush: Brush, strength: Float) {
-        if (radius<1f || strength<=.01f) return
-        translate(p.x, p.y) {
-            scale(radius, radius*.82f, Offset.Zero) { drawCircle(brush, 1f, Offset.Zero, alpha=strength) }
-        }
-    }
 
     private fun DrawScope.barShadow(bar: Bar, camera: Camera) {
         val l = camera.project(bar.shadowLeft)
@@ -404,12 +407,12 @@ internal class MarbleScene(private val path: MarblePath, private val marbleAtlas
             return
         }
         drawPath(outline, finish.tops[step])
-        drawPath(outline, lacquer, alpha = .52f)
+        drawPath(outline, lacquer, alpha = .26f)
         room?.let { drawPath(outline, it.sheen) }
         if (bar.skin.isNotEmpty()) {
             detailLoop(bar.skin, camera)
             drawPath(detail, DrumSkin[step])
-            drawPath(detail, lacquer, alpha = .35f)
+            drawPath(detail, lacquer, alpha = .18f)
             if (age in 1..260) {
                 val progress = age/260f
                 val center = camera.project(bar.key.center)
@@ -436,7 +439,7 @@ internal class MarbleScene(private val path: MarblePath, private val marbleAtlas
             // The contact darkening only falls on the upper surface that receives it.
             clipPath(outline) {
                 drawOval(WallShadow,foot-Offset(spot,spot*.32f),Size(spot*2,spot*.64f),
-                    alpha=.48f*(1-gap/.48f))
+                    alpha=.38f*(1-gap/.48f))
             }
         }
         drawPath(outline, accent, alpha = .28f + .64f * incoming, style = Stroke(unit * (.012f + .016f * incoming)))
@@ -473,7 +476,7 @@ internal class MarbleScene(private val path: MarblePath, private val marbleAtlas
         val frame = path.frame(timeMs)
         val camera = Camera(size,frame.target)
         val start = max(0,frame.anchor-VisibleLimit/2)
-        val end = min(bars.lastIndex,frame.anchor+VisibleLimit/2)
+        val end = min(path.keys.lastIndex,frame.anchor+VisibleLimit/2)
         var count = 0
         for (i in start..end) {
             val key = path.keys[i]
@@ -492,31 +495,25 @@ internal class MarbleScene(private val path: MarblePath, private val marbleAtlas
             count++
         }
         for (n in 0 until count) {
-            val bar = barAt(sorted[n])
+            val bar = meshes.barAt(sorted[n])
             barShadow(bar,camera)
-            val age=timeMs-bar.key.atMs
-            if (age in 0..290) {
-                val t=1f-age/290f
-                halo(camera.project(shadow(bar.key.center)), camera.unit(bar.key.center)*1.74f,
-                    bar.finish.emission,t*t)
-            }
         }
         val wallContact = camera.project(shadow(frame.marble))
         val wallR = camera.unit(frame.marble)*MarbleRadius*1.58f
         translate(wallContact.x,wallContact.y) {
             scale(wallR,wallR*.88f,Offset.Zero) { drawCircle(ShadowFeather,1f,Offset.Zero) }
         }
-        for (i in start..min(rails.lastIndex, end + 1)) {
+        for (i in start..min(path.spans.lastIndex, end + 1)) {
             val run = path.spans[i]
             if (run.railEnd <= 0f) continue
-            val guide = rails[i] ?: Rail(run).also { rails[i] = it }
+            val guide = meshes.railAt(i)
             rail(guide, camera)
         }
         val marbleDepth=camera.depth(frame.marble)
         var marbleDrawn=false
         for (n in 0 until count) {
             val i=sorted[n]
-            val bar = barAt(i)
+            val bar = meshes.barAt(i)
             if (!marbleDrawn && depths[n]>marbleDepth+.13f && i!=frame.anchor) {
                 marble(camera,frame)
                 marbleDrawn=true
@@ -542,16 +539,15 @@ internal class MarbleScene(private val path: MarblePath, private val marbleAtlas
 
 @Composable
 fun MarbleStage(chart: Chart, positionMs: () -> Long, modifier: Modifier = Modifier) {
-    val path = remember(chart) { MarblePath(chart) }
-    MarbleStage(path, positionMs, modifier, emptyList(), StageTheme.Stereo) {}
+    val meshes = remember(chart) { OrbitMeshes(MarblePath(chart)) }
+    MarbleStage(meshes, positionMs, modifier, emptyList(), StageTheme.Stereo, imageResource(Res.drawable.studio_marble)) {}
 }
 
 @Composable
-internal fun MarbleStage(path: MarblePath, positionMs: () -> Long, modifier: Modifier,
-    feedback: List<PanelFeedback>, theme: StageTheme, onPresented: () -> Unit,
+internal fun MarbleStage(meshes: OrbitMeshes, positionMs: () -> Long, modifier: Modifier,
+    feedback: List<PanelFeedback>, theme: StageTheme, atlas: ImageBitmap, onPresented: () -> Unit,
 ) {
-    val atlas = imageResource(Res.drawable.studio_marble)
-    val scene = remember(path, atlas, theme) { MarbleScene(path, atlas, theme) }
+    val scene = remember(meshes, atlas, theme) { MarbleScene(meshes, atlas, theme) }
     val presented = remember(scene) { CompletableDeferred<Unit>() }
     val callback = rememberUpdatedState(onPresented)
     LaunchedEffect(presented) {

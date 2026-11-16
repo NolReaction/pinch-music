@@ -44,6 +44,12 @@ jobs:
               asset = package.getinfo("assets/backing/stereo-love.m4a")
               assert asset.compress_type == ZIP_STORED, "MediaPlayer needs an uncompressed asset"
               assert package.read(asset) == track.read_bytes(), "Packaged soundtrack differs from source"
+              arrangements = Path("arranger/build/generated/assets")
+              tracks = sorted(arrangements.glob("arrangements/*/*"))
+              assert len(tracks) == 32 and len({track.parent for track in tracks}) == 8
+              for track in tracks:
+                  item = package.getinfo("assets/" + track.relative_to(arrangements).as_posix())
+                  assert item.compress_type == ZIP_STORED and package.read(item) == track.read_bytes(), item.filename
               for instrument in ("piano", "mallet", "synth"):
                   strike = package.getinfo(f"assets/feedback/{instrument}.wav")
                   assert strike.compress_type == ZIP_STORED and strike.file_size > 44
@@ -73,6 +79,8 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/PinchBuild" CODE_SIGNING_ALLOWED=NO build
           app="$RUNNER_TEMP/PinchBuild/Build/Products/Debug-iphonesimulator/PinchMusic.app"
           test -s "$app/media/backing/stereo-love.m4a"
+          test "$(find "$app/arrangements" -type f | wc -l | tr -d ' ')" = 32
+          diff -qr arranger/build/generated/assets/arrangements "$app/arrangements"
           for instrument in piano mallet synth; do
             test -s "$app/media/instruments/$instrument/60.wav"
             test -s "$app/media/feedback/$instrument.wav"

@@ -1,10 +1,16 @@
 package music.pinch
 
-/** Settings are local. Imported PCM is transient; only its note chart is persisted. */
+import music.pinch.core.Chart
+
+/** A seekable arrangement on disk, or a packaged Android asset. */
+data class ArrangementTrack(val path: String, val bundledAsset: Boolean = false)
+
+/** Settings and imported note charts are stored locally. */
 interface Platform {
     fun readValue(key: String): String?
     fun writeValue(key: String, value: String)
     suspend fun pickAudio(): FloatArray?
+    suspend fun arrangementTrack(chart: Chart, bundledId: String?, previewInstrument: Instrument?): ArrangementTrack
     var volume: Float
     var haptics: Boolean
     fun feedback()
@@ -24,8 +30,8 @@ data class Playback(
 )
 
 interface GameMedia {
-    /** A bundled accompaniment begins at chart time zero, including the count-in. */
-    fun prepare(pitches: Set<Int>, backingAsset: String?)
+    /** A backing asset or an arrangement starts at the same time as the chart. */
+    fun prepare(pitches: Set<Int>, backingAsset: String?, arrangement: ArrangementTrack? = null)
     /** Rebuild interrupted hardware when the user asks to resume. */
     fun prepareResume() {}
     fun setBackingVolume(volume: Float)
@@ -33,7 +39,7 @@ interface GameMedia {
     fun snapshot(): Playback
     fun play()
     fun pause()
-    fun note(midi: Int, gain: Float)
+    fun note(midi: Int, gain: Float, durationMs: Int)
     /** A short, unpitched attack layered on a fully recorded melody. */
     fun strike(gain: Float)
     fun close()

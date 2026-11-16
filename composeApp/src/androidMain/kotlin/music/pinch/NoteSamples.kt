@@ -11,6 +11,7 @@ import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -92,7 +93,7 @@ internal class NoteSamples private constructor(
         }
     }
 
-    private data class Voice(val sample: Int, val rate: Float, val gain: Float, val requestedAt: Long)
+    private data class Voice(val sample: Int, val rate: Float, val gain: Float, val requestedAt: Long, val durationMs: Int?)
 
     // Only the game thread swaps inboxes. The worker owns all stream IDs.
     private var inbox: Channel<Voice>? = null
@@ -104,14 +105,14 @@ internal class NoteSamples private constructor(
     fun covers(selected: Instrument, roots: Set<Int>, includeStrike: Boolean) =
         instrument == selected && ids.keys.containsAll(roots) && (!includeStrike || strikeId != 0)
 
-    fun play(pitch: Int, gain: Float) {
+    fun play(pitch: Int, gain: Float, durationMs: Int) {
         val sample = ids[instrumentRoot(pitch)] ?: return
-        enqueue(sample, pitchRates[pitch], gain)
+        enqueue(sample, pitchRates[pitch], gain, durationMs)
     }
 
-    fun strike(gain: Float) = enqueue(strikeId, 1f, gain)
+    fun strike(gain: Float) = enqueue(strikeId, 1f, gain, null)
 
-    private fun enqueue(sample: Int, rate: Float, gain: Float) {
+    private fun enqueue(sample: Int, rate: Float, gain: Float, durationMs: Int?) {
         if (released || sample == 0) return
         val queue = inbox ?: Channel<Voice>(VOICE_COUNT, BufferOverflow.DROP_OLDEST).also { channel ->
             inbox = channel
@@ -120,7 +121,7 @@ internal class NoteSamples private constructor(
                 for (voice in channel) playOnWorker(voice, active)
             }
         }
-        queue.trySend(Voice(sample, rate, gain.coerceIn(0f, 1f), SystemClock.uptimeMillis()))
+        queue.trySend(Voice(sample, rate, gain.coerceIn(0f, 1f), SystemClock.uptimeMillis(), durationMs))
     }
 
     private fun current(voice: Voice, active: Long) =
@@ -141,8 +142,24 @@ internal class NoteSamples private constructor(
             pool.stop(stream)
             return
         }
-        streams[next] = stream
+        val slot = next
+        streams[slot] = stream
         next = (next + 1) % streams.size
+        val duration = voice.durationMs ?: return
+        // A long note can use the sample's own release. Short articulations need
+        // a note-off independent of UI frames. A stolen/reused slot has a new ID.
+        if (duration <= 2200) outputScope.launch {
+            delay((voice.requestedAt + duration - SystemClock.uptimeMillis()).coerceAtLeast(0L))
+            for (gain in floatArrayOf(voice.gain * .56f, voice.gain * .19f)) {
+                if (generation != active || streams[slot] != stream) return@launch
+                pool.setVolume(stream, gain, gain)
+                delay(8)
+            }
+            if (generation == active && streams[slot] == stream) {
+                pool.stop(stream)
+                streams[slot] = 0
+            }
+        }
     }
 
     fun silence() {

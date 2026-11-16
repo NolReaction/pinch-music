@@ -30,7 +30,7 @@ inline V unit(V v) {
 inline V cross(V a, V b) {
     return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
 }
-enum Surface { Enamel, Skirt, Inlay, Chrome, Iron, Bolt, Accent, Rail, Glass, Copper };
+enum Surface { Face, Skirt, Inlay, Chrome, Iron, Bolt, Accent, Rail, Glass, Copper };
 struct Vertex {
     V p, n;
     float material, detail;
@@ -127,21 +127,23 @@ inline Mesh keyMesh(bool shortKey, float side, bool accented) {
     float frontZ = .25f, backZ = shortKey ? -.585f : -.66f;
     float length = frontZ - backZ, cz = (frontZ + backZ) * .5f;
     float depth = accented ? .36f : .215f;
-    const float corner = .115f;
+    const float corner = .064f;
     const int perCorner = 4, ring = 4 * perCorner;
     struct Level {
         float y, inset, slope;
         Surface surface;
     };
-    const Level levels[] = {{0, .041f, 1, Enamel},
-                            {.010f, .018f, .72f, Enamel},
-                            {.030f, .003f, .28f, accented ? Inlay : Enamel},
-                            {.041f, 0, 0, accented ? Inlay : Enamel},
-                            {.053f, 0, 0, Inlay},
-                            {.065f, 0, 0, Inlay},
-                            {depth - .03f, 0, 0, Skirt},
-                            {depth - .009f, .011f, -.6f, Skirt},
-                            {depth, .035f, -1, Skirt}};
+    // A broad face, two cuts around the polished bevel, a narrow polymer
+    // gasket, and the recessed gunmetal underbody are all inside the key bounds.
+    const Level levels[] = {{0, .033f, 1, Face},
+                            {.010f, .016f, .82f, Chrome},
+                            {.024f, .002f, .41f, Chrome},
+                            {.040f, 0, 0, Skirt},
+                            {.052f, 0, 0, Inlay},
+                            {.066f, .009f, -.28f, Chrome},
+                            {.083f, .026f, -.45f, Skirt},
+                            {depth - .018f, .026f, 0, Skirt},
+                            {depth, .043f, -.78f, Chrome}};
     auto contour = [&](Level l, int i) {
         int quadrant = i / perCorner;
         float angle = (quadrant + (i % perCorner) / float(perCorner - 1)) * Pi * .5f;
@@ -150,9 +152,9 @@ inline Mesh keyMesh(bool shortKey, float side, bool accented) {
         float z = cz + (quadrant < 2 ? 1 : -1) * (length * .5f - corner);
         return V{x + (corner - l.inset) * nx, l.y, z + (corner - l.inset) * nz};
     };
-    int top = m.point({cx, 0, cz}, {0, -1, 0}, Enamel);
+    int top = m.point({cx, 0, cz}, {0, -1, 0}, Face);
     for (int i = 0; i < ring; ++i)
-        m.point(contour(levels[0], i), {0, -1, 0}, Enamel);
+        m.point(contour(levels[0], i), {0, -1, 0}, Face);
     for (int i = 0; i < ring; ++i)
         m.tri(top, top + 1 + i, top + 1 + (i + 1) % ring);
     for (int j = 0; j < 8; ++j) {
@@ -174,29 +176,28 @@ inline Mesh keyMesh(bool shortKey, float side, bool accented) {
         m.point(contour(levels[8], i), {0, 1, 0}, Skirt);
     for (int i = 0; i < ring; ++i)
         m.tri(bottom, bottom + 1 + i, bottom + 1 + (i + 1) % ring);
-    for (float z : {backZ + .14f, frontZ - .14f}) {
-        rod(m, {cx, .002f, z}, {cx, -.009f, z}, .045f, Iron, 8);
-        ellipsoid(m, {cx, -.009f, z}, {.033f, .021f, .033f}, Bolt, 8, 4);
-    }
-    if (accented) {
-        const float z = frontZ + .0015f;
-        // Rounded luminous gasket wrapping the end cap.
-        for (float x : {cx - width * .5f + .076f, cx + width * .5f - .076f})
-            rod(m, {x, .049f, z - .009f}, {x, depth - .037f, z - .009f}, .014f, Accent, 6);
-        rod(m, {cx - width * .5f + .076f, depth - .037f, z - .009f},
-            {cx + width * .5f - .076f, depth - .037f, z - .009f}, .014f, Accent, 6);
-    }
+    // One flush countersunk screw on the heel, outside the rolling line.
+    const float screwX = cx + side * width * .18f, screwZ = backZ + .105f;
+    rod(m, {screwX, .001f, screwZ}, {screwX, -.003f, screwZ}, .027f, Iron, 12);
+    rod(m, {screwX, -.003f, screwZ}, {screwX, -.006f, screwZ}, .021f, Bolt, 12);
+    rod(m, {screwX - .012f, -.006f, screwZ}, {screwX + .012f, -.006f, screwZ}, .0025f, Iron, 5);
+    // Slim colour insert in the front fascia, surrounded by the machined rim.
+    const float insertY = accented ? .103f : .088f;
+    rod(m, {cx - width * .34f, insertY, frontZ - .018f},
+           {cx + width * .34f, insertY, frontZ - .018f}, .012f, Accent, 8);
     // Only the cap and its fasteners travel. Guided caps hinge at the rail lip
     // to keep the transfer surface tangent while the rear of the cap goes down.
     for (auto& vertex : m.verts)
         vertex.detail = shortKey ? std::min(1.f, std::abs(vertex.p.x) / width) : 1.f;
-    for (float dx : {-.105f, .105f}) {
-        float x = cx + dx;
-        rod(m, {x, depth - .012f, -.32f}, {x, depth + .09f, -.32f}, .029f, Chrome);
-        rod(m, {x, depth + .09f, -.32f}, {x, depth + .09f, WallZ + .025f}, .030f, Chrome);
-        rod(m, {x, depth + .09f, WallZ + .014f}, {x, depth + .09f, WallZ + .065f}, .050f, Iron, 8);
-        rod(m, {x, depth + .09f, WallZ + .056f}, {x, depth + .09f, WallZ + .077f}, .033f, Bolt, 8);
-    }
+    // One turned wall boss carries a forked sliding carriage; these parts stay
+    // attached to the wall throughout the short motion of the striking cap.
+    float mountY = depth + .092f;
+    rod(m, {cx, mountY, WallZ + .010f}, {cx, mountY, WallZ + .055f}, .090f, Iron, 14);
+    rod(m, {cx, mountY, WallZ + .040f}, {cx, mountY, WallZ + .115f}, .073f, Chrome, 14);
+    rod(m, {cx, mountY, WallZ + .090f}, {cx, mountY, -.41f}, .032f, Chrome, 10);
+    rod(m, {cx - .112f, mountY, -.41f}, {cx + .112f, mountY, -.41f}, .041f, Bolt, 10);
+    for (float dx : {-.088f, .088f})
+        rod(m, {cx + dx, depth - .012f, -.41f}, {cx + dx, mountY, -.41f}, .026f, Chrome);
     return m;
 }
 
