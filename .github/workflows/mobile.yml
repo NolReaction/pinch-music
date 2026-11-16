@@ -36,14 +36,14 @@ jobs:
           from pathlib import Path
           from zipfile import ZipFile, ZIP_STORED
           apk, = Path("composeApp/build/outputs/apk/debug").glob("*.apk")
-          track = Path("media/backing/stereo-love.m4a")
+          track = Path("arranger/build/generated/assets/backing/stereo-love.m4a")
           with ZipFile(apk) as package:
               for abi in ("arm64-v8a", "armeabi-v7a", "x86", "x86_64"):
                   with package.open(f"lib/{abi}/libpinch_stage.so") as renderer:
                       assert renderer.read(4) == b"\x7fELF", f"Missing game renderer for {abi}"
               asset = package.getinfo("assets/backing/stereo-love.m4a")
               assert asset.compress_type == ZIP_STORED, "MediaPlayer needs an uncompressed asset"
-              assert package.read(asset) == track.read_bytes(), "Packaged soundtrack differs from source"
+              assert package.read(asset) == track.read_bytes(), "Packaged soundtrack differs from build master"
               arrangements = Path("arranger/build/generated/assets")
               tracks = sorted(arrangements.glob("arrangements/*/*"))
               assert len(tracks) == 32 and len({track.parent for track in tracks}) == 8
@@ -78,7 +78,7 @@ jobs:
             -destination 'generic/platform=iOS Simulator' ARCHS=arm64 ONLY_ACTIVE_ARCH=YES \
             -derivedDataPath "$RUNNER_TEMP/PinchBuild" CODE_SIGNING_ALLOWED=NO build
           app="$RUNNER_TEMP/PinchBuild/Build/Products/Debug-iphonesimulator/PinchMusic.app"
-          test -s "$app/media/backing/stereo-love.m4a"
+          cmp arranger/build/generated/assets/backing/stereo-love.m4a "$app/media/backing/stereo-love.m4a"
           test "$(find "$app/arrangements" -type f | wc -l | tr -d ' ')" = 32
           diff -qr arranger/build/generated/assets/arrangements "$app/arrangements"
           for instrument in piano mallet synth; do

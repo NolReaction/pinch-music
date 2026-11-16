@@ -4,7 +4,6 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
-import kotlin.test.assertNull
 
 class RhythmGameTest {
     private val first = Note("a", 2_000, 72, 250, .8f)
@@ -216,36 +215,14 @@ class RhythmGameTest {
     }
 
     @Test
-    fun pauseDropsAnExpiredSoundCueAndLeavesTheFollowingLandingOpen() {
+    fun pauseAfterAMissLeavesTheFollowingLandingOpen() {
         val game = RhythmGame(chart, forgiving = true)
         game.advance(2_245)
         assertEquals(listOf(first), game.takeMisses())
-        assertNull(game.takeMissCue(2_245))
         game.pause()
-        assertNull(game.takeMissCue(8_000))
         game.resume()
-        assertNull(game.takeMissCue(2_246))
-        assertNull(game.takeMissCue(2_260))
         assertEquals(second, assertIs<TapResult.Hit>(game.tap(2_500)).note)
         assertEquals(GameStats(2, perfect = 1, missed = 1, combo = 1, maxCombo = 1), game.finish())
-    }
-
-    @Test
-    fun tenFpsMissCuesWaitForQueuedTapsAndDoNotReplayAfterAStall() {
-        val game = RhythmGame(chart, forgiving = true)
-        for (phase in 0L until 100L) {
-            game.restart()
-            val cues = (2_144L + phase..2_944L + phase step 100L).mapNotNull { game.takeMissCue(it) }
-            assertEquals(listOf(first, second), cues)
-        }
-        game.restart()
-        assertNull(game.takeMissCue(2_144))
-        assertNull(game.takeMissCue(2_244))
-        assertIs<TapResult.Hit>(game.tap(2_020))
-        assertNull(game.takeMissCue(2_344))
-        assertNull(game.takeMissCue(2_744))
-        assertNull(game.takeMissCue(5_744))
-        assertNull(game.takeMissCue(5_844))
     }
 
     @Test

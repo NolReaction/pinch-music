@@ -31,14 +31,15 @@ internal class SessionClock(private val durationMs: Long) {
 internal class BackingClock(private val durationMs: Long) {
     private var sample: Playback? = null
     private var advancing = false
+    private var resetPositionMs = 0L
 
     fun snapshot(nowMs: Long, read: () -> Playback): Playback {
         val last = sample
-        if (last == null || nowMs - last.observedUptimeMs >= 64) {
+        if (last == null || (last.playing && !advancing) || nowMs - last.observedUptimeMs >= 64) {
             val fresh = read()
             // Observe real progress before coasting. Identical samples freeze the estimate through
             // startup or a decoder stall. A later callback, pause or resume invalidates the anchor.
-            advancing = fresh.playing && fresh.positionMs > (last?.positionMs ?: 0L)
+            advancing = fresh.playing && fresh.positionMs > (last?.positionMs ?: resetPositionMs)
             sample = fresh
             return fresh.copy(stalled = fresh.playing && !advancing)
         }
@@ -48,6 +49,7 @@ internal class BackingClock(private val durationMs: Long) {
     }
 
     fun reset() {
+        sample?.let { resetPositionMs = it.positionMs }
         sample = null
         advancing = false
     }
@@ -63,4 +65,12 @@ internal fun Playback.visualPosition(previous: Playback?, drawnMs: Long, duratio
     }
     val correction = maxOf(1L, elapsed / 4)
     return (predicted + error.coerceIn(-correction, correction)).coerceIn(drawnMs, durationMs)
+}
+
+
+/** Never carry a rendered pose through an audio stall or predict beyond one decoder polling interval. */
+internal fun Playback.presentAt(drawnMs: Long, targetUptimeMs: Long, durationMs: Long): Long {
+    if (!playing || ended || stalled) return drawnMs
+    val lead = (targetUptimeMs - observedUptimeMs).coerceIn(0L, 64L)
+    return (drawnMs + lead).coerceAtMost(durationMs)
 }

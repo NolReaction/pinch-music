@@ -72,6 +72,37 @@ class SessionClockTest {
     }
 
     @Test
+    fun firstAudibleBufferAndResumeAreObservedAtTheNextRefresh() {
+        val clock = BackingClock(4_000)
+        fun at(now: Long, pos: Long, playing: Boolean = true) =
+            clock.snapshot(now) { Playback(true, playing, false, pos, now) }
+        assertTrue(at(1_000, 0).stalled)
+        assertEquals(16L, at(1_016, 16).positionMs)
+        clock.reset()
+        assertFalse(at(1_020, 20, false).playing)
+        clock.reset()
+        assertTrue(at(4_000, 20).stalled)
+        val held = at(4_016, 20)
+        assertTrue(held.stalled)
+        assertEquals(20L, held.presentAt(20L, 4_033, 4_000))
+        assertEquals(35L, at(4_034, 35).positionMs)
+    }
+
+    @Test
+    fun eachRefreshSamplesTheAudioPositionThatWillBeAudibleAtScanout() {
+        for (hz in listOf(60, 90, 120)) {
+            val clock = BackingClock(10_000)
+            for (frame in 0 until 200) {
+                val now = 10_000L + frame * 1_000L / hz
+                val target = 10_000L + (frame + 1) * 1_000L / hz
+                val audio = clock.snapshot(now) { Playback(true, true, false, now - 9_000, now) }
+                assertEquals(target - 9_000, audio.presentAt(audio.positionMs, target, 10_000))
+                assertEquals(now - 9_000, audio.positionMs) // The judge remains on the original clock.
+            }
+        }
+    }
+
+    @Test
     fun decoderJitterDoesNotDoubleOrFreezeAFrameAndLongGapsResync() {
         var previous = Playback(true, true, false, 42_000, 0)
         var drawn = previous.positionMs

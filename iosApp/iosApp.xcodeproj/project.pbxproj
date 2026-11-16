@@ -11,7 +11,6 @@
         1A0000000000000000000001 /* PinchMusicApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000000000000000000001 /* PinchMusicApp.swift */; };
         1A0000000000000000000002 /* AppleMedia.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000000000000000000002 /* AppleMedia.swift */; };
         1A0000000000000000000005 /* AppleSongImport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000000000000000000008 /* AppleSongImport.swift */; };
-        1A0000000000000000000003 /* media in Resources */ = {isa = PBXBuildFile; fileRef = 2A0000000000000000000003 /* media */; };
         1A0000000000000000000004 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 2A0000000000000000000007 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
@@ -117,7 +116,6 @@
             isa = PBXResourcesBuildPhase;
             buildActionMask = 2147483647;
             files = (
-                1A0000000000000000000003 /* media in Resources */,
                 1A0000000000000000000004 /* Assets.xcassets in Resources */,
             );
             runOnlyForDeploymentPostprocessing = 0;

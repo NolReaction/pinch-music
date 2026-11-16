@@ -7,12 +7,16 @@ import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.net.Uri
 import android.os.SystemClock
+import android.provider.OpenableColumns
+import android.system.Os
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
+import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -20,7 +24,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 
-/** The picker owns its transient URI grant; only the extracted note chart is retained. */
+/** Copy the selected excerpt while the picker grants access to its URI. */
 internal class AndroidSongImport(private val activity: ComponentActivity) {
     private var pending: CancellableContinuation<Uri?>? = null
     private val picker = activity.registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -29,7 +33,7 @@ internal class AndroidSongImport(private val activity: ComponentActivity) {
         if (continuation?.isActive == true) continuation.resume(uri)
     }
 
-    suspend fun pickAudio(): FloatArray? {
+    suspend fun pickAudio(): PickedAudio? {
         val uri = withContext(Dispatchers.Main.immediate) {
             suspendCancellableCoroutine<Uri?> { next ->
                 if (pending != null) {
@@ -45,15 +49,21 @@ internal class AndroidSongImport(private val activity: ComponentActivity) {
                 }
             }
         } ?: return null
-        return withContext(Dispatchers.IO) { readSongExcerpt(activity.applicationContext, uri) }
+        return withContext(Dispatchers.IO) {
+            val context = activity.applicationContext
+            val displayName = runCatching {
+                context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+                    if (it.moveToFirst()) it.getString(0) else null
+                }
+            }.getOrNull()
+            readSongExcerpt(context, uri).picked(displayName)
+        }
     }
 }
 
-private const val OUTPUT_RATE = 11_025
 private const val EXCERPT_SECONDS = 30
-private const val MAX_FRAMES = OUTPUT_RATE * EXCERPT_SECONDS
 
-private suspend fun readSongExcerpt(context: Context, uri: Uri): FloatArray {
+private suspend fun readSongExcerpt(context: Context, uri: Uri): ImportRecording {
     val extractor = MediaExtractor()
     try {
         extractor.setDataSource(context, uri, null)
@@ -65,7 +75,7 @@ private suspend fun readSongExcerpt(context: Context, uri: Uri): FloatArray {
         val durationUs = if (source.containsKey(MediaFormat.KEY_DURATION)) source.getLong(MediaFormat.KEY_DURATION) else 0L
         val startUs = if (durationUs >= 70_000_000) minOf(durationUs / 3, 55_000_000) else 0L
         if (startUs > 0) extractor.seekTo(startUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
-        val sink = MonoExcerpt()
+        val sink = RecordingExcerpt()
         val type = requireNotNull(source.getString(MediaFormat.KEY_MIME))
         if (type == "audio/raw") {
             // A WAV track returned by MediaExtractor already contains PCM.
@@ -90,7 +100,7 @@ private suspend fun readSongExcerpt(context: Context, uri: Uri): FloatArray {
 }
 
 private suspend fun decodeCompressed(
-    extractor: MediaExtractor, type: String, source: MediaFormat, startUs: Long, sink: MonoExcerpt
+    extractor: MediaExtractor, type: String, source: MediaFormat, startUs: Long, sink: RecordingExcerpt
 ) {
     val codec = MediaCodec.createDecoderByType(type)
     try {
@@ -140,19 +150,30 @@ private suspend fun decodeCompressed(
     }
 }
 
-/** Downmix and average input frames into target-rate time bins without retaining the full recording. */
-private class MonoExcerpt {
-    private val pcm = FloatArray(MAX_FRAMES)
-    private var count = 0
+/** Capture at the source rate through 48 kHz. Larger rates are averaged into bounded time bins. */
+private class RecordingExcerpt {
+    private var sourceRate = 0
+    private var rate = 0
+    private var channels = 0
+    private var pcm = ByteArray(0)
+    private var offset = 0
     private var phase = 0
-    private var frameSum = 0f
+    private var leftSum = 0f
+    private var rightSum = 0f
     private var frames = 0
-    val full get() = count == pcm.size
+    val full get() = pcm.isNotEmpty() && offset == pcm.size
 
     fun append(bytes: ByteBuffer, format: MediaFormat, timeUs: Long, startUs: Long) {
-        val channels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-        val rate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-        require(channels in 1..32 && rate in 4_000..384_000) { "Неизвестный формат звука" }
+        val n = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+        val hz = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+        require(n in 1..32 && hz in 4_000..384_000) { "Неизвестный формат звука" }
+        if (sourceRate == 0) {
+            sourceRate = hz
+            channels = minOf(2, n)
+            rate = minOf(48_000, hz)
+            pcm = ByteArray(rate * EXCERPT_SECONDS * channels * 2)
+        }
+        require(hz == sourceRate && minOf(2, n) == channels) { "Формат записи изменился внутри фрагмента." }
         val encoding = if (format.containsKey(MediaFormat.KEY_PCM_ENCODING)) format.getInteger(MediaFormat.KEY_PCM_ENCODING)
             else AudioFormat.ENCODING_PCM_16BIT
         val width = when (encoding) {
@@ -162,44 +183,73 @@ private class MonoExcerpt {
             AudioFormat.ENCODING_PCM_32BIT, AudioFormat.ENCODING_PCM_FLOAT -> 4
             else -> error("Неподдерживаемый формат PCM")
         }
-        val stride = width * channels
-        val availableFrames = bytes.remaining() / stride
-        val skip = (((startUs - timeUs).coerceAtLeast(0L) * rate) / 1_000_000L)
-            .coerceAtMost(availableFrames.toLong()).toInt()
+        val stride = width * n
+        val skip = (((startUs - timeUs).coerceAtLeast(0L) * hz) / 1_000_000L)
+            .coerceAtMost((bytes.remaining() / stride).toLong()).toInt()
         bytes.position(bytes.position() + skip * stride)
         while (!full && bytes.remaining() >= stride) {
-            var value = 0f
-            repeat(channels) {
-                value += when (encoding) {
+            var left = 0f
+            var right = 0f
+            for (channel in 0 until n) {
+                val sample = when (encoding) {
                     AudioFormat.ENCODING_PCM_8BIT -> ((bytes.get().toInt() and 255) - 128) / 128f
                     AudioFormat.ENCODING_PCM_16BIT -> bytes.short / 32768f
                     AudioFormat.ENCODING_PCM_24BIT_PACKED -> {
                         val lo = bytes.get().toInt() and 255
                         val mid = bytes.get().toInt() and 255
-                        val hi = bytes.get().toInt()
-                        (lo or (mid shl 8) or (hi shl 16)) / 8388608f
+                        (lo or (mid shl 8) or (bytes.get().toInt() shl 16)) / 8388608f
                     }
                     AudioFormat.ENCODING_PCM_32BIT -> bytes.int / 2147483648f
-                    else -> bytes.float
+                    else -> bytes.float.let { if (it.isFinite()) it else 0f }
                 }
+                if (channel % 2 == 0) left += sample else right += sample
             }
-            frameSum += value / channels
+            leftSum += left / ((n + 1) / 2)
+            if (channels == 2) rightSum += right / (n / 2)
             frames++
-            phase += OUTPUT_RATE
-            if (phase >= rate) {
-                val mean = (frameSum / frames).coerceIn(-1f, 1f)
-                while (phase >= rate && !full) {
-                    pcm[count++] = mean
-                    phase -= rate
-                }
-                frameSum = 0f
+            phase += rate
+            if (phase >= hz) {
+                write(leftSum / frames)
+                if (channels == 2) write(rightSum / frames)
+                leftSum = 0f
+                rightSum = 0f
                 frames = 0
+                phase -= hz
             }
         }
     }
 
-    fun result(): FloatArray {
-        require(count >= OUTPUT_RATE) { "В файле меньше секунды звука" }
-        return pcm.copyOf(count)
+    private fun write(value: Float) {
+        val word = (value.coerceIn(-1f, 1f) * 32768f).roundToInt().coerceIn(-32768, 32767)
+        pcm[offset++] = word.toByte()
+        pcm[offset++] = (word shr 8).toByte()
     }
+
+    fun result(): ImportRecording {
+        require(rate > 0 && offset >= rate * channels * 2) { "В файле меньше секунды звука" }
+        return ImportRecording(rate, channels, if (offset == pcm.size) pcm else pcm.copyOf(offset))
+    }
+}
+
+internal class AndroidRecordings(context: Context) {
+    private val directory = File(context.filesDir, "recordings")
+    private fun file(id: String) = File(directory, importFilename(id))
+
+    suspend fun save(id: String, data: ImportRecording) = withContext(Dispatchers.IO) {
+        check(directory.isDirectory || directory.mkdirs()) { "Не удалось создать папку записей." }
+        val dest = file(id)
+        val scratch = File.createTempFile("excerpt-", ".part", directory)
+        try {
+            scratch.outputStream().use { out ->
+                out.write(waveHeader(data.sampleRate, data.channels, data.pcm16.size))
+                out.write(data.pcm16)
+            }
+            Os.rename(scratch.path, dest.path)
+        } finally {
+            scratch.delete()
+        }
+    }
+
+    fun remove(id: String) { file(id).delete() }
+    fun track(id: String) = ArrangementTrack(file(id).absolutePath)
 }

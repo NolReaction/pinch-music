@@ -187,14 +187,14 @@ private final class NativeMedia: NSObject, @preconcurrency AppleMediaSession {
 
     func includeSample(midi: Int32, root: Int32) { roots[midi] = root }
 
-    func prepare(backingAsset: String?, arrangementPath: String? = nil) {
+    func prepare(backingAsset: String?, arrangementPath: String?, includeStrike: Bool) {
         guard !closed, !backingEnded, graph == nil, preparation == nil, failure == nil else { return }
         guard foreground(), mediaServicesAvailable else { interrupt(); return }
         preparation = Task { [weak self, instrument, roots, backingAsset, arrangementPath, savedFrame] in
             do {
                 await LaunchAudio.shared.stop()
                 try Task.checkCancellation()
-                let graph = try await GameAudioLoader.shared.load(instrument, roots: roots, backingAsset: backingAsset, arrangementPath: arrangementPath, from: savedFrame)
+                let graph = try await GameAudioLoader.shared.load(instrument, roots: roots, backingAsset: backingAsset, arrangementPath: arrangementPath, includeStrike: includeStrike, from: savedFrame)
                 guard !Task.isCancelled, let self else { return }
                 self.preparation = nil
                 guard self.foreground(), self.mediaServicesAvailable else { self.interrupt(); return }
@@ -384,7 +384,7 @@ private actor GameAudioLoader {
     private init() { samples.totalCostLimit = 24 * 1024 * 1024 }
 
     func load(_ instrument: String, roots: [Int32: Int32], backingAsset: String?, arrangementPath: String?,
-              from frame: AVAudioFramePosition) throws -> GameAudioGraph {
+              includeStrike: Bool, from frame: AVAudioFramePosition) throws -> GameAudioGraph {
         try Task.checkCancellation()
         var track: AVAudioFile?
         var sourceURL: URL?
@@ -409,7 +409,7 @@ private actor GameAudioLoader {
             buffers[midi] = try cached("\(folder)/\(midi)") { try Self.transpose(original, semitones: midi - root) }
         }
         var contact: AVAudioPCMBuffer?
-        if backingAsset != nil && !roots.isEmpty {
+        if includeStrike {
             contact = try cached("media/feedback/\(instrument)") { try Self.readSample(instrument, folder: "media/feedback") }
         }
         try Task.checkCancellation()
@@ -463,6 +463,7 @@ private final class GameAudioGraph: @unchecked Sendable {
     private let startFrame: AVAudioFramePosition
     private let fadeHead: AVAudioPCMBuffer?
     private var presentationDelay = 0.0
+    private var renderQuantum = 0.0
     private let buffers: [Int32: AVAudioPCMBuffer]
     private let contact: AVAudioPCMBuffer?
     // The immutable gated buffers may still be in the render pipeline after a
@@ -488,7 +489,12 @@ private final class GameAudioGraph: @unchecked Sendable {
               let time = backingNode.playerTime(forNodeTime: renderTime), time.sampleRate > 0 else { return nil }
         // Player time is rendered audio. Account for the downstream mixer/device
         // latency so the displayed strike follows what has reached the listener.
-        let audibleSeconds = max(0, Double(time.sampleTime) / time.sampleRate - presentationDelay)
+        // Sample time belongs to the audio callback's host timestamp, not the UI's polling instant.
+        // Bridge those host clocks only within the current hardware buffer so a stalled node freezes.
+        let renderAge = renderTime.isHostTimeValid
+            ? AVAudioTime.seconds(forHostTime: mach_absolute_time()) - AVAudioTime.seconds(forHostTime: renderTime.hostTime) : 0
+        let age = min(renderQuantum, max(-renderQuantum, renderAge))
+        let audibleSeconds = max(0, Double(time.sampleTime) / time.sampleRate + age - presentationDelay)
         return min(backingLength, startFrame + AVAudioFramePosition(audibleSeconds * backingRate))
     }
 
@@ -563,6 +569,7 @@ private final class GameAudioGraph: @unchecked Sendable {
         try engine.start()
         if track != nil {
             presentationDelay = max(0, backingNode.outputPresentationLatency)
+            renderQuantum = AVAudioSession.sharedInstance().ioBufferDuration
             backingNode.play()
         }
     }

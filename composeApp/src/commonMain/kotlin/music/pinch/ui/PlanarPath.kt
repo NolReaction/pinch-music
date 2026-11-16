@@ -281,7 +281,11 @@ internal class PlanarPath(chart: Chart, contactChart: Chart = chart.cascadeChart
             val previousInterval = if (i > 0) note.midi - notes[i - 1].midi else 0
             val nextInterval = notes.getOrNull(i + 2)?.let { it.midi - next.midi } ?: 0
             val fast = gap <= (.86 * beat).coerceIn(285.0, 435.0)
-            val scaleRun = abs(interval) in 1..3 && (previousInterval * interval > 0 || nextInterval * interval > 0)
+            // A staircase needs room for the whole key before the next strike.
+            // On a tight pickup its back edge would cut across the incoming arc;
+            // rebound towards the opposite bank instead.
+            val scaleRun = abs(incomingX) * seconds >= .70 && abs(interval) in 1..3 &&
+                (previousInterval * interval > 0 || nextInterval * interval > 0)
             val reply = !guide && !scaleRun && (fast || (gap <= 1.24 * beat &&
                 (interval == 0 || interval * previousInterval < 0 || abs(interval) >= 5)))
             val turn = !guide && previous != null && (reply || center.x * direction > 4.3 ||

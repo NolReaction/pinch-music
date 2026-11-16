@@ -9,7 +9,11 @@ data class ArrangementTrack(val path: String, val bundledAsset: Boolean = false)
 interface Platform {
     fun readValue(key: String): String?
     fun writeValue(key: String, value: String)
-    suspend fun pickAudio(): FloatArray?
+    fun removeValue(key: String)
+    suspend fun pickAudio(): PickedAudio?
+    suspend fun saveImportAudio(id: String, audio: PickedAudio): Boolean = false
+    fun removeImportAudio(id: String) {}
+    fun importAudioTrack(id: String): ArrangementTrack? = null
     suspend fun arrangementTrack(chart: Chart, bundledId: String?, previewInstrument: Instrument?): ArrangementTrack
     var volume: Float
     var haptics: Boolean
@@ -33,7 +37,7 @@ data class Playback(
 
 interface GameMedia {
     /** A backing asset or an arrangement starts at the same time as the chart. */
-    fun prepare(pitches: Set<Int>, backingAsset: String?, arrangement: ArrangementTrack? = null)
+    fun prepare(pitches: Set<Int>, backingAsset: String?, arrangement: ArrangementTrack? = null, includeStrike: Boolean = false)
     /** Rebuild interrupted hardware when the user asks to resume. */
     fun prepareResume() {}
     fun setBackingVolume(volume: Float)

@@ -23,7 +23,8 @@ class LeadExtractionTest {
         val chart = extractLeadChart(samples, rate, "Фраза")
         assertEquals(expected, chart.notes.map { it.midi })
         assertTrue(chart.notes.zipWithNext().all { (a,b) -> b.atMs - a.atMs >= 579 })
-        assertTrue(chart.notes.first().atMs >= 2000)
+        assertTrue(chart.notes.first().atMs in 0..25)
+        assertEquals(8000L, chart.durationMs)
     }
     @Test fun aClearQuarterNotePhraseKeepsEveryBeatAtItsOriginalOnset() {
         val rate = 11_025
@@ -61,9 +62,55 @@ class LeadExtractionTest {
         assertEquals(source.notes.map { it.atMs to it.midi }, loaded.notes.map { it.atMs to it.midi })
     }
 
+    @Test fun followsRepeatedMelodyOverBassChordsAndDrumsWithoutLosingItsSourcePosition() {
+        val rate = 11_025
+        val lead = listOf(72, 72, 74, 76, 76, 76, 79, 77, 77, 74, 76, 72, 69, 69, 72, 71)
+        val step = 60.0 / 112 / 2
+        val intro = .63
+        val samples = FloatArray(((intro + (lead.size + 1) * step) * rate).toInt())
+        fun tone(midi: Int, time: Double) = 2 * PI * 440 * 2.0.pow((midi - 69) / 12.0) * time
+        val chords = listOf(listOf(52, 55, 60), listOf(50, 55, 59))
+        val noise = kotlin.random.Random(331)
+        for (i in samples.indices) {
+            val time = i.toDouble() / rate - intro
+            if (time < 0) continue
+            val eighth = (time / step).toInt()
+            if (eighth >= lead.size) continue
+            val age = time - step * eighth
+            val phase = tone(lead[eighth], age)
+            val release = ((step * .96 - age) / .035).coerceIn(0.0, 1.0)
+            var value = .25 * (1 - exp(-age / .008)) * exp(-1.8 * age) * release *
+                (sin(phase) + .42 * sin(2 * phase) + .24 * sin(3 * phase))
+            val chordAge = age + eighth % 4 * step
+            val chord = chords[eighth / 4 % 2]
+            for (pitch in chord) {
+                val p = tone(pitch, chordAge)
+                value += .18 * (1 - exp(-chordAge / .08)) * ((4 * step - chordAge) / .07).coerceIn(0.0, 1.0) *
+                    (sin(p) + .30 * sin(2 * p))
+            }
+            if (eighth % 2 == 0) {
+                value += .58 * exp(-7 * age) * sin(2 * PI * 78 * age)
+                value += .8 * exp(-24 * age) * sin(2 * PI * (55 * age + 1.8 * (1 - exp(-30 * age))))
+            }
+            samples[i] = (.55 * (value + .12 * (noise.nextDouble() * 2 - 1) * exp(-75 * age))).toFloat()
+        }
+        val chart = extractLeadChart(samples, rate, "Фрагмент")
+        assertEquals(lead, chart.notes.map { it.midi })
+        assertEquals(lead, chart.notes.filter { it.playable }.map { it.midi })
+        assertTrue(chart.bpm in 110..114)
+        chart.notes.forEachIndexed { i, note ->
+            val audible = ((intro + i * step) * 1000).roundToLong()
+            assertTrue(abs(note.atMs - audible) <= 38, "note $i at ${note.atMs}, expected $audible")
+        }
+        assertTrue(abs(chart.durationMs - samples.size * 1_000L / rate) <= 1)
+    }
+
     @Test fun refusesQuietAudioAndIsolatedDrumLikeClicks() {
         val clicks = FloatArray(11025 * 3) { if (it % 2800 == 0) 1f else 0f }
         assertFailsWith<IllegalArgumentException> { extractLeadChart(clicks, 11025, "Щелчки") }
         assertFailsWith<IllegalArgumentException> { extractLeadChart(FloatArray(22050), 11025, "Тишина") }
+        val noise = kotlin.random.Random(27)
+        val hiss = FloatArray(11_025 * 5) { noise.nextFloat() * .4f - .2f }
+        assertFailsWith<IllegalArgumentException> { extractLeadChart(hiss, 11025, "Шум") }
     }
 }

@@ -1,12 +1,12 @@
 package music.pinch.ui
 
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.withFrameNanos
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 
 /** The GL drawable can be smaller than the native-resolution Compose interface around it. */
@@ -33,23 +33,28 @@ internal interface CascadeDisplay {
     fun present(course: CascadeGpuCourse, frame: FloatArray)
 }
 
+/** The session observes audio and presents the native surface in the same display callback. */
+internal class StageFrames {
+    var render: (() -> Unit)? = null
+}
+
+internal val LocalStageFrames = staticCompositionLocalOf<StageFrames> { error("Missing stage frame driver") }
+
 @Composable
 internal fun CascadeFrameClock(
     display: CascadeDisplay, course: CascadeGpuCourse, frame: (FloatArray) -> Unit, animate: Boolean
 ) {
     val readFrame by rememberUpdatedState(frame)
     val values = remember(display) { FloatArray(CascadeFrameSize) }
+    val frames = LocalStageFrames.current
+    val draw = remember(display, course) { {
+        readFrame(values)
+        display.present(course, values)
+    } }
     if (animate) {
-        LaunchedEffect(display, course) {
-            while (true) withFrameNanos {
-                readFrame(values)
-                display.present(course, values)
-            }
+        DisposableEffect(frames, draw) {
+            frames.render = draw
+            onDispose { if (frames.render === draw) frames.render = null }
         }
-    } else {
-        SideEffect {
-            readFrame(values)
-            display.present(course, values)
-        }
-    }
+    } else SideEffect(draw)
 }

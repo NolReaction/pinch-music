@@ -28,6 +28,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import music.pinch.Actions
@@ -44,7 +45,6 @@ private val RecordingAndInstruments: List<Instrument?> = listOf(null) + Instrume
 internal fun StudioMenu(state: ScreenState, actions: Actions) {
     var page by rememberSaveable { mutableStateOf<StudioPage?>(null) }
     val close = { page = null }
-    val imported = state.selectedSong.id in state.importedIds
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())
         .padding(horizontal = 18.dp).padding(top = 8.dp, bottom = 18.dp)) {
         Row(Modifier.fillMaxWidth().heightIn(min = 50.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -91,25 +91,19 @@ internal fun StudioMenu(state: ScreenState, actions: Actions) {
         Spacer(Modifier.height(13.dp))
         Rule()
         if (state.hasScore && !state.importing) {
-            val allowRestore = imported && state.selectedSong.hasBundled
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Row(Modifier.weight(1f).clip(ControlShape).clickable(role = Role.Button, onClick = actions::importAudio)
                     .heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
                     StudioGlyph(StudioIcon.Import, Muted, Modifier.size(17.dp))
                     Spacer(Modifier.width(8.dp))
-                    Text(if (imported) "Заменить запись" else "Выбрать свою запись", color = Muted, fontSize = 13.sp)
+                    Text("Выбрать свою запись", color = Muted, fontSize = 13.sp)
                 }
-                if (allowRestore) {
-                    Text("Вернуть встроенную", color = StudioMint, fontSize = 13.sp,
-                        modifier = Modifier.clickable(role = Role.Button, onClick = actions::restoreBundled)
-                            .heightIn(min = 48.dp).wrapContentHeight(Alignment.CenterVertically))
-                } else state.bestScore?.let { Text("Рекорд  " + number(it), color = StudioMint, fontSize = 12.sp) }
+                state.bestScore?.let { Text("Рекорд  " + number(it), color = StudioMint, fontSize = 12.sp) }
             }
-            if (allowRestore) state.bestScore?.let { ResultRow("Рекорд", number(it), StudioMint) }
         }
     }
     when (page) {
-        StudioPage.Catalog -> StudioCatalog(state, close) { song ->
+        StudioPage.Catalog -> StudioCatalog(state, actions, close) { song ->
             close()
             if (song.id != state.selectedSong.id) actions.selectSong(song.id)
         }
@@ -175,6 +169,7 @@ private fun SongHero(state: ScreenState, onClick: () -> Unit) {
             }
             Spacer(Modifier.height(19.dp))
             Text(song.title, color = SleeveType, fontFamily = FontFamily.Serif, fontStyle = FontStyle.Italic,
+                maxLines = if (song.id in state.importedIds) 3 else Int.MAX_VALUE, overflow = TextOverflow.Ellipsis,
                 fontWeight = FontWeight.Bold, letterSpacing = (-1.65).sp,
                 fontSize = if (song.title.length < 17) 35.sp else 29.sp,
                 lineHeight = if (song.title.length < 17) 36.sp else 31.sp)
@@ -228,8 +223,8 @@ private fun SectionLabel(label: String) {
 
 @Composable
 private fun VoiceChoices(state: ScreenState, actions: Actions) {
-    val voices = if (state.recordedAsset == null) Instrument.entries else RecordingAndInstruments
-    val selected = state.instrument.takeIf { state.backingAsset == null }
+    val voices = if (!state.hasRecording) Instrument.entries else RecordingAndInstruments
+    val selected = state.instrument.takeUnless { state.useRecording }
     BoxWithConstraints(Modifier.fillMaxWidth()) {
         val scale = LocalDensity.current.fontScale
         val count = when {
@@ -241,7 +236,7 @@ private fun VoiceChoices(state: ScreenState, actions: Actions) {
         Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             for (row in rows) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                 for (voice in row) {
-                    Choice(voice?.label ?: "Оригинал", voice == selected, Modifier.weight(1f)) {
+                    Choice(voice?.label ?: if (state.selectedSong.id in state.recordedImportIds) "Запись" else "Оригинал", voice == selected, Modifier.weight(1f)) {
                         if (voice == null) actions.selectRecording() else actions.selectInstrument(voice)
                     }
                 }

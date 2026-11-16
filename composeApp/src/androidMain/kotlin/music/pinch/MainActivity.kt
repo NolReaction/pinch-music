@@ -52,6 +52,7 @@ private class AndroidPlatform(private val activity: MainActivity) : Platform {
     var active: AndroidMedia? = null
         private set
 
+    private val recordings = AndroidRecordings(activity)
     private val songImport = AndroidSongImport(activity)
     private val samples = NoteSampleCache(activity.assets)
     private val launchSound = AndroidLaunchSound(activity)
@@ -62,6 +63,14 @@ private class AndroidPlatform(private val activity: MainActivity) : Platform {
         samples.close()
     }
 
+    override suspend fun saveImportAudio(id: String, audio: PickedAudio): Boolean {
+        val recording = audio.recording ?: return false
+        recordings.save(id, recording)
+        return true
+    }
+    override fun importAudioTrack(id: String) = recordings.track(id)
+    override fun removeImportAudio(id: String) = recordings.remove(id)
+
     override suspend fun pickAudio() = songImport.pickAudio()
     override suspend fun arrangementTrack(chart: Chart, bundledId: String?, previewInstrument: Instrument?) =
         AndroidAccompaniment.track(activity, chart, bundledId, previewInstrument)
@@ -69,6 +78,8 @@ private class AndroidPlatform(private val activity: MainActivity) : Platform {
     override fun writeValue(key: String, value: String) {
         settings.edit().putString(key, value).apply()
     }
+
+    override fun removeValue(key: String) { settings.edit().remove(key).apply() }
 
     override var volume: Float
         get() = settings.getFloat("volume", 0.8f).coerceIn(0f, 1f)

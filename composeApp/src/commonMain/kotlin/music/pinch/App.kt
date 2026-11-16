@@ -7,6 +7,8 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -18,6 +20,8 @@ import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import music.pinch.ui.StageFrames
+import music.pinch.ui.LocalStageFrames
 import music.pinch.ui.GameScreen
 import music.pinch.ui.LaunchSignature
 
@@ -35,16 +39,26 @@ internal object LaunchPresentation {
 }
 
 @Composable
+internal expect fun PlaybackFrames(onFrame: (presentationUptimeMs: Long) -> Unit)
+
+@Composable
 fun App(platform: Platform, backHandler: @Composable (Boolean, () -> Unit) -> Unit = { _, _ -> }) {
     val scope = rememberCoroutineScope()
     val session = remember(platform, scope) { Session(platform, scope) }
     DisposableEffect(session) { onDispose { session.dispose() } }
     val media = session.media
-    LaunchedEffect(session, media, session.state.scene) {
-        // A frame schedules an observation. The monotonic audio transport supplies the musical time.
-        if (media != null && session.state.scene != Scene.Paused) {
-            while (session.media === media && session.state.scene != Scene.Paused) {
-                withFrameMillis { session.observe() }
+    val stageFrames = remember(session) { StageFrames() }
+    var shownMs by remember(media) { mutableLongStateOf(session.positionMs) }
+    if (media != null && session.state.scene != Scene.Paused) {
+        PlaybackFrames { target ->
+            if (session.media === media && session.state.scene != Scene.Paused) {
+                val previousScene = session.state.scene
+                session.observe()
+                val targetMs = session.presentationPosition(target)
+                // An escaped prediction at the start of a decoder stall must not rewind the ball.
+                shownMs = if (previousScene == Scene.Playing && session.state.scene == Scene.Playing)
+                    maxOf(shownMs, targetMs) else targetMs
+                stageFrames.render?.invoke()
             }
         }
     }
@@ -54,7 +68,12 @@ fun App(platform: Platform, backHandler: @Composable (Boolean, () -> Unit) -> Un
             else -> session.menu()
         }
     }
-    val positionMs = remember(session) { { session.positionMs } }
+    val positionMs = remember(session, media) { {
+        when (session.state.scene) {
+            Scene.Playing, Scene.CountIn -> shownMs
+            else -> session.positionMs
+        }
+    } }
     val ownsLaunch = remember { LaunchPresentation.claim() }
     val launchMenu = ownsLaunch && session.state.scene == Scene.Menu
     val showLaunch = launchMenu && LaunchPresentation.visible
@@ -73,7 +92,9 @@ fun App(platform: Platform, backHandler: @Composable (Boolean, () -> Unit) -> Un
         platform.stopLaunchSound()
     } else Modifier
     Box(Modifier.fillMaxSize().then(menuTouch)) {
-        GameScreen(session.state, session, positionMs, session.stage)
+        CompositionLocalProvider(LocalStageFrames provides stageFrames) {
+            GameScreen(session.state, session, positionMs, session.stage)
+        }
         if (showLaunch) {
             val phase = remember { Animatable(0f) }
             LaunchedEffect(platform) {

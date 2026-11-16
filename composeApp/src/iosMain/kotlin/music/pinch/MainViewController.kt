@@ -26,7 +26,7 @@ interface AppleInterruptListener {
 
 interface AppleMediaSession {
     fun includeSample(midi: Int, root: Int)
-    fun prepare(backingAsset: String?, arrangementPath: String?)
+    fun prepare(backingAsset: String?, arrangementPath: String?, includeStrike: Boolean)
     fun setBackingVolume(gain: Float)
     val ready: Boolean
     val backingPositionMs: Long
@@ -54,11 +54,20 @@ private class IosPlatform(private val factory: AppleMediaFactoryProtocol) : Plat
     private val defaults = NSUserDefaults.standardUserDefaults
     private val selectionFeedback = UISelectionFeedbackGenerator()
 
+    override suspend fun saveImportAudio(id: String, audio: PickedAudio): Boolean {
+        val recording = audio.recording ?: return false
+        AppleRecordings.save(id, recording)
+        return true
+    }
+    override fun importAudioTrack(id: String) = AppleRecordings.track(id)
+    override fun removeImportAudio(id: String) = AppleRecordings.remove(id)
     override suspend fun pickAudio() = pickLocalSong(factory::pickAudio)
     override suspend fun arrangementTrack(chart: Chart, bundledId: String?, previewInstrument: Instrument?) =
         appleArrangementTrack(chart, bundledId, previewInstrument)
     override fun readValue(key: String): String? = defaults.stringForKey(key)
     override fun writeValue(key: String, value: String) = defaults.setObject(value, forKey = key)
+
+    override fun removeValue(key: String) = defaults.removeObjectForKey(key)
 
     override var volume: Float
         get() = if (defaults.objectForKey("volume") == null) 0.8f else defaults.floatForKey("volume")
@@ -82,6 +91,7 @@ private class IosMedia(factory: AppleMediaFactoryProtocol, private val durationM
     private val session = factory.createMedia(instrument.name.lowercase(), this)
     private var backingAsset: String? = null
     private var arrangementPath: String? = null
+    private var includeStrike = false
     private val hasTrack get() = backingAsset != null || arrangementPath != null
     private var preparationRequested = false
     private var closed = false
@@ -95,17 +105,18 @@ private class IosMedia(factory: AppleMediaFactoryProtocol, private val durationM
         onInterrupted?.invoke()
     }
 
-    override fun prepare(pitches: Set<Int>, backingAsset: String?, arrangement: ArrangementTrack?) {
+    override fun prepare(pitches: Set<Int>, backingAsset: String?, arrangement: ArrangementTrack?, includeStrike: Boolean) {
         if (preparationRequested || closed) return
         preparationRequested = true
         for (pitch in pitches) session.includeSample(pitch, instrumentRoot(pitch))
         this.backingAsset = backingAsset
         this.arrangementPath = arrangement?.path
-        session.prepare(backingAsset, arrangementPath)
+        this.includeStrike = includeStrike
+        session.prepare(backingAsset, arrangementPath, includeStrike)
     }
 
     override fun prepareResume() {
-        if (preparationRequested && !closed) session.prepare(backingAsset, arrangementPath)
+        if (preparationRequested && !closed) session.prepare(backingAsset, arrangementPath, includeStrike)
     }
 
     override fun setBackingVolume(volume: Float) {

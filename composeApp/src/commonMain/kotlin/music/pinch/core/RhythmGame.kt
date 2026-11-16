@@ -13,7 +13,6 @@ sealed interface TapResult {
 private const val WINDOW_MS = 120L
 internal const val FORGIVING_WINDOW_MS = 195L
 private const val DOUBLE_TAP_MS = 75L
-private const val MAX_MISS_CUE_FRAME_MS = 125L
 
 internal fun gradeFor(errorMs: Long): Grade? = when (errorMs) {
     in -45L..45L -> Grade.Perfect
@@ -58,8 +57,6 @@ class RhythmGame(chart: Chart, private val forgiving: Boolean = false) {
     private var phase = Phase.Playing
     private var expiredEnd = 0
     private var reportedEnd = 0
-    private var nextMissCue = 0
-    private var previousCueTime = -1L
     private var lastTouchMs = Long.MIN_VALUE
     private var lastHitMs = Long.MIN_VALUE
     private var lastHitIndex = -1
@@ -140,32 +137,6 @@ class RhythmGame(chart: Chart, private val forgiving: Boolean = false) {
         return TapResult.Hit(note, grade, error)
     }
 
-    /**
-     * Emit each expired target at most once. A short dispatch grace lets on-time down events
-     * reach the main thread; after a stall, only the most recent timely cue is audible.
-     * Scoring still accounts for every intervening note.
-     */
-    internal fun takeMissCue(positionMs: Long): Note? {
-        if (phase != Phase.Playing) return null
-        val cueTime = positionMs - windowMs - 48
-        // Wait for one more observation before sounding a miss. A delayed frame often runs
-        // just ahead of its queued touch; the first observation still updates the visible stats.
-        val confirmedThrough = minOf(cueTime, previousCueTime)
-        previousCueTime = cueTime
-        // Judge freshness at the first observation, then allow the confirming frame its
-        // own interval. At 10 fps these can each take 100 ms even during steady playback.
-        val confirmationTimely = cueTime - confirmedThrough <= MAX_MISS_CUE_FRAME_MS
-        var latest: Note? = null
-        while (nextMissCue < notes.size && notes[nextMissCue].atMs < confirmedThrough) {
-            val index = nextMissCue++
-            val note = notes[index]
-            if (!hit[index] && confirmationTimely && confirmedThrough - note.atMs <= MAX_MISS_CUE_FRAME_MS) {
-                latest = note
-            }
-        }
-        return latest
-    }
-
     internal fun nearestTarget(positionMs: Long): Note = notes[nearestIndex(positionMs)]
 
     private fun nearestIndex(positionMs: Long): Int {
@@ -180,9 +151,6 @@ class RhythmGame(chart: Chart, private val forgiving: Boolean = false) {
     fun pause() {
         if (phase != Phase.Playing) return
         phase = Phase.Paused
-        // Discard miss sounds already waiting for dispatch before the interruption.
-        nextMissCue = maxOf(nextMissCue, expiredEnd)
-        previousCueTime = -1L
     }
 
     fun resume() {
@@ -204,8 +172,6 @@ class RhythmGame(chart: Chart, private val forgiving: Boolean = false) {
         hit.fill(false)
         expiredEnd = 0
         reportedEnd = 0
-        nextMissCue = 0
-        previousCueTime = -1
         lastTouchMs = Long.MIN_VALUE
         lastHitMs = Long.MIN_VALUE
         lastHitIndex = -1

@@ -11,7 +11,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 
-internal enum class StudioIcon { Settings, Catalogue, Headphones, Orbit, Cascade, Chevron, Close, Check, Medal, Import, Lock }
+internal enum class StudioIcon { Settings, Catalogue, Headphones, Orbit, Cascade, Chevron, Close, Check, Medal, Import, Lock, Heart, FilledHeart, Remove }
 
 @Composable
 internal fun StudioGlyph(icon: StudioIcon, color: Color, modifier: Modifier) {
@@ -73,6 +73,25 @@ internal fun StudioGlyph(icon: StudioIcon, color: Color, modifier: Modifier) {
             StudioIcon.Lock -> {
                 drawArc(color, 180f, 180f, false, p(7,3), s(10,13), style = Stroke(stroke))
                 drawRoundRect(color, p(5,10), s(14,11), CornerRadius(unit * 2f), style = Stroke(stroke))
+            }
+            StudioIcon.Heart, StudioIcon.FilledHeart -> {
+                val heart = Path().apply {
+                    moveTo(12 * unit, 20 * unit)
+                    cubicTo(9 * unit, 17 * unit, 2.5f * unit, 12.6f * unit, 2.5f * unit, 8.2f * unit)
+                    cubicTo(2.5f * unit, 2.3f * unit, 9.4f * unit, 1.9f * unit, 12 * unit, 6.9f * unit)
+                    cubicTo(14.6f * unit, 1.9f * unit, 21.5f * unit, 2.3f * unit, 21.5f * unit, 8.2f * unit)
+                    cubicTo(21.5f * unit, 12.6f * unit, 15 * unit, 17 * unit, 12 * unit, 20 * unit)
+                    close()
+                }
+                if (icon == StudioIcon.FilledHeart) drawPath(heart, color)
+                else drawPath(heart, color, style = Stroke(stroke))
+            }
+            StudioIcon.Remove -> {
+                line(4, 6, 20, 6)
+                line(9, 3, 15, 3)
+                line(6, 9, 7, 20)
+                line(7, 20, 17, 20)
+                line(17, 20, 18, 9)
             }
             StudioIcon.Import -> {
                 line(12,3,12,15)

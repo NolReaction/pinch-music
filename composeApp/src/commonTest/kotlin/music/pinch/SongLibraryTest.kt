@@ -21,7 +21,8 @@ class SongLibraryTest {
             assertEquals(bpms[song.id], chart.bpm)
             val targets = chart.notes.filter { it.playable }
             assertEquals(0L, targets.first().atMs, song.title)
-            assertTrue(targets.zipWithNext().all { (a, b) -> b.atMs - a.atMs >= 225 })
+            val minimumGap = if (song == stereoLoveSong) 15_000L / chart.bpm else 225L
+            assertTrue(targets.zipWithNext().all { (a, b) -> b.atMs - a.atMs >= minimumGap }, song.title)
         }
     }
 
@@ -30,7 +31,7 @@ class SongLibraryTest {
         assertEquals("backing/stereo-love.m4a", stereoLoveSong.backingAsset)
         assertEquals(184_000L, chart.durationMs)
         assertEquals(508, chart.notes.size)
-        assertEquals(447, chart.notes.count { it.playable })
+        assertEquals(493, chart.notes.count { it.playable })
         assertEquals(0L, chart.notes.first().atMs)
         assertTrue(chart.notes.zipWithNext().all { (a, b) -> b.atMs > a.atMs })
         val lastManualMs = chart.notes.last { it.playable }.atMs
@@ -47,6 +48,25 @@ class SongLibraryTest {
         assertEquals("Аккордеон", stereoLoveSectionAt(34_016))
         assertEquals("Куплет", stereoLoveSectionAt(55_000))
         assertEquals("Кода", stereoLoveSectionAt(chart.durationMs))
+    }
+
+    @Test fun stereoLoveLandsOnTheFirstSoundOfEveryMelodicTurn() {
+        val chart = requireNotNull(stereoLoveSong.bundled)
+        val targets = chart.cascadeChart().notes
+        assertEquals(chart.notes.filter { it.playable }, targets)
+        val turns = chart.notes.zipWithNext().filter { (a, b) -> a.midi != b.midi }.map { it.second }
+        assertTrue(turns.all { it.playable })
+        // The pickup E5 answers immediately on low G#4. Later F#5 gets its
+        // plate on the first reed attack, before the optional repeated F#5.
+        fun key(tick: Int) = targets.singleOrNull { it.id == "stereo-$tick" }
+        assertEquals(76, key(291)?.midi)
+        assertEquals(68, key(292)?.midi)
+        assertEquals(78, key(328)?.midi)
+        assertEquals(null, key(329))
+        val eighth = 30_000L / chart.bpm
+        val gaps = targets.zipWithNext { a, b -> b.atMs - a.atMs }
+        assertTrue(gaps.any { it < eighth })
+        assertTrue(gaps.zipWithNext().none { (a, b) -> a < eighth && b < eighth })
     }
 
     @Test fun savedChartsRememberAutoContactsAndLoadEarlierSingleFingerCharts() {
@@ -107,13 +127,12 @@ class SongLibraryTest {
         val notes = source.notes.filter { it.playable }
         assertEquals(notes, route.notes)
         assertTrue(route.cascadeChart() === route)
-        assertTrue(notes.zipWithNext().all { (a, b) -> b.atMs - a.atMs >= 235L })
-        assertEquals(8, notes.count { it.atMs in 42_000L..44_000L })
+        assertEquals(9, notes.count { it.atMs in 42_000L..44_000L })
         val firstHookTick = 18 * 16
         fun tick(time: Long) = (time * source.bpm / 15_000.0).roundToInt()
         val call = notes.filter { tick(it.atMs) in firstHookTick until firstHookTick + 16 }
-        assertEquals(listOf(0, 3, 6, 8, 10, 12, 14), call.map { tick(it.atMs) - firstHookTick })
-        assertEquals(listOf(68, 76, 76, 75, 76, 78, 76), call.map { it.midi })
+        assertEquals(listOf(0, 3, 4, 6, 8, 10, 12, 14), call.map { tick(it.atMs) - firstHookTick })
+        assertEquals(listOf(68, 76, 68, 76, 75, 76, 78, 76), call.map { it.midi })
         val answer = notes.filter { tick(it.atMs) in firstHookTick + 16 until firstHookTick + 32 }
         assertEquals(listOf(75, 76, 73, 75, 71, 73, 69, 71), answer.map { it.midi })
         assertEquals(source.notes.first(), notes.first())

@@ -6,19 +6,45 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import kotlinx.coroutines.runBlocking
 
-private fun encodeAac(encoder: File, wav: File, destination: File): Boolean {
+private fun encodeAac(encoder: File, wav: File, destination: File, bitRate: Int = 96_000): Boolean {
     Files.deleteIfExists(destination.toPath())
     val command = if (encoder.name == "afconvert") {
-        listOf(encoder.path, "-f", "m4af", "-d", "aac", "-b", "96000", wav.path, destination.path)
+        listOf(encoder.path, "-f", "m4af", "-d", "aac", "-b", bitRate.toString(), wav.path, destination.path)
     } else {
         listOf(encoder.path, "-nostdin", "-hide_banner", "-loglevel", "error",
-            "-i", wav.path, "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", destination.path)
+            "-i", wav.path, "-c:a", "aac", "-b:a", bitRate.toString(), "-movflags", "+faststart", destination.path)
     }
     return try {
         ProcessBuilder(command).inheritIO().start().waitFor() == 0 && destination.length() > 0
     } catch (error: IOException) {
         System.err.println(error.message)
         false
+    }
+}
+
+private fun renderRecording(source: File, destination: File, scratch: File, codec: File?) {
+    destination.parentFile.mkdirs()
+    val decoded = scratch.resolve("performance.wav")
+    val mastered = scratch.resolve("master.wav")
+    try {
+        if (codec != null) {
+            Files.deleteIfExists(decoded.toPath())
+            val command = if (codec.name == "afconvert") {
+                listOf(codec.path, "-f", "WAVE", "-d", "LEI16", source.path, decoded.path)
+            } else {
+                listOf(codec.path, "-v", "error", "-nostdin", "-i", source.path, "-c:a", "pcm_s16le", decoded.path)
+            }
+            if (ProcessBuilder(command).inheritIO().start().waitFor() == 0) {
+                masterStereoLove(decoded, mastered, requireNotNull(stereoLoveSong.bundled))
+                if (encodeAac(codec, mastered, destination, bitRate = 160_000)) return
+            }
+        }
+        // Tool-less builds still ship the original, score-aligned performance.
+        System.err.println("Using the recorded Stereo Love mix without mastering: AAC codec unavailable.")
+        source.copyTo(destination, overwrite = true)
+    } finally {
+        Files.deleteIfExists(decoded.toPath())
+        Files.deleteIfExists(mastered.toPath())
     }
 }
 
@@ -59,6 +85,8 @@ fun main(args: Array<String>): Unit = runBlocking {
             current.add(file)
         }
     }
+    renderRecording(roots.parentFile.resolve("backing/stereo-love.m4a"),
+        File(args[1], "backing/stereo-love.m4a"), scratch, encoder)
     writeLaunchSound(File(args[1], "launch.wav"))
     // A removed score or a changed encoder must not leave an old track in the application.
     output.walkBottomUp().filter { it.isFile && it !in current }.forEach { Files.delete(it.toPath()) }

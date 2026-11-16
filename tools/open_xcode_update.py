@@ -87,8 +87,8 @@ def merge_settings(name, base, local, incoming, conflicts):
     expected = merge_keys(plist(base), plist(local), plist(incoming), name, conflicts)
     candidates = [text] if clean else []
     if name == PBX:
-        # Xcode can reindent the complete file. This release changes one build
-        # phase; transplant just that assignment if it preserves every property.
+        # Xcode can reindent the complete file. Keep the local formatting when
+        # replacing a build phase script preserves every merged property.
         script = rb'(?m)^(\s*shellScript\s*=\s*)("(?:\\.|[^"\\])*");'
         source = re.findall(script, incoming)
         if len(source) == 1:
@@ -148,7 +148,11 @@ def main():
     root = Path(git("rev-parse", "--show-toplevel").decode().strip())
     os.chdir(root)
     rev = git("rev-parse", "--verify", "--end-of-options", sys.argv[1] + "^{commit}").decode().strip()
-    folder = root.with_name(root.name + "-ios-" + rev[:10])
+    name = root.name
+    if (root / ".git").is_file():
+        # Running the next update from an earlier release worktree is common.
+        name = re.sub(r"(?:-ios-[0-9a-f]{10})+$", "", name) or root.name
+    folder = root.with_name(name + "-ios-" + rev[:10])
     if folder.exists():
         if (folder / ".git").is_file() and git("rev-parse", "HEAD", cwd=folder).decode().strip() == rev and (
             git("rev-parse", "--path-format=absolute", "--git-common-dir", cwd=folder) ==

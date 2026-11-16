@@ -13,6 +13,8 @@ data class ScreenState(
     val selectedSong: Song,
     val chart: Chart? = null,
     val importedIds: Set<String> = emptySet(),
+    val favoriteIds: Set<String> = emptySet(),
+    val recordedImportIds: Set<String> = emptySet(),
     val availableIds: Set<String> = emptySet(),
     val instrument: Instrument = Instrument.Piano,
     val solo: Boolean = false,
@@ -35,6 +37,8 @@ data class ScreenState(
     val runReward: RunReward = RunReward(startLevel = profile.level),
 ) {
     val recordedAsset: String? get() = selectedSong.backingAsset.takeUnless { selectedSong.id in importedIds }
+    val hasRecording: Boolean get() = recordedAsset != null || selectedSong.id in recordedImportIds
+    val useRecording: Boolean get() = hasRecording && !solo
     val backingAsset: String? get() = recordedAsset.takeUnless { solo }
     val title: String get() = selectedSong.title
     val hasScore: Boolean get() = selectedSong.hasBundled || selectedSong.id in importedIds
@@ -48,7 +52,8 @@ interface Actions {
     fun selectRecording()
     fun selectInstrument(value: Instrument)
     fun selectStageMode(value: StageMode)
-    fun restoreBundled()
+    fun removeImport(id: String)
+    fun toggleFavorite(id: String)
     fun importAudio()
     fun dismissNotice()
     fun stagePresented(attempt: Long)

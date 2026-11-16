@@ -62,6 +62,16 @@ class AccompanimentTest {
     }
 
     @Test
+    fun stereoLoveLeavesTheLeadRegisterOpenThroughoutChordChanges() {
+        val score = requireNotNull(stereoLoveSong.bundled)
+        val floor = score.notes.minOf { it.midi }
+        val harmony = score.accompaniment.filter { it.voice == BackingVoice.Keys || it.voice == BackingVoice.Pad }
+        assertTrue(harmony.isNotEmpty() && harmony.all { it.midi < floor })
+        val bass = score.accompaniment.filter { it.voice == BackingVoice.Bass }
+        assertTrue(bass.any { it.midi >= 43 && it.durationMs < 110 })
+    }
+
+    @Test
     fun packagedSourcesChooseTheRequestedStemAndNeverLookUpAnImportedTitle() {
         val paths = setOf("arrangements/stay/band.wav", "arrangements/stay/piano.m4a", "arrangements/stay/piano.wav")
         assertEquals("arrangements/stay/band.wav", packagedArrangement("stay", null, paths::contains))

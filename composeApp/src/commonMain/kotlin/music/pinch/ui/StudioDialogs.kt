@@ -1,6 +1,7 @@
 package music.pinch.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -8,12 +9,14 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -23,6 +26,8 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -55,38 +60,93 @@ internal fun StudioDialog(title: String, dismiss: () -> Unit, content: @Composab
     }
 }
 
+private enum class CatalogTab(val label: String) { All("Все"), Favorites("Избранное"), Personal("Мои") }
+
 @Composable
-internal fun StudioCatalog(state: ScreenState, dismiss: () -> Unit, select: (Song) -> Unit) {
-    val songs = remember(state.songs) { state.songs.sortedByDescending { it.backingAsset != null } }
+internal fun StudioCatalog(state: ScreenState, actions: Actions, dismiss: () -> Unit, select: (Song) -> Unit) {
+    var tab by rememberSaveable { mutableStateOf(CatalogTab.All) }
+    var deleting by rememberSaveable { mutableStateOf<String?>(null) }
+    val songs = remember(state.songs, state.favoriteIds, state.importedIds, tab) {
+        when (tab) {
+            CatalogTab.All -> state.songs.sortedByDescending { it.backingAsset != null }
+            CatalogTab.Favorites -> state.songs.filter { it.id in state.favoriteIds }
+            CatalogTab.Personal -> state.songs.filter { it.id in state.importedIds }.asReversed()
+        }
+    }
+    val target = state.songs.find { it.id == deleting }
+    if (target != null) {
+        StudioDialog("Удалить запись?", { deleting = null }) {
+            Text("«${target.title}» исчезнет из каталога. Исходный файл останется на устройстве.",
+                color = StudioIvory, fontSize = 15.sp)
+            Spacer(Modifier.height(16.dp))
+            ActionButton("Удалить", { actions.removeImport(target.id); deleting = null })
+            Spacer(Modifier.height(8.dp))
+            ActionButton("Отмена", { deleting = null }, primary = false)
+        }
+        return
+    }
     StudioDialog("Каталог", dismiss) {
-        LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false).selectableGroup()) {
-            items(songs, key = { it.id }) { song ->
-                val active = song.id == state.selectedSong.id
-                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+        Row(Modifier.fillMaxWidth().selectableGroup(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            for (item in CatalogTab.entries) {
+                val active = tab == item
+                Box(Modifier.weight(if (item == CatalogTab.Favorites) 1.4f else 1f)
+                    .clip(RoundedCornerShape(10.dp))
                     .background(if (active) Surface else StudioGraphite)
-                    .selectable(active, role = Role.RadioButton, onClick = { select(song) })
-                    .heightIn(min = 64.dp).padding(horizontal = 6.dp, vertical = 7.dp),
-                    verticalAlignment = Alignment.CenterVertically) {
-                    RecordSleeve(stageTheme(song.id), Modifier.size(46.dp).clip(RoundedCornerShape(6.dp)), thumbnail = true)
-                    Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(song.title, color = if (active) StudioMint else StudioIvory, fontSize = 16.sp,
-                            lineHeight = 20.sp, fontWeight = FontWeight.Bold)
-                        if (song.artist.isNotBlank()) Text(song.artist, color = Muted, fontSize = 12.sp, lineHeight = 16.sp)
-                    }
-                    Spacer(Modifier.width(6.dp))
-                    val status = when {
-                        song.id !in state.availableIds -> "Импорт"
-                        song.id in state.importedIds -> "Своя запись"
-                        else -> song.bundledDurationMs?.let(::durationClock)
-                    }
-                    if (status != null) Text(status, color = Muted, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-                    if (active) {
-                        Spacer(Modifier.width(5.dp))
-                        StudioGlyph(StudioIcon.Check, StudioMint, Modifier.size(16.dp))
+                    .selectable(active, role = Role.Tab, onClick = { tab = item })
+                    .heightIn(min = 44.dp), contentAlignment = Alignment.Center) {
+                    Text(item.label, color = if (active) StudioMint else Muted, fontSize = 14.sp,
+                        textAlign = TextAlign.Center, fontWeight = if (active) FontWeight.Bold else FontWeight.Medium)
+                }
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        if (songs.isEmpty()) {
+            Text(if (tab == CatalogTab.Favorites) "Сохраняй песни сердечком в каталоге." else "Здесь будут твои записи.",
+                color = Muted, fontSize = 14.sp, modifier = Modifier.padding(vertical = 18.dp))
+        } else key(tab) {
+            LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false).selectableGroup()) {
+                items(songs, key = { it.id }) { song ->
+                    val active = song.id == state.selectedSong.id
+                    val favorite = song.id in state.favoriteIds
+                    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                        .background(if (active) Surface else StudioGraphite), verticalAlignment = Alignment.CenterVertically) {
+                        Row(Modifier.weight(1f).selectable(active, role = Role.RadioButton, onClick = { select(song) })
+                            .heightIn(min = 64.dp).padding(start = 5.dp, top = 5.dp, bottom = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically) {
+                            RecordSleeve(stageTheme(song.id), Modifier.size(42.dp).clip(RoundedCornerShape(6.dp)), thumbnail = true)
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(song.title, color = if (active) StudioMint else StudioIvory, fontSize = 16.sp,
+                                    lineHeight = 20.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                if (song.artist.isNotBlank()) Text(song.artist, color = Muted, fontSize = 12.sp,
+                                    lineHeight = 16.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            }
+                            if (tab != CatalogTab.Personal) song.bundledDurationMs?.let {
+                                Text(durationClock(it), color = Muted, fontSize = 11.sp, fontFamily = FontFamily.Monospace,
+                                    modifier = Modifier.padding(start = 3.dp))
+                            }
+                        }
+                        Box(Modifier.size(44.dp, 48.dp).clip(RoundedCornerShape(8.dp))
+                            .toggleable(favorite, role = Role.Checkbox, onValueChange = { actions.toggleFavorite(song.id) })
+                            .semantics { contentDescription = (if (favorite) "Из избранного: " else "В избранное: ") + song.title },
+                            contentAlignment = Alignment.Center) {
+                            StudioGlyph(if (favorite) StudioIcon.FilledHeart else StudioIcon.Heart,
+                                if (favorite) StudioCoral else Muted, Modifier.size(19.dp))
+                        }
+                        if (tab == CatalogTab.Personal) {
+                            Box(Modifier.size(44.dp, 48.dp).clip(RoundedCornerShape(8.dp))
+                                .clickable(role = Role.Button) { deleting = song.id }
+                                .semantics { contentDescription = "Удалить запись: " + song.title }, contentAlignment = Alignment.Center) {
+                                StudioGlyph(StudioIcon.Remove, Muted, Modifier.size(18.dp))
+                            }
+                        }
                     }
                 }
             }
+        }
+        if (tab == CatalogTab.Personal) {
+            Spacer(Modifier.height(8.dp))
+            ActionButton("Добавить запись", { dismiss(); actions.importAudio() }, primary = false)
         }
     }
 }

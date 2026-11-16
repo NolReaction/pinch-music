@@ -16,6 +16,14 @@ dependencies {
     add(arrangedAudio.name, project(path = ":arranger", configuration = "audioAssets"))
 }
 
+// Both platforms package the same scored master. Keep the source recording in the authoring tree.
+val gameAssetsDirectory = layout.buildDirectory.dir("generated/gameAssets")
+val gameAssets = tasks.register<Sync>("prepareGameAssets") {
+    from(rootProject.file("media")) { exclude("backing/stereo-love.m4a") }
+    from(arrangedAudio)
+    into(gameAssetsDirectory)
+}
+
 kotlin {
     androidTarget {
         compilerOptions {
@@ -67,8 +75,7 @@ android {
         versionCode = 4
         versionName = "0.4.0"
     }
-    sourceSets["main"].assets.srcDir(rootProject.file("media"))
-    sourceSets["main"].assets.srcDir(project(":arranger").layout.buildDirectory.dir("generated/assets"))
+    sourceSets["main"].assets.srcDir(gameAssetsDirectory)
     sourceSets["test"].resources.srcDir("src/androidUnitTest/resources")
     androidResources.noCompress += listOf("wav", "m4a", "mp4")
     compileOptions {
@@ -79,7 +86,7 @@ android {
 
 // AGP snapshots static roots when configuring KMP variants. Attach their producer to every asset merger.
 tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }.configureEach {
-    dependsOn(arrangedAudio)
+    dependsOn(gameAssets)
 }
 
 compose.resources {
@@ -91,12 +98,16 @@ val xcodeResources = providers.environmentVariable("TARGET_BUILD_DIR")
     .zip(providers.environmentVariable("UNLOCALIZED_RESOURCES_FOLDER_PATH")) { products, resources ->
         File(products, resources)
     }
+val installXcodeMedia = tasks.register<Sync>("installXcodeMedia") {
+    from(gameAssets) { exclude("arrangements/**", "launch.wav") }
+    into(xcodeResources.map { it.resolve("media") })
+}
 val installLaunchSound = tasks.register<Copy>("installLaunchSound") {
     from(arrangedAudio.elements.map { it.single().asFile.resolve("launch.wav") })
     into(xcodeResources)
 }
 val installXcodeArrangements = tasks.register<Sync>("installXcodeArrangements") {
-    dependsOn(installLaunchSound)
+    dependsOn(installLaunchSound, installXcodeMedia)
     from(arrangedAudio.elements.map { it.single().asFile.resolve("arrangements") })
     into(xcodeResources.map { it.resolve("arrangements") })
 }

@@ -59,7 +59,9 @@ final class AppleSongImport: NSObject, UIDocumentPickerDelegate, UIAdaptivePrese
             DispatchQueue.main.async {
                 self?.finish { listener in
                     switch result {
-                    case .success(let data): listener.decoded(samples: data)
+                    case .success(let clip):
+                        listener.decoded(pcm16: clip.data, rate: Int32(clip.rate), channels: Int32(clip.channels),
+                                         displayName: url.lastPathComponent)
                     case .failure(let error): listener.failed(message: error.localizedDescription)
                     }
                 }
@@ -74,11 +76,17 @@ final class AppleSongImport: NSObject, UIDocumentPickerDelegate, UIAdaptivePrese
         if let pending = pending { callback(pending) }
     }
 
-    nonisolated private static func readDocument(_ url: URL) throws -> Data {
+    private struct Excerpt: Sendable {
+        let data: Data
+        let rate: Int
+        let channels: Int
+    }
+
+    nonisolated private static func readDocument(_ url: URL) throws -> Excerpt {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         var coordinationError: NSError?
-        var result: Result<Data, Error>?
+        var result: Result<Excerpt, Error>?
         NSFileCoordinator(filePresenter: nil).coordinate(readingItemAt: url, options: [], error: &coordinationError) { path in
             result = Result { try decode(path) }
         }
@@ -87,48 +95,59 @@ final class AppleSongImport: NSObject, UIDocumentPickerDelegate, UIAdaptivePrese
         return try decoded.get()
     }
 
-    nonisolated private static func decode(_ url: URL) throws -> Data {
+    nonisolated private static func decode(_ url: URL) throws -> Excerpt {
         let file = try AVAudioFile(forReading: url, commonFormat: .pcmFormatFloat32, interleaved: false)
         let format = file.processingFormat
         let rate = format.sampleRate
         let channels = Int(format.channelCount)
-        let outputRate = 11_025
         guard rate.isFinite, rate >= 4_000, rate <= 384_000, (1...32).contains(channels),
               let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4096) else {
             throw SongImportError.invalidFormat
         }
         let length = Double(file.length) / rate
         if length >= 70 { file.framePosition = AVAudioFramePosition(min(length / 3, 55) * rate) }
-        let limit = outputRate * 30
-        var samples: [Float] = []
-        samples.reserveCapacity(limit)
+        let outputRate = Int(min(rate, 48_000).rounded())
+        let outputChannels = min(channels, 2)
+        let limit = outputRate * 30 * outputChannels
+        var pcm = [Int16]()
+        pcm.reserveCapacity(limit)
         var phase = 0.0
-        var sum: Float = 0
+        var left: Float = 0
+        var right: Float = 0
         var frames = 0
-        while samples.count < limit {
+        func quantize(_ value: Float) -> Int16 {
+            guard value.isFinite else { return 0 }
+            return Int16(clamping: Int((max(-1, min(1, value)) * 32_768).rounded())).littleEndian
+        }
+        while pcm.count < limit {
             try file.read(into: buffer, frameCount: buffer.frameCapacity)
-            let n = Int(buffer.frameLength)
-            if n == 0 { break }
+            let count = Int(buffer.frameLength)
+            if count == 0 { break }
             guard let planes = buffer.floatChannelData else { throw SongImportError.invalidFormat }
-            for index in 0..<n {
-                var mix: Float = 0
-                for channel in 0..<channels { mix += planes[channel][index] }
-                sum += mix / Float(channels)
+            for index in 0..<count {
+                if channels <= 2 {
+                    left += planes[0][index]
+                    if channels == 2 { right += planes[1][index] }
+                } else {
+                    for channel in 0..<channels {
+                        if channel.isMultiple(of: 2) { left += planes[channel][index] / Float((channels + 1) / 2) }
+                        else { right += planes[channel][index] / Float(channels / 2) }
+                    }
+                }
                 frames += 1
                 phase += Double(outputRate)
                 if phase >= rate {
-                    let mean = max(-1, min(1, sum / Float(frames)))
-                    while phase >= rate && samples.count < limit {
-                        samples.append(mean)
-                        phase -= rate
-                    }
+                    pcm.append(quantize(left / Float(frames)))
+                    if outputChannels == 2 { pcm.append(quantize(right / Float(frames))) }
+                    phase -= rate
+                    left = 0
+                    right = 0
                     frames = 0
-                    sum = 0
                 }
-                if samples.count == limit { break }
+                if pcm.count == limit { break }
             }
         }
-        guard samples.count >= outputRate else { throw SongImportError.shortAudio }
-        return samples.withUnsafeBytes { Data($0) }
+        guard pcm.count >= outputRate * outputChannels else { throw SongImportError.shortAudio }
+        return Excerpt(data: pcm.withUnsafeBytes { Data($0) }, rate: outputRate, channels: outputChannels)
     }
 }

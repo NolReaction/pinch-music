@@ -25,22 +25,19 @@ internal class Session(
     songs: List<Song> = songLibrary,
     private val courseDispatcher: CoroutineDispatcher = Dispatchers.Default.limitedParallelism(1),
 ) : Actions {
-    // Keep saved JSON until its song is selected. Opening the menu used to decode every import.
-    private val savedCharts = songs.mapNotNull { song ->
-        platform.readValue("chart.${song.id}")?.takeIf { it.isNotBlank() }?.let { song.id to it }
-    }.toMap().toMutableMap()
-    private class Selection(val source: Chart, val landings: Chart, val imported: Boolean) {
+    private val catalog = PersonalCatalog(platform, songs)
+    private class Selection(val source: Chart, val landings: Chart, val importHash: Int? = null) {
         val lead = LeadPart(source, landings)
-        val mistakePitches = landings.notes.mapTo(mutableSetOf()) { wrongPitch(it.midi) }
     }
     private val selections = mutableMapOf<String, Selection>()
     private var loadingScore: Job? = null
+    private var importingSong: Job? = null
     private var startWhenReady = false
-    private val initialSong = platform.readValue("selected.song")?.let { saved -> songs.find { it.id == saved } }
-        ?: songs.find { it.id == "stereo-love" && (it.hasBundled || it.id in savedCharts) }
-        ?: songs.firstOrNull { it.hasBundled || it.id in savedCharts }
-        ?: songs.first()
-    var state by mutableStateOf(ScreenState(songs = songs, selectedSong = initialSong,
+    private fun defaultSong() = catalog.songs.firstOrNull { it.id == "stereo-love" && it.hasBundled }
+        ?: catalog.songs.firstOrNull { it.hasBundled } ?: catalog.songs.first()
+    private val initialSong = platform.readValue("selected.song")?.let { saved -> catalog.songs.find { it.id == saved } }
+        ?: defaultSong()
+    var state by mutableStateOf(ScreenState(songs = catalog.songs, selectedSong = initialSong,
         instrument = platform.readValue("instrument")?.let { name -> Instrument.entries.find { it.name == name } } ?: Instrument.Piano,
         solo = platform.readValue("playback.solo") == "true",
         stageMode = platform.readValue("stage.mode")?.let { name -> StageMode.entries.find { it.name == name } } ?: StageMode.Orbit,
@@ -78,8 +75,6 @@ internal class Session(
     private var pendingOpeningNote: Note? = null
     private var eofObservedAt: Long? = null
     private var eofElapsedAtPause = 0L
-    private var lastMistakeAt: Long? = null
-    private var lastMistakeTarget: String? = null
 
     init { refreshSong() }
 
@@ -96,8 +91,13 @@ internal class Session(
         return profile
     }
 
-    private fun menuAvailability() = state.copy(importedIds = savedCharts.keys.toSet(),
-        availableIds = state.songs.filter { it.hasBundled || it.id in savedCharts }.mapTo(mutableSetOf()) { it.id })
+    private fun menuAvailability(): ScreenState {
+        val tracks = catalog.songs
+        val personal = catalog.entries.mapTo(mutableSetOf()) { it.id }
+        return state.copy(songs = tracks, importedIds = personal, favoriteIds = catalog.favorites,
+            recordedImportIds = catalog.entries.filter { it.hasRecording }.mapTo(mutableSetOf()) { it.id },
+            availableIds = tracks.filter { it.hasBundled || it.id in personal }.mapTo(mutableSetOf()) { it.id })
+    }
 
     private fun refreshSong() {
         loadingScore?.cancel()
@@ -111,30 +111,26 @@ internal class Session(
             return
         }
         state = menuAvailability().copy(chart = null, bestScore = null)
-        val raw = savedCharts[song.id]
-        if (raw == null && !song.hasBundled) return
+        val entry = catalog.entries.find { it.id == song.id }
+        if (entry == null && !song.hasBundled) return
         val eager = song.suppliedChart
-        if (raw == null && eager != null) {
-            installSelection(song, Selection(eager, eager.cascadeChart(), false))
+        if (entry == null && eager != null) {
+            installSelection(song, Selection(eager, eager.cascadeChart()))
             return
         }
         loadingScore = scope.launch {
             try {
-                // Decoding an imported score and constructing a catalogue arrangement can
-                // each take longer than a frame. Publish results on the session thread.
-                val (selection, canonical) = withContext(courseDispatcher) {
-                    val personal = raw?.let { runCatching { decodeChart(it, song.title) }.getOrNull() }
-                    val source = personal ?: song.bundled
-                    source?.let { Selection(it, it.cascadeChart(), personal != null) } to personal?.let(::encodeChart)
+                val selection = withContext(courseDispatcher) {
+                    if (entry == null) {
+                        val source = requireNotNull(song.bundled)
+                        Selection(source, source.cascadeChart())
+                    } else {
+                        val raw = requireNotNull(platform.readValue("chart.${entry.storageId}"))
+                        val source = decodeChart(raw, song.title)
+                        Selection(source, source.cascadeChart(), encodeChart(source).hashCode())
+                    }
                 }
-                if (raw != null) {
-                    if (canonical == null) savedCharts.remove(song.id) else savedCharts[song.id] = canonical
-                }
-                if (selection != null) installSelection(song, selection)
-                else {
-                    state = menuAvailability()
-                    if (startWhenReady) fail("Не удалось прочитать ноты мелодии.")
-                }
+                installSelection(song, selection)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -150,12 +146,13 @@ internal class Session(
         val chart = selection.landings
         sourceChart = source
         val arrangement = when {
-            selection.imported -> "import.${savedCharts.getValue(song.id).hashCode()}"
+            selection.importHash != null -> "import.${selection.importHash}"
             song.bundledRevision > 1 -> "bundled.v${song.bundledRevision}"
             else -> "bundled"
         }
         val mode = state.stageMode
-        recordKey = "record.landings.v1.${mode.name}.${song.id}.$arrangement"
+        val recordOwner = catalog.entries.find { it.id == song.id }?.storageId ?: song.id
+        recordKey = "record.landings.v1.${mode.name}.$recordOwner.$arrangement"
         state = menuAvailability().copy(chart = chart, bestScore = platform.readValue(recordKey)?.toIntOrNull())
         courseTask = scope.async(courseDispatcher) {
             try {
@@ -177,7 +174,7 @@ internal class Session(
     }
 
     private fun warmAccompaniment() {
-        val chart = sourceChart?.takeIf { state.backingAsset == null && it.accompaniment.isNotEmpty() }
+        val chart = sourceChart?.takeIf { !state.useRecording && it.accompaniment.isNotEmpty() }
         if (chart === bandChart && (chart == null || bandFile != null)) return
         bandFile?.cancel()
         bandChart = chart
@@ -209,7 +206,7 @@ internal class Session(
     }
 
     override fun selectRecording() {
-        if (state.scene != Scene.Menu || state.recordedAsset == null || !state.solo) return
+        if (state.scene != Scene.Menu || !state.hasRecording || !state.solo) return
         platform.writeValue("playback.solo", "false")
         state = state.copy(solo = false)
         warmAccompaniment()
@@ -217,7 +214,7 @@ internal class Session(
 
     override fun selectInstrument(value: Instrument) {
         if (state.scene != Scene.Menu) return
-        val solo = state.solo || state.recordedAsset != null
+        val solo = state.solo || state.hasRecording
         if (value == state.instrument && solo == state.solo) return
         if (solo != state.solo) platform.writeValue("playback.solo", solo.toString())
         if (value != state.instrument) platform.writeValue("instrument", value.name)
@@ -232,29 +229,61 @@ internal class Session(
         if (state.chart != null || loadingScore?.isActive != true) refreshSong()
     }
 
-    override fun restoreBundled() {
-        val song = state.selectedSong
-        if (state.scene != Scene.Menu || state.importing || !song.hasBundled || song.id !in savedCharts) return
-        platform.writeValue("chart.${song.id}", "")
-        selections.remove(song.id)
-        savedCharts.remove(song.id)
-        refreshSong()
+    override fun toggleFavorite(id: String) {
+        if (state.scene != Scene.Menu) return
+        catalog.toggleFavorite(id)
+        state = menuAvailability()
+    }
+
+    override fun removeImport(id: String) {
+        if (state.scene != Scene.Menu || state.importing) return
+        val entry = catalog.entries.find { it.id == id } ?: return
+        val hash = selections[id]?.importHash ?: platform.readValue("chart.${entry.storageId}")?.hashCode()
+        catalog.remove(entry)
+        if (hash != null) for (mode in StageMode.entries) {
+            platform.removeValue("record.landings.v1.${mode.name}.${entry.storageId}.import.$hash")
+        }
+        selections.remove(id)
+        if (state.selectedSong.id == id) {
+            val fallback = catalog.songs.find { it.id == entry.legacyId && it.hasBundled } ?: defaultSong()
+            platform.writeValue("selected.song", fallback.id)
+            state = menuAvailability().copy(selectedSong = fallback)
+            sourceChart = null
+            warmAccompaniment()
+            refreshSong()
+        } else state = menuAvailability()
+        if (entry.hasRecording) platform.removeImportAudio(id)
     }
 
     override fun importAudio() {
         if (state.importing || state.scene != Scene.Menu) return
-        val song = state.selectedSong
         state = state.copy(importing = true, notice = null)
-        scope.launch {
+        importingSong = scope.launch {
             try {
-                val pcm = platform.pickAudio() ?: return@launch
-                val chart = withContext(Dispatchers.Default) { extractLeadChart(pcm, 11025, song.title) }
-                val (saved, selection) = withContext(Dispatchers.Default) {
-                    encodeChart(chart) to Selection(chart, chart.cascadeChart(), true)
+                val audio = platform.pickAudio() ?: return@launch
+                val entry = catalog.newEntry(audio.displayName)
+                val (saved, selection) = withContext(courseDispatcher) {
+                    val chart = extractLeadChart(audio.samples, 11_025, entry.title)
+                    val text = encodeChart(chart)
+                    text to Selection(chart, chart.cascadeChart(), text.hashCode())
                 }
-                platform.writeValue("chart.${song.id}", saved)
-                savedCharts[song.id] = saved
-                selections[song.id] = selection
+                val hasRecording = try {
+                    val stored = platform.saveImportAudio(entry.id, audio)
+                    currentCoroutineContext().ensureActive()
+                    check(stored || audio.recording == null) { "Не удалось сохранить фрагмент записи." }
+                    catalog.add(entry.copy(hasRecording = stored), saved)
+                    stored
+                } catch (failure: Exception) {
+                    // Cancellation returning from the file writer can occur after the atomic rename.
+                    // The UUID is private to this attempt until its catalog entry has been published.
+                    platform.removeImportAudio(entry.id)
+                    platform.removeValue("chart.${entry.storageId}")
+                    throw failure
+                }
+                selections[entry.id] = selection
+                platform.writeValue("selected.song", entry.id)
+                if (hasRecording) platform.writeValue("playback.solo", "false")
+                state = menuAvailability().copy(selectedSong = entry.asSong(), solo = state.solo && !hasRecording)
                 refreshSong()
             } catch (e: CancellationException) {
                 throw e
@@ -298,19 +327,18 @@ internal class Session(
             val player = platform.newMedia(song.durationMs, state.instrument)
             media = player
             player.onInterrupted = { if (media === player) pause() }
-            val backing = state.backingAsset
-            lead = selection.lead.takeIf { backing == null && !preview }
-            val pitches = when {
-                preview -> emptySet()
-                backing == null -> selection.lead.pitches
-                else -> selection.mistakePitches
-            }
+            val recorded = state.useRecording
+            lead = selection.lead.takeUnless { recorded || preview }
+            val pitches = lead?.pitches.orEmpty()
             player.setBackingVolume(state.volume)
-            val sampledPreview = preview && backing == null
+            val sampledPreview = preview && !recorded
             if (!sampledPreview) warmAccompaniment()
-            val render = bandFile.takeUnless { sampledPreview }
+            val render = bandFile.takeUnless { sampledPreview || recorded }
             if (render == null && !sampledPreview) {
-                player.prepare(pitches, backing)
+                val importedAudio = if (recorded && state.selectedSong.id in state.recordedImportIds)
+                    requireNotNull(platform.importAudioTrack(state.selectedSong.id)) { "Не удалось открыть свою запись." }
+                else null
+                player.prepare(pitches, state.backingAsset, importedAudio, includeStrike = recorded && !preview)
             } else {
                 val instrument = state.instrument
                 val bundledId = bundledId(source)
@@ -455,7 +483,6 @@ internal class Session(
                 game?.advance(confirmed - 32)
                 val missed = game?.takeMisses().orEmpty()
                 val feedback = feedbackAfter(missed, null, now)
-                game?.takeMissCue(confirmed)?.let { soundMistake(player, it, now, stray = false) }
                 val leadRemaining = (game?.firstTargetMs ?: 0L) - now
                 val beatMs = (60_000L / song.bpm).coerceAtLeast(1)
                 val count = if (!state.preview && leadRemaining in 1..(4 * beatMs))
@@ -468,6 +495,13 @@ internal class Session(
             }
             else -> Unit
         }
+    }
+
+    /** Visuals may look ahead to scanout. Input and automatic audio always use the observed transport. */
+    fun presentationPosition(targetUptimeMs: Long): Long = when (state.scene) {
+        Scene.CountIn -> openingEnd?.let { (targetUptimeMs - it).coerceIn(-introMs, -1L) } ?: positionMs
+        Scene.Playing -> playingAnchor?.presentAt(positionMs, targetUptimeMs, state.durationMs) ?: positionMs
+        else -> positionMs
     }
 
     private fun openingCount(ms: Long): Int {
@@ -525,7 +559,7 @@ internal class Session(
                 if (opening) pendingOpeningNote = result.note else soundHit(player, result.note, feedbackAt)
                 if (state.haptics) platform.feedback()
             }
-            TapResult.Stray -> soundMistake(player, nearest, feedbackAt, stray = true)
+            TapResult.Stray -> if (state.useRecording) player.strike(.095f * state.volume)
             TapResult.Ignored -> Unit
         }
     }
@@ -559,25 +593,13 @@ internal class Session(
     }
 
     private fun soundHit(player: GameMedia, note: Note, at: Long = note.atMs) {
-        if (state.backingAsset != null) {
-            player.strike(.46f * note.velocity * state.volume)
+        if (state.useRecording) {
+            player.strike(.24f * note.velocity * state.volume)
         } else {
             lastManualKey = note.atMs
             lastManualSound = at
             for (voice in lead?.chord(note).orEmpty()) soundVoice(player, voice, at)
         }
-    }
-
-    private fun soundMistake(player: GameMedia, target: Note, now: Long, stray: Boolean) {
-        // In sampled arrangements an extra pitched error sounds like a second melody attack.
-        if (state.backingAsset == null) return
-        // Keep wrong-note cues from masking the song, including
-        // a stray tap delivered in the same beat as that target's automatic miss.
-        val previous = lastMistakeAt
-        if (previous != null && now - previous < 120 && (stray || lastMistakeTarget == target.id)) return
-        player.note(wrongPitch(target.midi), .15f * target.velocity * state.volume, 85)
-        lastMistakeAt = now
-        lastMistakeTarget = target.id
     }
 
     override fun pause() {
@@ -648,6 +670,7 @@ internal class Session(
     }
 
     fun dispose() {
+        importingSong?.cancel()
         loadingScore?.cancel()
         courseTask?.cancel()
         courseTask = null
@@ -678,15 +701,9 @@ internal class Session(
         nextAutomaticNote = 0
         stage = null
         playingAnchor = null
-        lastMistakeAt = null
-        lastMistakeTarget = null
         game = null
         waitingSince = null
         resumeAt = null
         hasPlayed = false
     }
 }
-
-
-// Lean one semitone off the expected pitch, including at the MIDI range boundary.
-private fun wrongPitch(midi: Int): Int = if (midi == 127) 126 else midi + 1

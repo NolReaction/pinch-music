@@ -38,7 +38,7 @@ internal class AndroidMedia(
 
     override var onInterrupted: (() -> Unit)? = null
 
-    override fun prepare(pitches: Set<Int>, backingAsset: String?, arrangement: ArrangementTrack?) {
+    override fun prepare(pitches: Set<Int>, backingAsset: String?, arrangement: ArrangementTrack?, includeStrike: Boolean) {
         if (closed || preparation != null || error != null) return
         focus.observe()
         preparation = CoroutineScope(Dispatchers.Main.immediate).launch {
@@ -59,7 +59,7 @@ internal class AndroidMedia(
                         }
                     }
                 }
-                if (pitches.isNotEmpty()) voices = samples.get(instrument, pitches, backingAsset != null)
+                if (pitches.isNotEmpty() || includeStrike) voices = samples.get(instrument, pitches, includeStrike)
                 samplesReady = true
             } catch (e: CancellationException) {
                 throw e

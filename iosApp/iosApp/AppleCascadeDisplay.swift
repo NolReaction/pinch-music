@@ -27,7 +27,7 @@ private final class CascadeCanvas: GLKView {
     }
 }
 
-/// UIKit presents the latest pose once per drawing pass, including layout and paused-frame redraws.
+/// Animated frames present on the session display link. UIKit can still redraw a paused canvas after layout.
 @MainActor
 final class AppleCascadeDisplay: NSObject, @preconcurrency AppleCascadeSurface, @preconcurrency GLKViewDelegate {
     private let canvas: GLKView
@@ -83,7 +83,8 @@ final class AppleCascadeDisplay: NSObject, @preconcurrency AppleCascadeSurface, 
         _ = frame.withUnsafeMutableBytes { dest in data.copyBytes(to: dest) }
         hasFrame = true
         if !suspended && canvas.window != nil && UIApplication.shared.applicationState == .active {
-            canvas.setNeedsDisplay()
+            // The caller already runs on CADisplayLink and supplied this refresh's pose.
+            canvas.display()
         }
     }
 

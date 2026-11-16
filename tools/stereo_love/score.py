@@ -154,44 +154,19 @@ def score_tag():
     return "pinch-lead-sha256=" + sha256(serialized).hexdigest()
 
 
-# Tap the pitches a listener would sing. Keep the pickup and each turn in the
-# accordion hook, but give a single key to a rapid reiteration of the same reed.
-# Other phrases leave space around a held syllable and keep their cadences.
-LANDINGS = {
-    **dict(zip(HOOK, (
-        (0, 3, 6, 8, 10, 12, 14), (0, 2, 4, 6, 8, 10, 12, 14),
-        (0, 3, 7, 9, 13), (0, 4, 11, 14),
-    ))),
-    **dict(zip(OPENING, (
-        (0, 3, 7, 11, 14), (0, 4, 8), (12, 14), (0, 8, 12),
-        (0, 5, 7, 9, 12), (0, 6, 10), (0, 8, 12), (0, 8),
-    ))),
-    **dict(zip(VERSE, (
-        (0, 2, 4, 9, 14), (0, 2, 4, 9), (0, 2, 4, 9, 11, 13), (0, 4, 8),
-    ))),
-    **dict(zip(RISE, (
-        (0, 5, 8, 11, 13), (0, 3, 5, 8), (0, 3, 5, 8, 11, 13), (0, 4, 8),
-    ))),
-    **dict(zip(BRIDGE, (
-        (0, 2, 4, 10, 13), (0, 4, 7, 10, 14), (0, 4, 8, 11, 13), (0, 3, 7, 10),
-    ))),
-}
+def landing_ticks(attacks):
+    """Catch the first attack of each pitch, including sixteenth-note answers.
 
-
-def landing_ticks():
-    taps = []
-    for bar in range(BAR_COUNT):
-        section = section_at(bar)
-        phrase, _ = phrase_at(section, bar - section.bar)
-        available = {offset for offset, _, _ in phrase}
-        # The short turnaround and the last sustained tonic have no ornaments.
-        offsets = LANDINGS.get(phrase, sorted(available))
-        if not available.issuperset(offsets):
-            raise ValueError(f"Landing is missing its sounding note in bar {bar + 1}")
-        taps.extend(bar * 16 + offset for offset in offsets)
-    if any(b - a < 2 for a, b in zip(taps, taps[1:])):
-        raise ValueError("Landings must leave a playable eighth note between contacts")
-    return set(taps)
+    A run of identical sixteenths has one contact per eighth, counted from the
+    first articulation. A new pitch can answer on the very next sixteenth.
+    """
+    taps = set()
+    last = None
+    for attack in attacks:
+        if last is None or last.midi != attack.midi or attack.tick - last.tick >= 2:
+            taps.add(attack.tick)
+            last = attack
+    return taps
 
 
 def check_backing():
@@ -224,7 +199,7 @@ def kotlin_source():
         band_sections.append(f'            StereoBandSection(StereoGroove.{section.groove.title()}, '
                              f'intArrayOf({", ".join(map(str, chord_ids))})),')
     rows = []
-    taps = landing_ticks()
+    taps = landing_ticks(attacks)
     for n in attacks:
         manual = ", playable = true" if n.tick in taps else ""
         rows.append(f"    strike({n.tick}, {n.midi}, {float(n.length)}, {n.gain:.2f}f{manual}),")
@@ -259,7 +234,7 @@ internal val stereoLoveSong = Song.arranged(
     bpm = stereoBpm,
     durationMs = {DURATION_MS:_}L,
     backingAsset = "backing/stereo-love.m4a",
-    bundledRevision = 2,
+    bundledRevision = 3,
 ) {{
     val band = stereoBand(stereoBpm,
         arrayOf(

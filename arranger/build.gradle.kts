@@ -7,7 +7,8 @@ kotlin {
     sourceSets.main {
         kotlin.srcDir(rootProject.file("composeApp/src/commonMain/kotlin"))
         kotlin.include(
-            "music/pinch/BuildArrangements.kt", "music/pinch/LaunchSound.kt", "music/pinch/ArrangementScore.kt",
+            "music/pinch/BuildArrangements.kt", "music/pinch/LaunchSound.kt", "music/pinch/StereoLoveMaster.kt",
+            "music/pinch/ArrangementScore.kt",
             "music/pinch/core/Chart.kt", "music/pinch/StereoLove.kt", "music/pinch/StereoLoveBand.kt",
             "music/pinch/BandArrangement.kt", "music/pinch/SongLibrary.kt",
             "music/pinch/Accompaniment.kt", "music/pinch/SamplePreview.kt",
@@ -28,6 +29,7 @@ val generateArrangements = tasks.register<JavaExec>("generateArrangements") {
     description = "Render the bundled band parts and instrument performances from the shared scores."
     classpath = sourceSets.main.get().runtimeClasspath
     mainClass.set("music.pinch.BuildArrangementsKt")
+    inputs.file(rootProject.file("media/backing/stereo-love.m4a")).withPathSensitivity(PathSensitivity.RELATIVE)
     inputs.dir(roots).withPathSensitivity(PathSensitivity.RELATIVE)
     if (encoder != null) inputs.file(encoder).withPathSensitivity(PathSensitivity.NAME_ONLY)
     outputs.dir(assets)
