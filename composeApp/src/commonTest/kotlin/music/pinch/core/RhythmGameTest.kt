@@ -27,7 +27,8 @@ class RhythmGameTest {
         game.tap(2_000)
         game.pause()
         assertEquals(TapResult.Ignored, game.tap(2_500))
-        assertEquals(0, game.advance(40_000))
+        game.advance(40_000)
+        assertEquals(emptyList(), game.takeMisses())
         assertEquals(0, game.stats.missed)
         game.resume()
         assertIs<TapResult.Hit>(game.tap(2_500))
@@ -53,10 +54,16 @@ class RhythmGameTest {
     @Test
     fun silenceCountsAllNotesOnce() {
         val game = RhythmGame(chart)
-        assertEquals(1, game.advance(2_121))
-        assertEquals(0, game.advance(2_121))
-        assertEquals(1, game.advance(2_621))
-        assertEquals(0, game.advance(4_000))
+        game.advance(2_120)
+        assertEquals(emptyList(), game.takeMisses())
+        game.advance(2_121)
+        assertEquals(listOf(first), game.takeMisses())
+        game.advance(2_121)
+        assertEquals(emptyList(), game.takeMisses())
+        game.advance(2_621)
+        assertEquals(listOf(second), game.takeMisses())
+        game.advance(4_000)
+        assertEquals(emptyList(), game.takeMisses())
         assertEquals(GameStats(2, missed = 2), game.finish())
     }
 
@@ -84,39 +91,44 @@ class RhythmGameTest {
     }
 
     @Test
-    fun nearestThenEarliestThenIdBreaksTies() {
-        val earlier = first.copy(id = "z")
-        val sameTime = first.copy(id = "c")
-        val later = second.copy(atMs = 2_160)
-        val notes = listOf(earlier, sameTime, later)
-        val game = RhythmGame(chart.copy(notes = notes))
-        assertEquals("c", assertIs<TapResult.Hit>(game.tap(2_080)).note.id)
-        assertEquals("b", assertIs<TapResult.Hit>(game.tap(2_090)).note.id)
-        assertEquals("z", assertIs<TapResult.Hit>(game.tap(2_100)).note.id)
+    fun aChordIsOneLandingAndEveryDistinctOnsetScoresIncludingUnaccentedNotes() {
+        val intro = first.copy(id = "intro", atMs = 1_000, playable = false)
+        val otherVoice = first.copy(id = "chord", midi = 60, playable = false)
+        val passive = second.copy(playable = false)
+        val game = RhythmGame(chart.copy(notes = listOf(intro, otherVoice, first, passive)), forgiving = true)
+        assertEquals(3, game.stats.noteCount)
+        assertEquals(intro, assertIs<TapResult.Hit>(game.tap(1_000)).note)
+        assertEquals(first, assertIs<TapResult.Hit>(game.tap(2_000)).note)
+        assertEquals(TapResult.Ignored, game.tap(2_010))
+        assertEquals(passive, assertIs<TapResult.Hit>(game.tap(2_500)).note)
+        assertEquals(GameStats(3, perfect = 3, combo = 3, maxCombo = 3), game.finish())
     }
 
     @Test
-    fun optionalContactsHaveATightWindowAndNeverStealANearerManualAccent() {
-        val intro = first.copy(id = "intro", atMs = 1_400, playable = false)
-        val inner = first.copy(id = "inner", atMs = 2_100, playable = false)
-        val accent = second.copy(atMs = 2_200)
-        val tail = first.copy(id = "tail", atMs = 2_800, playable = false)
-        val mixed = chart.copy(notes = listOf(intro, first, inner, accent, tail))
-        val game = RhythmGame(mixed, forgiving = true)
-        assertEquals(TapResult.Ignored, game.tap(1_314))
-        assertEquals(TapResult.Automatic(intro), game.tap(1_315))
-        assertEquals(TapResult.Ignored, game.tap(1_408))
-        assertEquals(first, assertIs<TapResult.Hit>(game.tap(1_975)).note)
-        assertEquals(TapResult.Automatic(inner), game.tap(2_124))
-        assertEquals(TapResult.Ignored, game.tap(2_126))
-        assertEquals(1, game.stats.combo)
-        assertEquals(accent, assertIs<TapResult.Hit>(game.tap(2_157)).note)
-        assertEquals(TapResult.Automatic(tail), game.tap(2_885))
-        assertEquals(TapResult.Ignored, game.tap(2_886))
-        assertEquals(GameStats(2, perfect = 2, combo = 2, maxCombo = 2), game.finish())
+    fun aLegacyScoreWithNoWrittenAccentsStillProducesScoreableLandings() {
+        val soft = first.copy(playable = false)
+        val ornament = soft.copy(id = "passing", atMs = first.atMs + 70)
+        val tail = second.copy(playable = false)
+        val fitted = chart.copy(notes = listOf(soft, ornament, tail)).cascadeChart()
+        assertEquals(listOf(soft, tail), fitted.notes)
+        val game = RhythmGame(fitted, forgiving = true)
+        for (note in fitted.notes) assertEquals(note, assertIs<TapResult.Hit>(game.tap(note.atMs)).note)
+        assertEquals(100_000, game.finish().score)
+    }
+
+    @Test
+    fun signedCountdownAcceptsEarlyDownForTimeZeroIncludingItsBoundary() {
+        val zero = first.copy(atMs = 0)
+        val game = RhythmGame(chart.copy(notes = listOf(zero, second)), forgiving = true)
+        assertEquals(TapResult.Ignored, game.tap(-196))
+        assertEquals(TapResult.Hit(zero, Grade.Okay, -195), game.tap(-195))
+        assertEquals(TapResult.Ignored, game.tap(-195))
+        assertEquals(TapResult.Ignored, game.tap(0))
+        assertEquals(0, game.stats.stray)
         game.restart()
-        assertEquals(first, assertIs<TapResult.Hit>(game.tap(2_050)).note)
-        assertEquals(accent, assertIs<TapResult.Hit>(game.tap(2_150)).note)
+        assertEquals(TapResult.Hit(zero, Grade.Perfect, -20), game.tap(-20))
+        val leadIn = RhythmGame(chart, forgiving = true)
+        assertEquals(TapResult.Ignored, leadIn.tap(-20))
     }
 
     @Test
@@ -131,35 +143,91 @@ class RhythmGameTest {
         }
         game.restart()
         assertEquals(TapResult.Ignored, game.tap(first.atMs - 196))
-        assertEquals(0, game.advance(first.atMs + 195))
-        assertEquals(1, game.advance(first.atMs + 196))
+        game.advance(first.atMs + 195)
+        assertEquals(emptyList(), game.takeMisses())
+        game.advance(first.atMs + 196)
+        assertEquals(listOf(first), game.takeMisses())
         assertEquals(TapResult.Hit(first, Grade.Okay, 193), game.tap(first.atMs + 193))
         assertEquals(0, game.stats.missed)
     }
 
     @Test
-    fun exactOptionalContactsWinAndAmbiguousDownsPreferTheAccent() {
-        val fill = first.copy(id = "fill", atMs = 2_118, playable = false)
-        val game = RhythmGame(chart.copy(notes = listOf(first, fill, second)), forgiving = true)
-        assertEquals(first, assertIs<TapResult.Hit>(game.tap(2_066)).note)
-        assertEquals(TapResult.Automatic(fill), game.tap(2_118))
-        game.restart()
-        assertEquals(TapResult.Automatic(fill), game.tap(2_112))
-        assertEquals(0, game.stats.combo)
+    fun overlapHasOneOwnerAtTheMidpointAndRepeatsCannotSpendTheNextPanel() {
+        val next = second.copy(atMs = 2_100)
+        val game = RhythmGame(chart.copy(notes = listOf(first, next)), forgiving = true)
+        assertEquals(first, assertIs<TapResult.Hit>(game.tap(2_050)).note)
+        assertEquals(TapResult.Ignored, game.tap(2_050))
+        assertEquals(TapResult.Ignored, game.tap(2_051))
+        assertEquals(next, assertIs<TapResult.Hit>(game.tap(2_100)).note)
+        assertEquals(TapResult.Ignored, game.tap(2_190))
+        assertEquals(GameStats(2, perfect = 2, combo = 2, maxCombo = 2), game.finish())
+
+        val swift = next.copy(atMs = 2_012)
+        val fast = RhythmGame(chart.copy(notes = listOf(first, swift)), forgiving = true)
+        assertEquals(first, assertIs<TapResult.Hit>(fast.tap(2_000)).note)
+        assertEquals(swift, assertIs<TapResult.Hit>(fast.tap(2_012)).note)
     }
 
     @Test
-    fun duplicateDownsNeitherBreakComboNorSpendTheNextNoteAndQuickLegitimateDownsStillScore() {
-        val fill = first.copy(id = "fast", atMs = 2_056, playable = false)
-        val accent = second.copy(atMs = 2_118)
-        val game = RhythmGame(chart.copy(notes = listOf(first, fill, accent)), forgiving = true)
-        assertIs<TapResult.Hit>(game.tap(2_000))
-        assertEquals(TapResult.Ignored, game.tap(2_010))
-        assertEquals(TapResult.Automatic(fill), game.tap(2_056))
-        assertEquals(TapResult.Ignored, game.tap(2_063))
-        assertEquals(accent, assertIs<TapResult.Hit>(game.tap(2_118)).note)
-        assertEquals(TapResult.Ignored, game.tap(2_122))
-        assertEquals(GameStats(2, perfect = 2, combo = 2, maxCombo = 2), game.finish())
+    fun anOlderLandingExpiresOnlyAfterItsOwnLateWindowAndPreservesTheLaterHitStreak() {
+        val middle = first.copy(id = "mid", atMs = 2_100)
+        val game = RhythmGame(chart.copy(notes = listOf(first, middle, second)), forgiving = true)
+        assertEquals(middle, assertIs<TapResult.Hit>(game.tap(2_100)).note)
+        assertEquals(1, game.stats.combo)
+        game.advance(2_195)
+        assertEquals(emptyList(), game.takeMisses())
+        game.advance(2_196)
+        assertEquals(listOf(first), game.takeMisses())
+        assertEquals(1, game.stats.combo)
+        assertEquals(second, assertIs<TapResult.Hit>(game.tap(2_500)).note)
+        assertEquals(GameStats(3, perfect = 2, missed = 1, combo = 2, maxCombo = 2), game.finish())
+    }
+
+    @Test
+    fun everyMissKeepsItsOwnOnsetAcrossStallsAndTheLateDownReplacesOnlyItsPanel() {
+        val middle = first.copy(id = "middle", atMs = 2_250)
+        val game = RhythmGame(chart.copy(notes = listOf(first, middle, second)), forgiving = true)
+        game.advance(3_500)
+        assertEquals(listOf(2_000L, 2_250L, 2_500L), game.takeMisses().map { it.atMs })
+        assertEquals(3, game.stats.missed)
+        val corrected = assertIs<TapResult.Hit>(game.tap(2_250))
+        assertEquals(middle.atMs, corrected.note.atMs)
+        assertEquals(2, game.stats.missed)
+        assertEquals(emptyList(), game.takeMisses())
+        assertEquals(TapResult.Ignored, game.tap(2_000))
+        assertEquals(0, game.stats.combo)
+        assertEquals(1, game.stats.maxCombo)
+
+        game.restart()
+        game.advance(3_500)
+        game.tap(2_250)
+        assertEquals(listOf(first, second), game.takeMisses())
+        assertEquals(emptyList(), game.takeMisses())
+    }
+
+    @Test
+    fun tapsCanCrossDeadlinesBetweenFramesAndStraySpamCannotBreakTheNextHit() {
+        val game = RhythmGame(chart, forgiving = true)
+        assertEquals(TapResult.Stray, game.tap(2_250))
+        assertEquals(listOf(first), game.takeMisses())
+        assertEquals(TapResult.Ignored, game.tap(2_256))
+        assertEquals(second, assertIs<TapResult.Hit>(game.tap(2_500)).note)
+        assertEquals(GameStats(2, perfect = 1, missed = 1, stray = 1, combo = 1, maxCombo = 1), game.finish())
+    }
+
+    @Test
+    fun pauseDropsAnExpiredSoundCueAndLeavesTheFollowingLandingOpen() {
+        val game = RhythmGame(chart, forgiving = true)
+        game.advance(2_245)
+        assertEquals(listOf(first), game.takeMisses())
+        assertNull(game.takeMissCue(2_245))
+        game.pause()
+        assertNull(game.takeMissCue(8_000))
+        game.resume()
+        assertNull(game.takeMissCue(2_246))
+        assertNull(game.takeMissCue(2_260))
+        assertEquals(second, assertIs<TapResult.Hit>(game.tap(2_500)).note)
+        assertEquals(GameStats(2, perfect = 1, missed = 1, combo = 1, maxCombo = 1), game.finish())
     }
 
     @Test
@@ -178,29 +246,6 @@ class RhythmGameTest {
         assertNull(game.takeMissCue(2_744))
         assertNull(game.takeMissCue(5_744))
         assertNull(game.takeMissCue(5_844))
-    }
-
-    @Test
-    fun ledTapsYieldToChartTargetsAndRepeatOnlyOncePerCrossing() {
-        val lamp = first.copy(id = "lamp", atMs = first.atMs + 150, playable = false)
-        val fill = lamp.copy(id = "fill", atMs = lamp.atMs + 10)
-        val game = RhythmGame(chart.copy(notes = listOf(first, fill, second)), forgiving = true, ledNotes = listOf(lamp))
-        assertEquals(TapResult.Automatic(fill, lamp), game.tap(lamp.atMs))
-        assertEquals(TapResult.Ignored, game.tap(lamp.atMs + 8))
-        assertEquals(0, game.stats.stray)
-        val accents = RhythmGame(chart, forgiving = true, ledNotes = listOf(lamp))
-        val both = assertIs<TapResult.Hit>(accents.tap(lamp.atMs - 25))
-        assertEquals(first, both.note)
-        assertEquals(lamp, both.led)
-        assertEquals(TapResult.Ignored, accents.tap(lamp.atMs + 4))
-        assertEquals(1, accents.stats.combo)
-        accents.restart()
-        assertEquals(null, assertIs<TapResult.Hit>(accents.tap(lamp.atMs - 26)).led)
-        val separate = lamp.copy(atMs = first.atMs + 250)
-        val isolated = RhythmGame(chart, forgiving = true, ledNotes = listOf(separate))
-        assertEquals(TapResult.Led(separate), isolated.tap(separate.atMs))
-        assertEquals(TapResult.Ignored, isolated.tap(separate.atMs + 40))
-        assertEquals(0, isolated.stats.stray)
     }
 
     @Test

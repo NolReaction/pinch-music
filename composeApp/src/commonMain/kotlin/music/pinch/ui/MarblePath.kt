@@ -9,12 +9,18 @@ import kotlin.math.round
 import kotlin.math.sin
 import kotlin.math.sqrt
 import music.pinch.core.Chart
-import music.pinch.core.echoTargetTimes
+import music.pinch.core.hasGuideAfter
 
 internal const val MarbleRadius = .23f
 // World units per second squared, Y positive towards the bottom of the installation.
-private const val Gravity = 64f
+internal const val OrbitGravity = 28f
 private const val Descent = 2.40f
+
+internal fun panelCompression(ageMs: Long): Float {
+    if (ageMs !in 1..249) return 0f
+    val fraction = if (ageMs <= 55) ageMs / 55f else (250 - ageMs) / 195f
+    return .092f * fraction * fraction * (3f - 2f * fraction)
+}
 
 internal data class StagePoint(val x: Float, val y: Float, val z: Float) {
     operator fun plus(other: StagePoint) = StagePoint(x + other.x, y + other.y, z + other.z)
@@ -32,16 +38,17 @@ private fun orbit(angle: Double, y: Float) =
 internal enum class PanelShape { WoodBar, Drum, Fork }
 
 internal class StageKey(
-    val atMs: Long, val midi: Int, val playable: Boolean, val isEcho: Boolean, val shape: PanelShape,
+    val atMs: Long, val midi: Int, val shape: PanelShape,
     val ballCenter: StagePoint, val normal: StagePoint, outward: StagePoint, adjacentGapMs: Long,
 ) {
     val center = ballCenter - normal * MarbleRadius
+    private val spacing = ((adjacentGapMs - 180L) / 350f).coerceIn(0f, 1f)
     val halfLength = when (shape) {
-        PanelShape.WoodBar -> if (playable) .57f else .46f
+        PanelShape.WoodBar -> .46f + .11f * spacing
         // A wider skin fits between widely spaced landings; rapid rolls use a small pad.
         PanelShape.Drum -> (.18f + (adjacentGapMs - 235L).coerceAtLeast(0L)/1100f)
-            .coerceAtMost(if (playable) .30f else .25f)
-        PanelShape.Fork -> if (playable) .64f else .53f
+            .coerceAtMost(.25f + .05f * spacing)
+        PanelShape.Fork -> .53f + .11f * spacing
     }
     val halfWidth = when (shape) {
         PanelShape.WoodBar -> .12f
@@ -62,19 +69,20 @@ internal class StageKey(
 /** Start and end are sphere centers. All trajectory coefficients are solved once from the audio interval. */
 internal class CourseRun(
     val startMs: Long, val endMs: Long, private val start: StagePoint, private val end: StagePoint,
-    private val fromAngle: Double, private val toAngle: Double, val initialSpin: Float,
+    private val fromAngle: Double, private val toAngle: Double, val initialSpin: Float, guided: Boolean,
 ) {
     val durationMs = endMs - startMs
     private val seconds = durationMs / 1000f
+    private val stationary = start == end
     private val drop = end.y - start.y
     // A long rest would force a gigantic ballistic arc. Keep the ball on curved
     // metal until the remaining fall fits the available vertical distance.
-    private val flight = if (seconds <= .57f) seconds else min(.36f, sqrt(1.30f * drop / Gravity))
-    private val rolling = seconds - flight
+    private val flight = if (guided) min(.36f, sqrt(1.30f * drop / OrbitGravity)) else seconds
+    private val rolling = if (stationary) 0f else seconds - flight
     val railEnd = if (seconds == 0f) 0f else rolling / seconds
     private val lipAngle = fromAngle + (toAngle - fromAngle) * railEnd
     private val lip = if (rolling == 0f) start else orbit(lipAngle, start.y)
-    private val fallTerm = .5f * Gravity * flight * flight
+    private val fallTerm = if (stationary) 0f else .5f * OrbitGravity * flight * flight
     private val vy = if (seconds > 0f) (drop - fallTerm) / seconds else 0f
     private val flightVx = if (flight > 0f) (end.x - lip.x) / flight else 0f
     private val flightVz = if (flight > 0f) (end.z - lip.z) / flight else 0f
@@ -111,11 +119,11 @@ internal class CourseRun(
     ).unit() else StagePoint(flightVx, vy, flightVz).unit()
 
     fun ball(t: Float): StagePoint {
-        if (t <= 0f) return start
+        if (stationary || t <= 0f) return start
         if (t >= 1f) return end
         val elapsed = seconds * t
         val air = (elapsed - rolling).coerceAtLeast(0f)
-        val y = start.y + vy * elapsed + .5f * Gravity * air * air
+        val y = start.y + vy * elapsed + .5f * OrbitGravity * air * air
         if (rolling <= 0f || t >= railEnd) {
             return StagePoint(lip.x + flightVx * air, y, lip.z + flightVz * air)
         }
@@ -171,6 +179,7 @@ internal class MarblePath(chart: Chart) {
     init {
         angles[0] = -.72
         centers.add(orbit(angles[0], MarbleRadius * -1f))
+        val contacts = if (chart.notes.size == attacks.size) chart else chart.copy(notes = attacks)
         val sections = ArrayList<CourseRun>(times.lastIndex)
         var spin = 0f
         for (i in 1..times.lastIndex) {
@@ -178,18 +187,19 @@ internal class MarblePath(chart: Chart) {
             // Give fast alternating notes room around the oval, while also keeping
             // the vertical step below a free fall from rest for very short intervals.
             val advance = 1.72 * seconds + .28 * min(1f, seconds / .118f)
-            angles[i] = angles[i - 1] + advance
-            val drop = min(Descent * seconds, .19f * Gravity * seconds * seconds)
+            val catcher = i == times.lastIndex
+            angles[i] = if (catcher) angles[i - 1] else angles[i - 1] + advance
+            val drop = min(Descent * seconds, .19f * OrbitGravity * seconds * seconds)
             val previous = centers.last()
-            val next = orbit(angles[i], previous.y + drop)
-            val span = CourseRun(times[i - 1], times[i], previous, next, angles[i - 1], angles[i], spin)
+            val next = if (catcher) previous else orbit(angles[i], previous.y + drop)
+            val guided = if (i == 1) times[i] >= 1300 else contacts.hasGuideAfter(i - 2)
+            val span = CourseRun(times[i - 1], times[i], previous, next, angles[i - 1], angles[i], spin, guided)
             sections.add(span)
             spin = span.spin(1f) % (2f * kotlin.math.PI.toFloat())
             centers.add(next)
             integratedX[i] = integratedX[i - 1] + (times[i] - times[i - 1]) * (previous.x + next.x).toDouble() / 2
         }
         spans = sections
-        val echoes = chart.echoTargetTimes()
         val beatMs = 60_000.0 / chart.bpm
         val gaps = attacks.zipWithNext { a, b -> (b.atMs - a.atMs).toDouble() }.sorted()
         val usualStep = gaps.getOrNull(gaps.size/2) ?: beatMs
@@ -199,7 +209,9 @@ internal class MarblePath(chart: Chart) {
         keys = attacks.mapIndexed { i, note ->
             val outgoing = spans[i + 1]
             val angle = angles[i + 1]
-            val direction = outgoing.launchDirection()
+            val direction = if (i == attacks.lastIndex) {
+                StagePoint(2.12f * cos(angle).toFloat(), 0f, -.94f * sin(angle).toFloat()).unit()
+            } else outgoing.launchDirection()
             // The plate releases the sphere onto the curved rail. Pitch it a
             // little below the rail tangent so the outside edge clears the ball.
             val normal = if (outgoing.railEnd > 0f) (outgoing.railNormal(0f) + direction * .09f).unit()
@@ -215,7 +227,7 @@ internal class MarblePath(chart: Chart) {
                 abs(beat-nearestBeat) <= .075 && (downbeat || note.durationMs < .67*beatMs) -> PanelShape.Drum
                 else -> PanelShape.WoodBar
             }
-            StageKey(note.atMs, note.midi, note.playable, note.atMs in echoes, shape, centers[i + 1], normal, outward,
+            StageKey(note.atMs, note.midi, shape, centers[i + 1], normal, outward,
                 min(spans[i].durationMs, outgoing.durationMs))
         }
     }
@@ -231,6 +243,13 @@ internal class MarblePath(chart: Chart) {
         return lo.coerceAtMost(spans.lastIndex)
     }
 
+    fun onRail(timeMs: Long): Boolean {
+        if (timeMs < 0L || timeMs >= keys.last().atMs) return false
+        val span = spans[spanIndex(timeMs)]
+        val elapsed = timeMs - span.startMs
+        return elapsed > 0L && elapsed < span.railEnd * span.durationMs
+    }
+
     /** Box-filter the contact lane over a short time window so a reversal does not jerk the camera. */
     private fun xIntegral(time: Long): Double {
         if (time <= 0) return time * centers.first().x.toDouble()
@@ -244,11 +263,29 @@ internal class MarblePath(chart: Chart) {
 
     fun frame(timeMs: Long): MarbleFrame {
         val time = timeMs.coerceIn(0L, durationMs)
+        val last = keys.last()
+        if (time >= last.atMs && timeMs >= 0L) {
+            val center = last.ballCenter
+            val targetX = ((xIntegral(last.atMs + 240) - xIntegral(last.atMs - 240)) * (.42 / 480)).toFloat()
+            val ball = center - last.normal * panelCompression(time - last.atMs)
+            return MarbleFrame(ball, StagePoint(targetX, center.y, .78f), keys.lastIndex, null,
+                0f, 0f, spans.last().spin(0f))
+        }
         val index = spanIndex(time)
         val run = spans[index]
         val t = if (run.durationMs > 0L) (time - run.startMs) / run.durationMs.toFloat() else 0f
         val targetX = ((xIntegral(time + 240) - xIntegral(time - 240)) * (.42 / 480)).toFloat()
         val targetY = centers[index].y + (centers[index + 1].y - centers[index].y) * t
+        val first = keys.first()
+        if (first.atMs < 600 && timeMs < first.atMs) {
+            // Start above the first physical key, including a downbeat at zero.
+            // The incoming fall ends exactly where the first outgoing flight starts.
+            val remaining = (first.atMs - timeMs.coerceAtLeast(first.atMs - 540L)) / 540f
+            val height = 1.85f * remaining * (2f - remaining)
+            val ball = first.ballCenter - StagePoint(0f, height, 0f)
+            return MarbleFrame(ball, StagePoint(targetX, first.ballCenter.y, .78f),
+                -1, 0, 1f - remaining, height, spans[1].spin(0f))
+        }
         return MarbleFrame(run.ball(t), StagePoint(targetX, targetY, .78f), index - 1,
             index.takeIf { it < keys.size }, t, run.lift(t), run.spin(t))
     }

@@ -8,7 +8,7 @@ attribute mediump vec2 aMat;
 uniform highp vec3 uOffset;
 uniform highp vec2 uTilt; // cosine and sine of the playing face's angle in X/Y
 uniform highp vec4 uLens; // projection multipliers, near, far
-uniform mediump vec4 uKey; // impact, style, preview target, last crossed LED
+uniform mediump vec4 uKey; // impact, signed judgement, preview target, cap travel
 varying mediump vec3 vPos;
 varying mediump vec3 vN;
 varying mediump vec2 vMat;
@@ -19,7 +19,7 @@ const vec3 right=vec3(.947306,0.,-.32033);
 const vec3 up=vec3(-.156135,-.873148,-.461818);
 void main(){
     mat2 turn=mat2(uTilt.x,uTilt.y,-uTilt.y,uTilt.x);
-    vPos=vec3(turn*aPos.xy,aPos.z)+uOffset;
+    vPos=vec3(turn*(aPos.xy+vec2(0.,uKey.w*aMat.y)),aPos.z)+uOffset;
     vec3 d=vPos-eye;
     float z=dot(d,forward);
     gl_Position=vec4(dot(d,right)*uLens.x,dot(d,up)*uLens.y,
@@ -43,13 +43,10 @@ varying mediump vec2 vFace;
 uniform mediump vec4 uKey;
 uniform mediump vec4 uBall;
 uniform mediump vec2 uSpin; // cos, sin
+uniform lowp vec3 uPaint;
+uniform lowp vec3 uAccent;
 const vec3 eye=vec3(2.80,-4.88,8.20);
 const vec3 L=vec3(-.538,-.715,.447);
-vec3 tint(float style){
-    if(style>1.5) return vec3(.18,.96,.88);
-    if(style>.5) return vec3(1.,.66,.105);
-    return vec3(.96,.235,.875);
-}
 float strip(float x,float halfWidth,float blur){
     return 1.-smoothstep(halfWidth,halfWidth+blur,abs(x));
 }
@@ -67,7 +64,7 @@ vec3 studio(vec3 r){
 void main(){
     vec3 n=normalize(vN), v=normalize(eye-vPos), r=reflect(-v,n);
     float mat=vMat.x;
-    if(mat>8.5 && mat<9.5) {
+    if(mat>7.5 && mat<8.5) {
         // Polished ruby marble. The inclusion rotates with the ball inside
         // the clear glass skin; the studio reflections remain in world space.
         vec3 bn=vec3(n.x*uSpin.x+n.y*uSpin.y,-n.x*uSpin.y+n.y*uSpin.x,n.z);
@@ -92,7 +89,7 @@ void main(){
     float nl=max(0.,dot(n,L)), nv=max(0.,dot(n,v));
     float edge=pow(1.-nv,3.);
     float spec=pow(max(0.,dot(reflect(-L,n),v)),54.);
-    vec3 accent=tint(uKey.y);
+    vec3 accent=uAccent;
     float impact=uKey.x,preview=uKey.z;
     vec3 col;
     if(mat<1.5) {
@@ -101,10 +98,12 @@ void main(){
         float top=1.-step(.5,mat);
         float ao=1.-.43*exp(-14.*dot(vPos.xz-uBall.xz,vPos.xz-uBall.xz))*
                      (1.-smoothstep(.24,.83,abs(vPos.y-uBall.y)));
-        col=(vec3(.022,.032,.061)+vec3(.019,.021,.040)*nl+
+        col=(uPaint*(.31+.40*nl)+vec3(.016,.020,.026)+
              env*(.105+.23*edge)+vec3(.23,.22,.27)*spec)*ao;
+        col*=.62+.38*top;
+        col=mix(col,accent*(.37+.15*nl)+env*.09,preview*.33*top);
         // A single pressure wave expands from the tangent point on the playing face.
-        // Its light decays while the rigid face remains exactly under the ball.
+        // Its light decays independently of the mechanical return and score.
         float arrival=abs(length(vFace)-.96*(1.-impact));
         float wave=1.-smoothstep(.035,.15,arrival);
         float release=impact*impact;
@@ -123,47 +122,52 @@ void main(){
             float nearBall=1.-smoothstep(.25,.58,length(vPos-uBall.xyz));
             col=mix(col,vec3(.24,.28,.32),.24)+vec3(.35,.105,.14)*nearBall;
         }
-        col+=accent*.12*impact;
+
     } else if(mat<4.5) {
         col=vec3(.025,.032,.046)+env*.23;
     } else if(mat<6.5) {
         col=mix(vec3(.20,.135,.052),accent,min(1.,preview*.84+impact+.28));
-    } else if(mat>9.5) {
-        col=vec3(.22,.085,.037)+env*vec3(.75,.38,.20)+vec3(.34,.18,.093)*spec;
     } else {
-        float visited=step(vMat.y-.1,uKey.w);
-        float latest=1.-step(.25,abs(uKey.w-vMat.y));
-        float nearBall=1.-smoothstep(.29,.64,length(vPos-uBall.xyz));
-        col=mix(vec3(.11,.20,.24),vec3(.23,.84,.95),.50*visited);
-        col+=(vec3(.48,.38,.42)*nearBall+vec3(.44,.56,.50)*uKey.z)*latest;
+        col=vec3(.22,.085,.037)+env*vec3(.75,.38,.20)+vec3(.34,.18,.093)*spec;
+    }
+    // A judgement is attached to its scored cap only, even if the marble has moved on.
+    if(mat<2.5 || (mat>5.5 && mat<6.5)) {
+        vec3 result=uKey.y<0. ? vec3(1.,.286,.298) : vec3(.435,.945,.675);
+        col=mix(col, result*(.67+.27*max(0.,-n.y)) + env*.075, abs(uKey.y)*.96);
     }
     gl_FragColor=vec4(col,1.);
 }
 )GL";
 
 // Draw the softly lit wall and translucent projected shadows before the solid
-// geometry. One reusable bank carries all visible shadows in a single draw.
+// geometry. The machined wall faces and the backing behind their recesses
+// are sampled in world space; the camera moves past them at different rates.
 static const char* wallVS = R"GL(
 attribute highp vec3 aPos;
 attribute mediump vec3 aNormal;
 attribute mediump vec2 aMat;
 uniform highp vec4 uLens;
 uniform highp vec4 uDecals[16]; // x, y, type (0 key, 1 ball), face slope
-uniform mediump vec4 uWallLight;
+uniform lowp vec3 uPaint;
+uniform lowp vec3 uAccent;
+uniform mediump vec3 uPhase; // camera position modulo the wall period, theme motif
+varying mediump vec4 vRoom;
 varying lowp vec4 vColor;
 const vec3 eye=vec3(2.80,-4.88,8.20);
 const vec3 forward=vec3(-.279687,.487454,-.827155);
 const vec3 right=vec3(.947306,0.,-.32033);
 const vec3 up=vec3(-.156135,-.873148,-.461818);
 void main(){
+    vRoom=vec4(0.);
     if(aMat.x<.5) {
         vec2 uv=aPos.xy*.5+.5;
-        vec3 col=mix(vec3(.235,.310,.424),vec3(.413,.415,.535),uv.x*.64+uv.y*.36);
-        vec2 pool=uv-vec2(.69,.66);
-        col+=vec3(.043,.028,.064)*(1.-smoothstep(.0,.67,dot(pool,pool)));
-        col-=vec3(.025,.032,.04)*dot(aPos.xy,aPos.xy);
-        vec2 d=(aPos.xy-uWallLight.xy)*vec2(uWallLight.w,1.);
-        col+=vec3(.070,.017,.046)*uWallLight.z*(1.-smoothstep(.0,.48,dot(d,d)));
+        vec3 ray=forward+right*aPos.x/uLens.x+up*aPos.y/uLens.y;
+        vec2 slope=ray.xy/min(-.09,ray.z);
+        vec2 origin=uPhase.xy+eye.xy;
+        vRoom=vec4(origin+slope*(-1.35-eye.z),origin+slope*(-2.55-eye.z));
+        vec2 pool=uv-vec2(.64,.66);
+        float light=.26+.44*uv.y+.26*(1.-smoothstep(0.,.57,dot(pool,pool)));
+        vec3 col=mix(uPaint,uAccent,light);
         gl_Position=vec4(aPos.xy,0.,1.); vColor=vec4(col,1.); return;
     }
     vec4 data=uDecals[int(aMat.y+.5)];
@@ -180,6 +184,18 @@ void main(){
 static const char* wallFS = R"GL(
 precision mediump float;
 varying lowp vec4 vColor;
-void main(){gl_FragColor=vColor;}
+varying mediump vec4 vRoom;
+uniform lowp vec3 uPaint;
+uniform lowp vec3 uAccent;
+uniform sampler2D uRelief;
+void main(){
+    if(vColor.a<.99) { gl_FragColor=vColor; return; }
+    vec3 panel=texture2D(uRelief,vRoom.xy/6.).rgb;
+    float ribs=texture2D(uRelief,vRoom.zw/3.).a;
+    vec3 recessed=mix(uPaint,vColor.rgb,.42)+uAccent*.056*ribs;
+    vec3 face=vColor.rgb*(1.-.21*panel.b);
+    vec3 col=mix(recessed,face,panel.r)+uAccent*.10*panel.g;
+    gl_FragColor=vec4(col,1.);
+}
 )GL";
 } // namespace cascade

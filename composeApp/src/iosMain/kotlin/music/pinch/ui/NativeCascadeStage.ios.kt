@@ -3,7 +3,10 @@
 package music.pinch.ui
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.UIKitInteropProperties
@@ -17,7 +20,7 @@ import platform.UIKit.UIView
 /** Implemented by the application's GLKit surface, on the same main thread as Compose. */
 interface AppleCascadeSurface {
     val view: UIView
-    fun setCourse(keys: NSData, rails: NSData, lamps: NSData)
+    fun setCourse(keys: NSData, rails: NSData, onPresented: () -> Unit)
     fun draw(frame: NSData)
     fun close()
 }
@@ -28,17 +31,23 @@ internal val LocalCascadeFactory = staticCompositionLocalOf<() -> AppleCascadeSu
 
 @Composable
 internal actual fun NativeCascadeStage(
-    modifier: Modifier, course: CascadeGpuCourse, frame: (FloatArray) -> Unit, animate: Boolean
+    modifier: Modifier, course: CascadeGpuCourse, frame: (FloatArray) -> Unit, animate: Boolean,
+    onPresented: () -> Unit,
 ) {
     val factory = LocalCascadeFactory.current
-    val display = remember(factory) { AppleDisplay(factory()) }
+    val presented = remember(course) { mutableStateOf(false) }
+    val notifyPresented by rememberUpdatedState {
+        presented.value = true
+        onPresented()
+    }
+    val display = remember(factory) { AppleDisplay(factory()) { notifyPresented() } }
     UIKitView(
         factory = { display.surface.view },
         modifier = modifier,
         onRelease = { display.surface.close() },
         properties = UIKitInteropProperties(interactionMode = null)
     )
-    CascadeFrameClock(display, course, frame, animate)
+    CascadeFrameClock(display, course, frame, animate || !presented.value)
 }
 
 @OptIn(kotlinx.cinterop.BetaInteropApi::class)
@@ -46,13 +55,13 @@ private fun FloatArray.bytes(): NSData = if (isEmpty()) NSData() else usePinned 
     NSData.create(bytes = it.addressOf(0), length = size.toULong() * 4uL)
 }
 
-private class AppleDisplay(val surface: AppleCascadeSurface) : CascadeDisplay {
+private class AppleDisplay(val surface: AppleCascadeSurface, private val onPresented: () -> Unit) : CascadeDisplay {
     private var installed: CascadeGpuCourse? = null
 
     @OptIn(kotlinx.cinterop.BetaInteropApi::class)
     override fun present(course: CascadeGpuCourse, frame: FloatArray) {
         if (installed !== course) {
-            surface.setCourse(course.keys.bytes(), course.rails.bytes(), course.lamps.bytes())
+            surface.setCourse(course.keys.bytes(), course.rails.bytes(), onPresented)
             installed = course
         }
         // draw() consumes these pinned bytes synchronously. Swift copies them

@@ -72,6 +72,26 @@ class SongLibraryTest {
         }
     }
 
+    @Test fun stayLeavesSixBeatsForTheBreakAndBringsBackTheOpeningCall() {
+        val song = songLibrary.single { it.id == "stay" }
+        val chart = requireNotNull(song.bundled)
+        val openingMs = chart.notes.first().atMs
+        fun eighth(atMs: Long) = ((atMs - openingMs) * chart.bpm / 30_000.0).roundToInt()
+        val lead = chart.notes.filter { it.playable }
+        val intro = lead.filter { eighth(it.atMs) in 0 until 16 }
+        val returnOfTheme = lead.filter { eighth(it.atMs) in 128 until 144 }
+        assertEquals(3, song.bundledRevision)
+        assertEquals(24 * 8, eighth(chart.durationMs - 650))
+        assertEquals(intro.map { it.midi }, returnOfTheme.map { it.midi })
+        assertEquals(intro.take(3).map { eighth(it.atMs) },
+            returnOfTheme.take(3).map { eighth(it.atMs) - 128 })
+        assertTrue(lead.zipWithNext().all { (a, b) -> b.atMs - a.atMs >= 529 })
+        val lift = lead.filter { eighth(it.atMs) in 64 until 96 }
+        val bridge = chart.notes.filter { eighth(it.atMs) in 96 until 128 }
+        assertTrue(bridge.maxOf { it.velocity } < lift.maxOf { it.velocity })
+        assertTrue(bridge.zipWithNext().any { (a, b) -> eighth(b.atMs) - eighth(a.atMs) == 12 })
+    }
+
     @Test fun cascadeReducesOrnamentsAndPreservesAuthoredStereoLoveTargetsAtTheirActualOnsets() {
         val source = requireNotNull(stereoLoveSong.bundled)
         val route = source.cascadeChart()

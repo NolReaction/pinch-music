@@ -4,11 +4,13 @@ import music.pinch.core.FORGIVING_WINDOW_MS
 import music.pinch.core.Chart
 import music.pinch.core.GameStats
 
-enum class Scene { Menu, Loading, Playing, Paused, Resuming, Result, Error }
+enum class Scene { Menu, Loading, CountIn, Playing, Paused, Resuming, Result, Error }
 enum class StageMode(val label: String) { Orbit("Орбита"), Planar("Каскад X/Y") }
 enum class Instrument(val label: String) { Piano("Фортепиано"), Mallet("Маримба"), Synth("Синтезатор") }
 
 data class Song(val id: String, val title: String, val artist: String, val bundled: Chart? = null, val backingAsset: String? = null, val bundledRevision: Int = 1)
+
+data class PanelFeedback(val noteAtMs: Long, val shownAtMs: Long, val hit: Boolean)
 
 data class ScreenState(
     val songs: List<Song>,
@@ -31,18 +33,16 @@ data class ScreenState(
     val newRecord: Boolean = false,
     val volume: Float = 0.8f,
     val haptics: Boolean = false,
-    val echoTotal: Int = 0,
-    val echoesCaught: Int = 0,
-    val collectedEchoMs: Long? = null,
+    val attempt: Long = 0,
+    val panelFeedback: List<PanelFeedback> = emptyList(),
     val stageMode: StageMode = StageMode.Orbit,
-    val lastLedTapMs: Long? = null,
 ) {
     val recordedAsset: String? get() = selectedSong.backingAsset.takeUnless { selectedSong.id in importedIds }
     val backingAsset: String? get() = recordedAsset.takeUnless { solo }
     val title: String get() = selectedSong.title
     val bpm: Int get() = chart?.bpm ?: 0
     val durationMs: Long get() = chart?.durationMs ?: 0
-    val lastHitWindowMs: Long get() = (chart?.notes?.lastOrNull { it.playable }?.atMs ?: 0) + FORGIVING_WINDOW_MS
+    val lastHitWindowMs: Long get() = (chart?.notes?.lastOrNull()?.atMs ?: 0) + FORGIVING_WINDOW_MS
 }
 
 interface Actions {
@@ -53,6 +53,7 @@ interface Actions {
     fun restoreBundled()
     fun importAudio()
     fun dismissNotice()
+    fun stagePresented(attempt: Long)
     fun start(preview: Boolean)
     fun pause()
     fun resume()

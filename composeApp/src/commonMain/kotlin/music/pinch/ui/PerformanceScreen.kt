@@ -33,7 +33,6 @@ import androidx.compose.ui.unit.sp
 import music.pinch.Actions
 import music.pinch.Scene
 import music.pinch.ScreenState
-import music.pinch.StageMode
 import music.pinch.stereoLoveSectionAt
 
 private val HeaderShade = Brush.verticalGradient(listOf(Color(0xe3141220), Color(0x00141220)))
@@ -42,30 +41,41 @@ private val FooterShade = Brush.verticalGradient(listOf(Color(0x00141220), Color
 @Composable
 internal fun PerformanceScreen(state: ScreenState, actions: Actions, positionMs: () -> Long, stage: PreparedStage?) {
     Box(Modifier.fillMaxSize()) {
-        val interactive = state.scene == Scene.Playing && !state.preview
+        val countingIn = state.scene == Scene.CountIn
+        val live = state.scene == Scene.Playing || countingIn
+        val theme = stageTheme(state.selectedSong.id)
+        val accent = stageColor(theme.accent)
         if (stage != null) {
-            when (stage) {
-                is PreparedStage.Orbit -> MarbleStage(stage.path, positionMs, Modifier.matchParentSize(), state.collectedEchoMs)
-                is PreparedStage.Cascade -> PlanarStage(stage, positionMs,
-                    Modifier.matchParentSize(), state.scene == Scene.Playing, state.lastLedTapMs)
+            key(state.attempt) {
+                val attempt = state.attempt
+                val presented = remember(actions, attempt) { { actions.stagePresented(attempt) } }
+                when (stage) {
+                    is PreparedStage.Orbit -> MarbleStage(stage.path, positionMs, Modifier.matchParentSize(),
+                        feedback = state.panelFeedback, theme = theme, onPresented = presented)
+                    is PreparedStage.Cascade -> PlanarStage(stage, positionMs, Modifier.matchParentSize(),
+                        animate = live, feedback = state.panelFeedback, theme = theme, onPresented = presented)
+                }
             }
-            if (interactive) Box(Modifier.matchParentSize().rhythmInput(actions))
+            if (live && !state.preview) Box(Modifier.matchParentSize().rhythmInput(actions))
         }
-        if (state.scene == Scene.Playing) {
-            SessionHeader(state, actions, positionMs)
+        if (live) {
+            SessionHeader(state, actions, positionMs, accent)
+            if (countingIn) Box(Modifier.align(Alignment.TopCenter)
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))
+                .padding(top = 68.dp)) {
+                Countdown(state.countdown, "Начинаем")
+            }
             Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(FooterShade)
                 .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom))
                 .padding(start = 18.dp, end = 14.dp, top = 22.dp, bottom = 10.dp)) {
                 if (state.preview) {
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        val hint = if (state.stageMode == StageMode.Planar) "Шарик отбивает основные ноты"
-                            else "Все ноты звучат автоматически"
-                        Text(hint, modifier = Modifier.weight(1f), color = White,
+                        Text("Демонстрация · шарик играет сам", modifier = Modifier.weight(1f), color = White,
                             fontSize = 15.sp, fontWeight = FontWeight.Medium)
                         TextButton(onClick = actions::menu) { Text("В меню", color = White) }
                     }
                 } else {
-                    PlayControls(state, positionMs)
+                    PlayControls(state, positionMs, accent)
                 }
             }
         } else {
@@ -114,7 +124,7 @@ private fun Modifier.rhythmInput(actions: Actions): Modifier =
     }
 
 @Composable
-private fun SessionHeader(state: ScreenState, actions: Actions, positionMs: () -> Long) {
+private fun SessionHeader(state: ScreenState, actions: Actions, positionMs: () -> Long, accent: Color) {
     Column(Modifier.fillMaxWidth().background(HeaderShade)
         .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Top))
         .padding(start = 18.dp, end = 14.dp, bottom = 16.dp)) {
@@ -125,9 +135,9 @@ private fun SessionHeader(state: ScreenState, actions: Actions, positionMs: () -
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
                 if (state.backingAsset != null && state.selectedSong.id == "stereo-love") {
                     val section by remember(positionMs) { derivedStateOf { stereoLoveSectionAt(positionMs()) } }
-                    Text(section, color = Lilac, fontSize = 12.sp, lineHeight = 15.sp, maxLines = 1)
+                    Text(section, color = accent, fontSize = 12.sp, lineHeight = 15.sp, maxLines = 1)
                 } else if (state.recordedAsset != null && state.backingAsset == null) {
-                    Text("${state.instrument.label} · соло", color = Lilac, fontSize = 12.sp,
+                    Text("${state.instrument.label} · соло", color = accent, fontSize = 12.sp,
                         lineHeight = 15.sp, maxLines = 1)
                 }
             }
@@ -143,7 +153,7 @@ private fun SessionHeader(state: ScreenState, actions: Actions, positionMs: () -
         Canvas(Modifier.fillMaxWidth().height(2.dp)) {
             val ratio = (positionMs().toFloat() / duration).coerceIn(0f, 1f)
             drawRect(White.copy(alpha = .18f))
-            drawRect(Lilac, size = Size(size.width * ratio, size.height))
+            drawRect(accent, size = Size(size.width * ratio, size.height))
         }
     }
 }
@@ -186,20 +196,19 @@ private fun PauseSheet(actions: Actions) {
 }
 
 @Composable
-private fun PlayControls(state: ScreenState, positionMs: () -> Long) {
+private fun PlayControls(state: ScreenState, positionMs: () -> Long, accent: Color) {
     val lastWindow = state.lastHitWindowMs
     val tail by remember(positionMs, lastWindow) { derivedStateOf { positionMs() > lastWindow } }
     val reaction = state.reaction
     val text = when {
         reaction != null -> reaction
-        state.countdown != null -> "До первого акцента · ${state.countdown}"
+        state.countdown != null && state.scene != Scene.CountIn -> "Первое приземление · ${state.countdown}"
         tail -> "Конец мелодии"
-        state.stageMode == StageMode.Planar -> "Коснись экрана на золотом акценте или вспышке LED"
-        else -> "Коснись экрана на ударе по панели с золотым ободом"
+        else -> "Касайся экрана при каждом приземлении"
     }
     val color = when {
         reaction == null -> White
-        reaction == "Пропуск" || reaction == "Мимо" -> Coral
+        reaction == "Пропуск" || reaction == "Мимо" -> stageColor(0xFF7878)
         else -> Mint
     }
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
@@ -209,10 +218,7 @@ private fun PlayControls(state: ScreenState, positionMs: () -> Long) {
         Column(horizontalAlignment = Alignment.End) {
             Text("Счёт  ${number(state.stats?.score ?: 0)}", color = White, fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.Bold, fontSize = 14.sp)
-            Text("Комбо  ×${state.stats?.combo ?: 0}", color = Lilac, fontSize = 12.sp)
-            if (state.echoTotal > 0) {
-                Text("Эхо  ${state.echoesCaught}/${state.echoTotal}", color = Mint, fontSize = 12.sp)
-            }
+            Text("Комбо  ×${state.stats?.combo ?: 0}", color = accent, fontSize = 12.sp)
         }
     }
 }

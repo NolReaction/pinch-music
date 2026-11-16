@@ -33,7 +33,7 @@
       "notes": [{"id": "a", "atMs": 2000, "midi": 72}, {"id": "b", "atMs": 2500, "midi": 76}],
       "tapTimesMs": [2000, 2010, 2500],
       "expectedAudioMidi": [72, 76],
-      "expectedFinal": {"perfect": 2, "good": 0, "okay": 0, "missed": 0, "stray": 1, "score": 66667}
+      "expectedFinal": {"perfect": 2, "good": 0, "okay": 0, "missed": 0, "stray": 0, "score": 100000}
     },
     {
       "name": "same_pitch_distinct_ids",

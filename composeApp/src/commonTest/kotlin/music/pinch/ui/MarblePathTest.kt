@@ -6,8 +6,8 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import music.pinch.core.Chart
+import music.pinch.core.cascadeChart
 import music.pinch.core.Note
-import music.pinch.core.echoTargetTimes
 import music.pinch.songLibrary
 import music.pinch.stereoLoveSong
 
@@ -22,12 +22,9 @@ class MarblePathTest {
     }
 
     @Test fun everyStereoLoveAttackHasOneTangentContactAtItsAudioTime() {
-        val score = requireNotNull(stereoLoveSong.bundled)
+        val score = requireNotNull(stereoLoveSong.bundled).cascadeChart()
         val path = MarblePath(score)
         assertEquals(score.notes.map { it.atMs }.distinct(), path.keys.map { it.atMs })
-        assertEquals(score.notes.count { it.playable }, path.keys.count { it.playable })
-        assertEquals(score.echoTargetTimes(), path.keys.filter { it.isEcho }.map { it.atMs }.toSet())
-        assertTrue(path.keys.none { it.playable && it.isEcho })
         for ((i, key) in path.keys.withIndex()) {
             val frame = path.frame(key.atMs)
             near(key.center + key.normal * MarbleRadius, frame.marble)
@@ -63,7 +60,7 @@ class MarblePathTest {
 
     @Test fun airborneSegmentsUseGravityAndConstantHorizontalVelocity() {
         val path = MarblePath(chart(listOf(0, 118, 354, 826), 1340L))
-        for (run in path.spans.filter { it.durationMs > 0 }) {
+        for (run in path.spans.dropLast(1).filter { it.durationMs > 0 }) {
             assertEquals(0f, run.railEnd)
             val a = run.ball(0f)
             val b = run.ball(.5f)
@@ -71,15 +68,30 @@ class MarblePathTest {
             val halfSeconds = run.durationMs / 2000f
             assertEquals(0f, c.x - 2 * b.x + a.x, .00001f)
             assertEquals(0f, c.z - 2 * b.z + a.z, .00001f)
-            assertEquals(64f, (c.y - 2 * b.y + a.y) / (halfSeconds * halfSeconds), .003f)
+            assertEquals(OrbitGravity, (c.y - 2 * b.y + a.y) / (halfSeconds * halfSeconds), .003f)
             assertTrue(run.ball(.05f).y < a.y)
             assertTrue(run.ball(.95f).y < c.y)
         }
     }
 
+    @Test fun railsOnlySpanLongRhythmicGapsAndTheFinalCatcherStaysPut() {
+        // Three equally spaced beats stay airborne; the following two-second rest gets one rail.
+        val path = MarblePath(chart(listOf(0, 650, 1300, 1950, 3950), 4500))
+        assertTrue((0L..1950L step 25).none(path::onRail))
+        assertTrue(path.onRail(2250))
+        assertTrue(!path.onRail(3940))
+        assertTrue(!path.onRail(3950))
+        near(path.frame(4500).marble, path.frame(3950).marble)
+        val last = path.keys.last()
+        assertEquals(1f, (last.point(1f, 0f, 0f) - last.center).length(), .00001f)
+        near(last.ballCenter - last.normal * panelCompression(55), path.frame(4005).marble)
+    }
+
     @Test fun rollIsSupportedAndVelocitySurvivesReleaseFromTheRail() {
-        val path = MarblePath(chart(listOf(0, 1500), 5000))
-        for (run in path.spans.filter { it.railEnd > 0f }) {
+        val path = MarblePath(chart(listOf(0, 1700), 5000))
+        val guides = path.spans.filter { it.railEnd > 0f }
+        assertTrue(guides.isNotEmpty())
+        for (run in guides) {
             val lip = run.railEnd
             for (i in 0..10) {
                 val t = i * lip / 10
@@ -101,7 +113,11 @@ class MarblePathTest {
     }
 
     @Test fun bundledCoursesHaveNoEarlyPanelIntersectionsDuringFlight() {
-        for (song in songLibrary) checkPanelClearance(MarblePath(requireNotNull(song.bundled)))
+        for (song in songLibrary) {
+            val score = requireNotNull(song.bundled)
+            checkPanelClearance(MarblePath(score))
+            checkPanelClearance(MarblePath(score.cascadeChart()))
+        }
     }
 
     private fun checkPanelClearance(path: MarblePath) {
@@ -134,6 +150,18 @@ class MarblePathTest {
         }
     }
 
+    @Test fun plateCompressionAndJudgementAreIndependentOfRenderRate() {
+        assertEquals(0f, panelCompression(-1))
+        assertEquals(0f, panelCompression(0))
+        assertTrue(panelCompression(25) in .01f..panelCompression(55))
+        assertTrue(panelCompression(120) in .01f..panelCompression(55))
+        assertEquals(0f, panelCompression(250))
+        assertEquals(0f, feedbackStrength(-1))
+        assertEquals(1f, feedbackStrength(580))
+        assertEquals(.5f, feedbackStrength(690), .00001f)
+        assertEquals(0f, feedbackStrength(800))
+    }
+
     @Test fun chordAtZeroKeepsItsManualAccentAndSeekingDoesNotDependOnFrameOrder() {
         val chord = Chart("Chord", 127, 9000, listOf(
             Note("automatic", 0, 60, 200, .8f, playable = false),
@@ -143,9 +171,11 @@ class MarblePathTest {
         val path = MarblePath(chord)
         assertEquals(2, path.keys.size)
         assertEquals(72, path.keys.first().midi)
-        assertTrue(path.keys.first().playable)
         assertEquals(0, path.frame(0).anchor)
-        assertEquals(path.frame(0), path.frame(-1))
+        assertTrue(path.frame(-540L).marble.y < path.frame(-100L).marble.y)
+        assertTrue(path.frame(-100L).marble.y < path.frame(0).marble.y)
+        assertEquals(-1, path.frame(-1).anchor)
+        near(path.frame(0L).marble, path.frame(-1L).marble, tolerance = .008f)
         val halfway = path.frame(4150)
         val end = path.frame(9000)
         assertEquals(null, end.next)

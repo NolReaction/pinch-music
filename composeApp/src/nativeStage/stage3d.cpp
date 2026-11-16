@@ -70,7 +70,7 @@ static GLuint compile(GLenum kind, const char* source) {
 }
 struct Program {
     GLuint id = 0;
-    GLint lens = -1, offset = -1, tilt = -1, key = -1, ball = -1, spin = -1, wallLight = -1, decals = -1;
+    GLint lens = -1, offset = -1, tilt = -1, key = -1, ball = -1, spin = -1, paint = -1, accent = -1, phase = -1, decals = -1;
     ~Program() {
         if (id)
             glDeleteProgram(id);
@@ -107,14 +107,21 @@ struct Program {
         key = glGetUniformLocation(id, "uKey");
         ball = glGetUniformLocation(id, "uBall");
         spin = glGetUniformLocation(id, "uSpin");
-        wallLight = glGetUniformLocation(id, "uWallLight");
+        paint = glGetUniformLocation(id, "uPaint");
+        accent = glGetUniformLocation(id, "uAccent");
+        phase = glGetUniformLocation(id, "uPhase");
         decals = glGetUniformLocation(id, "uDecals[0]");
         return true;
     }
 };
+static void colour(GLint location, float packed) {
+    const auto rgb = static_cast<unsigned>(packed);
+    glUniform3f(location, ((rgb >> 16) & 255) / 255.f, ((rgb >> 8) & 255) / 255.f, (rgb & 255) / 255.f);
+}
 struct Piece {
     float x = 0, y = 0, side = 0, style = 0, slope = 0, tiltCos = 1, tiltSin = 0;
-    std::vector<V> route, lamps;
+    std::vector<V> route;
+    V routeMin{}, routeMax{};
     Buffer rail;
 };
 struct Stage {
@@ -123,13 +130,57 @@ struct Stage {
     std::array<Buffer, 8> keys; // short vs full, mount side, accent vs plain
     std::vector<Piece> pieces;
     GLsizei backdropIndices = 0, shadowIndices = 0;
+    GLuint relief = 0;
+    int reliefMotif = -1;
+    ~Stage() {
+        if (relief) glDeleteTextures(1, &relief);
+    }
+    void bindWallRelief(int motif) {
+        glActiveTexture(GL_TEXTURE0);
+        if (!relief) glGenTextures(1, &relief);
+        glBindTexture(GL_TEXTURE_2D, relief);
+        if (reliefMotif == motif) return;
+        // Each channel stores one feature of the repeated acoustic panel. This is
+        // generated once per song on the GL thread; the wall needs only two filtered reads.
+        constexpr int side = 128;
+        std::vector<uint8_t> texels(side * side * 4);
+        auto smooth = [](float a, float b, float v) {
+            const float t = std::clamp((v - a) / (b - a), 0.f, 1.f);
+            return t * t * (3.f - 2.f * t);
+        };
+        for (int j = 0; j < side; ++j) {
+            const float y = (j + .5f) * 2.f / side - 1.f;
+            for (int i = 0; i < side; ++i) {
+                const float x = (i + .5f) * 2.f / side - 1.f;
+                const float ax = std::abs(x), ay = std::abs(y);
+                float d;
+                switch (motif) {
+                case 0: d = std::abs(std::abs(x + y) - .72f) - .08f; break; // diagonal vents
+                case 1: d = std::abs(ax - .66f) - .115f; break;             // vertical flutes
+                case 2: d = std::abs(ax + .65f * y - .53f) - .10f; break;    // chevrons
+                case 3: d = std::max(ay - .22f, ax - .76f); break;           // shelves
+                case 4: d = std::abs(std::hypot(x, y) - .64f) - .12f; break; // round coffers
+                case 5: d = std::abs(y + .48f * x) - .17f; break;            // tilted louvers
+                case 6: d = std::hypot(.85f * x, 1.4f * y) - .51f; break;    // oval cavities
+                default: d = std::abs(std::max(ax, ay) - .70f) - .095f; break;
+                }
+                uint8_t* pixel = &texels[(j * side + i) * 4];
+                pixel[0] = static_cast<uint8_t>(255.f * smooth(-.02f, .022f, d));
+                pixel[1] = static_cast<uint8_t>(255.f * (1.f - smooth(.01f, .055f, std::abs(d - .025f))));
+                pixel[2] = static_cast<uint8_t>(255.f * (1.f - smooth(.007f, .032f, 1.f - std::max(ax, ay))));
+                pixel[3] = static_cast<uint8_t>(255.f * (1.f - smooth(.06f, .28f, std::min(ax, ay))));
+            }
+        }
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, side, side, 0, GL_RGBA, GL_UNSIGNED_BYTE, texels.data());
+        reliefMotif = motif;
+    }
     bool init() {
         if (!scene.link(sceneVS, sceneFS) || !wall.link(wallVS, wallFS))
             return false;
         Mesh w;
-        // Lighting changes slowly across the wall; interpolate it over a small
-        // grid and the shadow penumbrae over concentric rings. The full-screen
-        // fragment shader does no lighting work or texture reads.
+        // Interpolate the wall lighting on a coarse grid and the shadow penumbrae on rings.
         constexpr int columns = 16, rows = 24, segments = 16, rings = 5;
         for (int y = 0; y <= rows; ++y)
             for (int x = 0; x <= columns; ++x)
@@ -169,7 +220,7 @@ struct Stage {
         marble.upload(ball);
         return true;
     }
-    void course(const float* key, int count, const float* rails, int nr, const float* leds, int nl) {
+    void course(const float* key, int count, const float* rails, int nr) {
         pieces.clear();
         if (!key || count <= 0)
             return;
@@ -185,18 +236,18 @@ struct Stage {
             p.tiltCos = 1.f / std::sqrt(1.f + p.slope * p.slope);
             p.tiltSin = p.slope * p.tiltCos;
         }
-        auto assign = [&](const float* data, int rows, bool lamp) {
-            for (int i = 0; data && i < rows; ++i) {
-                int k = static_cast<int>(data[i * 3]);
-                if (k < 0 || k >= count)
-                    continue;
-                Piece& p = pieces[k];
-                V local{data[i * 3 + 1] - p.x, data[i * 3 + 2] - p.y, 0};
-                (lamp ? p.lamps : p.route).push_back(local);
-            }
-        };
-        assign(rails, nr, false);
-        assign(leds, nl, true);
+        for (int i = 0; rails && i < nr; ++i) {
+            int index = static_cast<int>(rails[i * 3]);
+            if (index < 0 || index >= count)
+                continue;
+            Piece& p = pieces[index];
+            V point{rails[i * 3 + 1] - p.x, rails[i * 3 + 2] - p.y, 0};
+            p.route.push_back(point);
+            p.routeMin.x = std::min(p.routeMin.x, point.x);
+            p.routeMin.y = std::min(p.routeMin.y, point.y);
+            p.routeMax.x = std::max(p.routeMax.x, point.x);
+            p.routeMax.y = std::max(p.routeMax.y, point.y);
+        }
     }
     void frame(int width, int height, const float* f) {
         if (width <= 0 || height <= 0 || !f)
@@ -210,9 +261,12 @@ struct Stage {
         const float lensY = 9.93f / halfHeight, lensX = lensY / aspect;
         const float cameraX = f[10], cameraY = f[3] + .26f;
         const float strength = std::max(0.f, std::min(1.f, f[6]));
-        const int active = static_cast<int>(f[5]), roll = static_cast<int>(f[7]),
-                  next = static_cast<int>(f[9]);
-        const V ball{f[0] - cameraX, f[1] - cameraY, f[2]};
+        const int active = static_cast<int>(f[5]), next = static_cast<int>(f[9]);
+        V ball{f[0] - cameraX, f[1] - cameraY, f[2]};
+        if (f[8] > 0.f && active >= 0 && active < static_cast<int>(pieces.size())) {
+            ball.x -= f[8] * pieces[active].tiltSin;
+            ball.y += f[8] * pieces[active].tiltCos;
+        }
         // Bound the vertical extent of all four corner rays up to the rear wall.
         // The perspective view can see farther down at one corner, especially in landscape.
         const V eye{2.80f, -4.88f, 8.20f};
@@ -238,11 +292,11 @@ struct Stage {
         for (GLuint i = 0; i < 3; ++i)
             glEnableVertexAttribArray(i);
         glUseProgram(wall.id);
+        bindWallRelief(static_cast<int>(f[11]));
         glUniform4f(wall.lens, lensX, lensY, .20f, 45.f);
-        const V rel = ball - eye;
-        float bz = std::max(1.f, dot(rel, {-.279687f, .487454f, -.827155f}));
-        glUniform4f(wall.wallLight, dot(rel, {.947306f, 0, -.32033f}) * lensX / bz,
-                    dot(rel, {-.156135f, -.873148f, -.461818f}) * lensY / bz, strength, aspect);
+        colour(wall.paint, f[13]);
+        colour(wall.accent, f[14]);
+        glUniform3f(wall.phase, std::fmod(cameraX, 24.f), std::fmod(cameraY, 24.f), f[11]);
         wallMesh.bind();
         glDrawElements(GL_TRIANGLES, backdropIndices, GL_UNSIGNED_SHORT, nullptr);
         glEnable(GL_BLEND);
@@ -279,6 +333,8 @@ struct Stage {
         glEnable(GL_CULL_FACE);
         glDepthFunc(GL_LEQUAL);
         glUseProgram(scene.id);
+        colour(scene.paint, f[15]);
+        colour(scene.accent, f[16]);
         glUniform4f(scene.lens, lensX, lensY, .20f, 45.f);
         glUniform4f(scene.ball, ball.x, ball.y, ball.z, strength);
         glUniform2f(scene.spin, std::cos(f[4]), std::sin(f[4]));
@@ -288,9 +344,10 @@ struct Stage {
             bool guided = p.route.size() >= 2;
             // Bounding boxes for the two slab clip planes, including mounting
             // hardware and the full pitched guide from its key to its release lip.
-            const V halfRun = guided ? p.route.back() * .5f : V{0, 0, 0};
-            V center{p.x - cameraX + halfRun.x, p.y - cameraY + .22f + halfRun.y, -.32f};
-            V halfSize{.76f + std::abs(halfRun.x), .64f + std::abs(halfRun.y), 1.06f};
+            const V mid = (p.routeMax + p.routeMin) * .5f;
+            const V half = (p.routeMax - p.routeMin) * .5f;
+            V center{p.x - cameraX + mid.x, p.y - cameraY + .22f + mid.y, -.32f};
+            V halfSize{.76f + half.x, .64f + half.y, 1.06f};
             bool clipped = false;
             for (float sign : {-1.f, 1.f}) {
                 const V plane =
@@ -306,20 +363,24 @@ struct Stage {
             if (p.style >= 0.f) {
                 int shape = (guided ? 4 : 0) + (p.side > 0 ? 2 : 0) + (p.style == 1.f ? 1 : 0);
                 float impact = i == active ? strength : 0.f;
-                bool upcoming = i == next && p.style > .5f;
-                glUniform4f(scene.key, impact, p.style, upcoming ? 1.f : 0.f, -2.f);
+                bool upcoming = i == next;
+                float score = 0.f;
+                for (int slot = 17; slot < STAGE3D_FRAME_SIZE; slot += 2) {
+                    if (i == static_cast<int>(f[slot])) {
+                        score = f[slot + 1];
+                        break;
+                    }
+                }
+                glUniform4f(scene.key, impact, score, upcoming ? 1.f : 0.f, i == active ? f[7] : 0.f);
                 glUniform2f(scene.tilt, p.tiltCos, p.tiltSin);
                 keys[shape].bind();
                 keys[shape].draw();
             }
             if (guided) {
                 if (!p.rail.count)
-                    p.rail.upload(railMesh(p.route, p.lamps, p.style < 0.f));
+                    p.rail.upload(railMesh(p.route, p.style < 0.f));
                 // Rails are already built in world axes from the physics samples.
-                // A finished guide keeps a dim record of crossed lamps. Using the
-                // lamp count puts the brighter moving highlight past the last lamp.
-                float crossed = i == roll ? f[8] : (i <= active ? static_cast<float>(p.lamps.size()) : -2.f);
-                glUniform4f(scene.key, 0.f, p.style, i == roll ? f[11] : 0.f, crossed);
+                glUniform4f(scene.key, 0.f, 0.f, 0.f, 0.f);
                 glUniform2f(scene.tilt, 1.f, 0.f);
                 p.rail.bind();
                 p.rail.draw();
@@ -344,10 +405,9 @@ extern "C" void* stage3d_create(void) {
 extern "C" void stage3d_destroy(void* stage) {
     delete static_cast<cascade::Stage*>(stage);
 }
-extern "C" void stage3d_set_course(void* stage, const float* keys, int nk, const float* rails, int nr,
-                                   const float* lamps, int nl) {
+extern "C" void stage3d_set_course(void* stage, const float* keys, int nk, const float* rails, int nr) {
     if (stage)
-        static_cast<cascade::Stage*>(stage)->course(keys, nk, rails, nr, lamps, nl);
+        static_cast<cascade::Stage*>(stage)->course(keys, nk, rails, nr);
 }
 extern "C" void stage3d_draw(void* stage, int width, int height, const float* frame) {
     if (stage)

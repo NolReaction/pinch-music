@@ -8,7 +8,8 @@ import kotlinx.coroutines.Dispatchers
 import music.pinch.ui.PreparedStage
 import music.pinch.core.Chart
 import music.pinch.core.Note
-import music.pinch.core.echoTargetTimes
+import music.pinch.core.cascadeChart
+import music.pinch.core.cascadePreRollMs
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -28,7 +29,7 @@ class SessionTest {
         override fun readValue(key: String) = values[key]
         override fun writeValue(key: String, value: String) { values[key] = value }
         override suspend fun pickAudio(): FloatArray? = null
-        val bestScore: Int? get() = values["record.v3.test.bundled"]?.toInt()
+        val bestScore: Int? get() = values["record.landings.v1.Orbit.test.bundled"]?.toInt()
         override var volume = .5f
         override var haptics = false
         override fun feedback() {}
@@ -37,11 +38,11 @@ class SessionTest {
         var lastInstrument: Instrument? = null
         override fun newMedia(durationMs: Long, instrument: Instrument): Player {
             lastInstrument = instrument
-            return Player().also(players::add)
+            return Player(durationMs).also(players::add)
         }
     }
 
-    private class Player : GameMedia {
+    private class Player(private val durationMs: Long) : GameMedia {
         var status = Playback(ready = false, playing = false, ended = false, positionMs = 0, observedUptimeMs = 10_000)
         val sounds = mutableListOf<Pair<Int, Float>>()
         val strikes = mutableListOf<Float>()
@@ -70,7 +71,25 @@ class SessionTest {
         }
 
         fun ready() { status = status.copy(ready = true) }
-        fun end() { status = status.copy(ended = true, playing = false) }
+        fun end() {
+            status = status.copy(ended = true, playing = false, positionMs = durationMs,
+                observedUptimeMs = status.observedUptimeMs + (durationMs - status.positionMs))
+        }
+    }
+
+    // Keep playback time zero anchored at 10,000 in tests that deliver timestamped taps.
+    private fun Session.readyToPlay(player: Player) {
+        val roll = if (state.preview) 0L else requireNotNull(state.chart).cascadePreRollMs()
+        val start = player.uptimeMs()
+        if (roll > 0) player.tick(0, start - roll)
+        player.ready()
+        stagePresented(state.attempt)
+        observe()
+        if (state.scene == Scene.CountIn) {
+            player.tick(0, start)
+            observe()
+        }
+        assertEquals(Scene.Playing, state.scene)
     }
 
     @Test
@@ -104,6 +123,7 @@ class SessionTest {
         assertEquals(0, obsolete.starts)
         assertEquals(0, active.starts)
         assertEquals(1, obsolete.closes)
+        session.stagePresented(session.state.attempt)
         session.resume()
         session.observe()
         active.tick(0, 12_000)
@@ -120,15 +140,15 @@ class SessionTest {
         val host = Host()
         val backing = song.copy(id = "stereo-love", backingAsset = "backing/stereo-love.m4a")
         val revised = song.copy(bundledRevision = 2)
-        host.values["record.v3.test.bundled"] = "91000"
-        host.values["record.v3.test.bundled.v2"] = "46000"
+        host.values["record.v3.test.bundled.v2"] = "99999"
+        host.values["record.landings.v1.Orbit.test.bundled"] = "91000"
+        host.values["record.landings.v1.Orbit.test.bundled.v2"] = "46000"
         val session = session(host, listOf(backing, revised))
         assertEquals(backing.backingAsset, session.state.backingAsset)
         session.selectInstrument(Instrument.Mallet)
         assertNull(session.state.backingAsset)
         session.start(true)
-        host.player.ready()
-        session.observe()
+        session.readyToPlay(host.player)
         host.player.tick(2000)
         session.observe()
         assertEquals(Instrument.Mallet, host.lastInstrument)
@@ -148,59 +168,64 @@ class SessionTest {
     }
 
     @Test
-    fun recordedCascadePreviewUsesOnlyTheBackingThroughLampCrossingsAndResume() {
+    fun recordedCascadePreviewUsesOnlyTheBackingThroughGuidesAndResume() {
         val host = Host()
         val session = session(host, songLibrary)
         session.selectStageMode(StageMode.Planar)
         session.start(true)
         session.selectStageMode(StageMode.Orbit)
         assertEquals(StageMode.Planar, session.state.stageMode)
-        val cues = (session.stage as PreparedStage.Cascade).path.ledCues
-        assertTrue(cues.isNotEmpty())
+        val path = (session.stage as PreparedStage.Cascade).path
+        val guides = path.panels.filter { it.railSamples.isNotEmpty() }
+        assertTrue(guides.isNotEmpty())
         val player = host.player
         assertEquals("backing/stereo-love.m4a", player.backing)
         assertTrue(player.prepared.isEmpty())
-        player.ready()
-        session.observe()
-        player.tick(cues.first().atMs)
+        session.readyToPlay(player)
+        val first = path.attacks[guides.first().firstAttack].atMs
+        player.tick(first + 200)
         session.observe()
         session.pause()
         session.resume()
         session.observe()
-        player.tick(cues.first().atMs, 11_500 + cues.first().atMs)
+        player.tick(first + 200, 11_700 + first)
         session.observe()
-        player.tick(cues.last().atMs)
+        player.tick(path.attacks[guides.last().lastAttack].atMs)
         session.observe()
         assertTrue(player.sounds.isEmpty() && player.strikes.isEmpty())
     }
 
     @Test
-    fun aRailOrnamentAcceptsOneOptionalTapWithoutReplayingItsPitch() {
+    fun rollingBetweenKeysIsSilentAndScoresOnlyTheNextLanding() {
         val host = Host()
         val session = session(host, songLibrary)
         session.selectStageMode(StageMode.Planar)
         session.start(false)
         val course = (session.stage as PreparedStage.Cascade).path
-        val cue = course.ledCues.first { light ->
-            course.attacks.all { kotlin.math.abs(it.atMs - light.atMs) > 200 }
+        val railTime = course.attacks.zipWithNext().firstNotNullOf { (from, to) ->
+            (from.atMs + 220..to.atMs - 220 step 50).firstOrNull { course.frame(it).rollingPanel != null }
         }
+        val next = course.attacks.first { it.atMs > railTime }
         val player = host.player
-        player.ready()
+        session.readyToPlay(player)
+        player.tick(railTime)
         session.observe()
-        player.tick(cue.atMs)
-        session.observe()
-        val combo = session.state.stats?.combo
+        val feedback = session.state.panelFeedback
+        val stats = session.state.stats
         player.sounds.clear()
-        session.tap(10_000 + cue.atMs)
-        session.tap(10_008 + cue.atMs)
+        session.tap(10_000 + railTime)
+        session.tap(10_008 + railTime)
+        assertEquals(feedback, session.state.panelFeedback)
+        assertEquals(stats, session.state.stats)
+        assertTrue(player.strikes.isEmpty() && player.sounds.isEmpty())
+        player.tick(next.atMs)
         session.observe()
-        assertEquals(cue.atMs, session.state.lastLedTapMs)
-        assertEquals(listOf(.22f * host.volume), player.strikes)
-        assertTrue(player.sounds.isEmpty())
-        assertEquals(combo, session.state.stats?.combo)
-        assertEquals(0, session.state.stats?.stray)
+        session.tap(10_000 + next.atMs)
+        assertEquals(next.atMs, session.state.panelFeedback.last().noteAtMs)
+        assertTrue(session.state.panelFeedback.last().hit)
+        assertEquals(1, player.strikes.size)
         session.restart()
-        assertNull(session.state.lastLedTapMs)
+        assertTrue(session.state.panelFeedback.isEmpty())
     }
 
     @Test
@@ -211,7 +236,8 @@ class SessionTest {
             Note("end", 1600, 67, 300, .9f)
         ))
         val host = Host()
-        host.writeValue("record.v3.test.bundled", "50000")
+        host.writeValue("record.v3.test.bundled", "90000")
+        host.writeValue("record.landings.v1.Orbit.test.bundled", "50000")
         val session = session(host, listOf(song.copy(bundled = raw)))
         session.selectStageMode(StageMode.Planar)
         assertNull(session.state.bestScore)
@@ -220,8 +246,7 @@ class SessionTest {
         session.start(false)
         assertEquals(score.notes.map { it.atMs }, (session.stage as PreparedStage.Cascade).path.attacks.map { it.atMs })
         val player = host.player
-        player.ready()
-        session.observe()
+        session.readyToPlay(player)
         for (time in listOf(500L, 630L, 1600L)) {
             player.tick(time)
             session.observe()
@@ -235,8 +260,7 @@ class SessionTest {
         session.menu()
         session.start(true)
         val preview = host.player
-        preview.ready()
-        session.observe()
+        session.readyToPlay(preview)
         for (time in listOf(500L, 630L, 1600L)) {
             preview.tick(time)
             session.observe()
@@ -244,7 +268,7 @@ class SessionTest {
         assertEquals(listOf(72, 64, 74, 67), preview.sounds.map { it.first })
         session.menu()
         session.selectStageMode(StageMode.Orbit)
-        assertEquals(raw, session.state.chart)
+        assertEquals(raw.cascadeChart(), session.state.chart)
         assertEquals(50_000, session.state.bestScore)
         session.selectStageMode(StageMode.Planar)
         assertEquals(100_000, session.state.bestScore)
@@ -261,8 +285,7 @@ class SessionTest {
         session.tap(12_000)
         assertEquals(0, player.starts)
         assertTrue(player.sounds.isEmpty())
-        player.ready()
-        session.observe()
+        session.readyToPlay(player)
         player.tick(2_300)
         session.observe()
         session.tap(12_000) // touch delivered 300 ms after physical down, still a Perfect
@@ -289,8 +312,7 @@ class SessionTest {
         val session = session(host)
         session.start(false)
         val player = host.player
-        player.ready()
-        session.observe()
+        session.readyToPlay(player)
         player.tick(2_000)
         session.observe()
         session.tap(12_000)
@@ -322,8 +344,7 @@ class SessionTest {
         val preview = host.player
         assertTrue(session.state.preview)
         assertEquals(setOf(72, 76), preview.prepared)
-        preview.ready()
-        session.observe()
+        session.readyToPlay(preview)
         preview.tick(2_000)
         session.observe()
         session.observe()
@@ -340,8 +361,7 @@ class SessionTest {
             assertEquals(1, previous.closes)
             assertNull(previous.onInterrupted)
         }
-        host.player.ready()
-        session.observe()
+        session.readyToPlay(host.player)
         host.player.end()
         session.observe()
         assertEquals(2, session.state.stats?.missed)
@@ -361,6 +381,7 @@ class SessionTest {
         assertEquals(Scene.Loading, session.state.scene)
         player.onInterrupted!!.invoke()
         player.ready()
+        session.stagePresented(session.state.attempt)
         session.observe()
         assertEquals(Scene.Paused, session.state.scene)
         assertEquals(0, player.starts)
@@ -378,8 +399,7 @@ class SessionTest {
         val session = session(host)
         session.start(false)
         val player = host.player
-        player.ready()
-        session.observe()
+        session.readyToPlay(player)
         player.tick(1_800, 11_800)
         session.observe()
         player.tick(2_000, 12_900) // 200 ms of progress in 1,100 ms of uptime
@@ -398,8 +418,7 @@ class SessionTest {
         val session = session(host)
         session.start(false)
         val player = host.player
-        player.ready()
-        session.observe()
+        session.readyToPlay(player)
         player.tick(500)
         session.observe()
         player.onInterrupted!!.invoke()
@@ -429,8 +448,7 @@ class SessionTest {
         val session = session(host)
         session.start(false)
         val player = host.player
-        player.ready()
-        session.observe()
+        session.readyToPlay(player)
         player.tick(2_000)
         session.observe()
         session.tap(12_000)
@@ -445,8 +463,7 @@ class SessionTest {
         session.restart()
         assertEquals(Scene.Loading, session.state.scene)
         assertEquals(0, session.state.stats?.perfect)
-        host.player.ready()
-        session.observe()
+        session.readyToPlay(host.player)
         assertEquals(Scene.Playing, session.state.scene)
     }
 
@@ -455,8 +472,7 @@ class SessionTest {
         val host = Host()
         val session = session(host)
         session.start(false)
-        host.player.ready()
-        session.observe()
+        session.readyToPlay(host.player)
         host.player.tick(2_000)
         session.tap(12_000)
         host.player.status = host.player.status.copy(error = "decoder")
@@ -495,8 +511,7 @@ class SessionTest {
         assertEquals(song.bundled, session.state.chart)
         assertNull(session.state.bestScore)
         session.start(false)
-        host.player.ready()
-        session.observe()
+        session.readyToPlay(host.player)
         host.player.tick(2155)
         session.tap(12155)
         assertEquals(1, session.state.stats?.okay)
@@ -513,8 +528,7 @@ class SessionTest {
         val session = session(host)
         session.start(false)
         val player = host.player
-        player.ready()
-        session.observe()
+        session.readyToPlay(player)
         for (time in listOf(2_244L, 2_255L, 2_744L, 2_745L, 3_500L)) {
             player.tick(time)
             session.observe()
@@ -523,8 +537,7 @@ class SessionTest {
         assertTrue(player.sounds.all { it.second in 0.03f..0.16f })
         assertEquals(2, session.state.stats?.missed)
         session.restart()
-        host.player.ready()
-        session.observe()
+        session.readyToPlay(host.player)
         host.player.tick(3_500L)
         session.observe()
         assertTrue(host.player.sounds.isEmpty())
@@ -532,13 +545,12 @@ class SessionTest {
     }
 
     @Test
-    fun strayFeedbackUsesTheNearestTargetButSpamStillCountsWithoutRetriggeringAudio() {
+    fun strayFeedbackUsesTheNearestTargetAndDebouncesARepeatedDown() {
         val host = Host()
         val session = session(host)
         session.start(false)
         val player = host.player
-        player.ready()
-        session.observe()
+        session.readyToPlay(player)
         player.tick(2_000)
         session.tap(12_000)
         for (time in listOf(2_280L, 2_285L, 2_299L)) {
@@ -546,7 +558,7 @@ class SessionTest {
             session.tap(10_000 + time)
         }
         assertEquals(listOf(72, 77), player.sounds.map { it.first })
-        assertEquals(3, session.state.stats?.stray)
+        assertEquals(1, session.state.stats?.stray)
         player.tick(2_500)
         session.tap(12_500)
         assertEquals(listOf(72, 77, 76), player.sounds.map { it.first })
@@ -590,13 +602,12 @@ class SessionTest {
         val host = Host()
         val session = session(host, songLibrary)
         val chart = requireNotNull(session.state.chart)
-        val notes = chart.notes.filter { it.playable }
+        val notes = chart.notes
         fun run(preview: Boolean, playEveryNote: Boolean): Player {
             session.start(preview)
             val player = host.player
             assertEquals("backing/stereo-love.m4a", player.backing)
-            player.ready()
-            session.observe()
+            session.readyToPlay(player)
             var nextDown = 0
             for (position in 0L..chart.durationMs step 16) {
                 player.tick(position)
@@ -635,8 +646,7 @@ class SessionTest {
         val session = session(host)
         session.start(false)
         val player = host.player
-        player.ready()
-        session.observe()
+        session.readyToPlay(player)
         player.tick(2_470L, 18_000L)
         session.observe()
         val reads = player.snapshots
@@ -649,24 +659,114 @@ class SessionTest {
     }
 
     @Test
-    fun automaticBarCanBeTappedOnceWithoutPenaltyOrDoublingItsTune() {
+    fun firstDownbeatAcceptsEarlyDownOnlyAfterTheCurrentStageIsVisible() {
+        val chart = requireNotNull(song.bundled)
+        val zero = chart.notes.first().copy(atMs = 0)
+        val songAtZero = song.copy(bundled = chart.copy(notes = listOf(zero, chart.notes.last())))
+        for (mode in StageMode.entries) {
+            val host = Host()
+            val session = session(host, listOf(songAtZero))
+            session.selectStageMode(mode)
+            session.start(false)
+            val obsolete = session.state.attempt
+            session.restart()
+            val player = host.player
+            player.ready()
+            session.stagePresented(obsolete)
+            session.observe()
+            session.tapNow()
+            assertEquals(Scene.Loading, session.state.scene)
+            assertEquals(0, session.state.stats?.perfect)
+            assertTrue(player.sounds.isEmpty())
+            session.stagePresented(session.state.attempt)
+            session.observe()
+            val roll = requireNotNull(session.state.chart).cascadePreRollMs()
+            val zeroUptime = player.uptimeMs() + roll
+            assertEquals(Scene.CountIn, session.state.scene)
+            assertEquals(-roll, session.positionMs)
+            assertEquals(0, player.starts)
+            player.tick(0, zeroUptime - 195)
+            session.observe()
+            session.tapNow()
+            assertEquals(listOf(PanelFeedback(0, -195, true)), session.state.panelFeedback)
+            assertEquals(1, session.state.stats?.okay)
+            assertTrue(player.sounds.isEmpty())
+            player.tick(0, zeroUptime)
+            session.observe()
+            session.tapNow()
+            assertEquals(Scene.Playing, session.state.scene)
+            assertEquals(1, player.starts)
+            assertEquals(listOf(zero.midi), player.sounds.map { it.first })
+            assertEquals(1, session.state.stats?.combo)
+            session.dispose()
+        }
+    }
+
+    @Test
+    fun aDownQueuedDuringCountInCanArriveAfterTheFirstAudioFrame() {
         val host = Host()
         val chart = requireNotNull(song.bundled)
-        val between = chart.notes.first().copy(id = "automatic", atMs = 2_390, playable = false)
-        val part = chart.copy(notes = listOf(chart.notes.first(), between, chart.notes.last()))
-        val session = session(host, listOf(song.copy(bundled = part, backingAsset = "full.m4a")))
+        val zero = chart.notes.first().copy(atMs = 0)
+        val session = session(host, listOf(song.copy(bundled = chart.copy(notes = listOf(zero, chart.notes.last())))))
         session.start(false)
-        host.player.ready()
+        session.readyToPlay(host.player)
+        session.tap(9_804)
+        assertEquals(0, session.state.stats?.combo)
+        session.tap(9_955)
+        assertEquals(1, session.state.stats?.perfect)
+        assertEquals(listOf(zero.midi), host.player.sounds.map { it.first })
+    }
+
+    @Test
+    fun aShortLastNoteKeepsItsLateWindowAfterAudioEof() {
+        val host = Host()
+        val last = Note("last", 3_990L, 72, 10, .8f)
+        val session = session(host, listOf(song.copy(bundled = Chart("Тест", 120, 4_000L, listOf(last)))))
+        session.start(false)
+        val player = host.player
+        session.readyToPlay(player)
+        player.end()
         session.observe()
-        session.tap(12_000)
-        session.tap(12_390)
-        session.tap(12_394)
-        assertEquals(1, session.state.stats?.combo)
-        assertEquals(0, session.state.stats?.stray)
-        session.tap(12_500)
-        assertEquals(100_000, session.state.stats?.score)
-        assertEquals(3, host.player.strikes.size)
-        assertTrue(host.player.sounds.isEmpty())
+        assertEquals(Scene.Playing, session.state.scene)
+        player.tick(4_000, 14_185)
+        session.observe()
+        session.tapNow()
+        assertEquals(1, session.state.stats?.okay)
+        assertEquals(last.atMs, session.state.panelFeedback.last().noteAtMs)
+        player.tick(4_000, 14_186)
+        session.observe()
+        assertEquals(Scene.Result, session.state.scene)
+        assertEquals(0, session.state.stats?.missed)
+    }
+
+    @Test
+    fun bothScenesScoreAnUnaccentedPhysicalKeyOnceAndApplyTheSameTimingWindow() {
+        val raw = requireNotNull(song.bundled)
+        val soft = raw.notes.first().copy(id = "soft", atMs = 2_700, playable = false)
+        val last = raw.notes.last().copy(atMs = 3_300)
+        val part = raw.copy(notes = listOf(raw.notes.first(), soft, last))
+        for (mode in StageMode.entries) {
+            val host = Host()
+            val session = session(host, listOf(song.copy(bundled = part, backingAsset = "full.m4a")))
+            session.selectStageMode(mode)
+            session.start(false)
+            val player = host.player
+            session.readyToPlay(player)
+            for ((at, error) in listOf(2_000L to 0L, 2_700L to -195L, 3_300L to 195L)) {
+                player.tick(at + error)
+                session.observe()
+                session.tap(10_000 + at + error)
+                session.tap(10_004 + at + error)
+                assertEquals(at, session.state.panelFeedback.last().noteAtMs)
+                assertTrue(session.state.panelFeedback.last().hit)
+            }
+            assertEquals(3, session.state.stats?.combo)
+            assertEquals(2, session.state.stats?.okay)
+            assertEquals(0, session.state.stats?.stray)
+            assertEquals(3, player.strikes.size)
+            assertTrue(player.sounds.isEmpty())
+            session.dispose()
+        }
     }
 
     @Test
@@ -675,8 +775,7 @@ class SessionTest {
         val session = session(host)
         session.start(false)
         val player = host.player
-        player.ready()
-        session.observe()
+        session.readyToPlay(player)
         player.tick(2_232)
         player.status = player.status.copy(confirmedPositionMs = 2_184)
         session.observe()
@@ -695,8 +794,7 @@ class SessionTest {
         val session = session(host)
         session.start(true)
         val player = host.player
-        player.ready()
-        session.observe()
+        session.readyToPlay(player)
         val ui = session.state
         for (ms in 16L..800L step 16) {
             player.tick(ms)
@@ -714,8 +812,7 @@ class SessionTest {
             chart.notes.first().copy(id = "harmony", midi = 79), chart.notes.last())))
         val session = session(host, listOf(chord))
         session.start(true)
-        host.player.ready()
-        session.observe()
+        session.readyToPlay(host.player)
         host.player.tick(2_004)
         session.observe()
         session.observe()
@@ -737,52 +834,30 @@ class SessionTest {
     }
 
     @Test
-    fun echoesAreOptionalAndSurvivePauseButResetForAnotherRun() {
+    fun aSkippedFrameMarksTheExactMissedKeysAndADelayedDownCorrectsOnlyItsOwnKey() {
         val host = Host()
-        val session = session(host, songLibrary)
-        val chart = requireNotNull(session.state.chart)
-        val echoes = chart.echoTargetTimes()
-        assertEquals(40, echoes.size)
-        assertEquals(echoes.size, session.state.echoTotal)
-        val firstEcho = echoes.min()
-        for (collect in listOf(true, false)) {
-            session.start(false)
-            assertEquals(0, session.state.echoesCaught)
-            assertNull(session.state.collectedEchoMs)
-            val player = host.player
-            player.ready()
-            session.observe()
-            var uptimeOffset = 10_000L
-            for (note in chart.notes.filter { it.playable || it.atMs in echoes }) {
-                val uptime = uptimeOffset + note.atMs
-                player.tick(note.atMs, uptime)
-                session.observe()
-                if (note.playable || collect) session.tap(uptime)
-                if (collect && note.atMs == firstEcho) {
-                    session.tap(uptime + 8)
-                    assertEquals(1, session.state.echoesCaught)
-                    assertEquals(firstEcho, session.state.collectedEchoMs)
-                    assertEquals("Эхо +1", session.state.reaction)
-                    assertEquals(note.midi + 12, player.sounds.single().first)
-                    session.pause()
-                    session.resume()
-                    session.observe()
-                    uptimeOffset += 2_000L
-                    player.tick(note.atMs, uptimeOffset + note.atMs)
-                    session.observe()
-                    assertEquals(1, session.state.echoesCaught)
-                }
-            }
-            player.end()
-            session.observe()
-            val expected = if (collect) echoes.size else 0
-            assertEquals(expected, session.state.echoesCaught)
-            assertEquals(expected, player.sounds.size)
-            assertEquals(100_000, session.state.stats?.score)
-            assertEquals(159, session.state.stats?.maxCombo)
-        }
-        session.start(true)
-        assertEquals(0, session.state.echoesCaught)
-        assertNull(session.state.collectedEchoMs)
+        val notes = (0 until 6).map { Note("n$it", 1_000L + 500L * it, 60 + it, 120, .7f) }
+        val session = session(host, listOf(song.copy(bundled = Chart("Тест", 120, 5_000L, notes))))
+        session.start(false)
+        val player = host.player
+        session.readyToPlay(player)
+        player.tick(3_240)
+        session.observe()
+        assertEquals(5, session.state.stats?.missed)
+        assertEquals(listOf(1_500L, 2_000L, 2_500L, 3_000L), session.state.panelFeedback.map { it.noteAtMs })
+        assertTrue(session.state.panelFeedback.none { it.hit })
+        assertTrue(player.sounds.isEmpty())
+        session.tap(13_000)
+        assertEquals(4, session.state.stats?.missed)
+        assertEquals(listOf(3_000L), session.state.panelFeedback.filter { it.hit }.map { it.noteAtMs })
+        assertEquals(listOf(1_500L, 2_000L, 2_500L), session.state.panelFeedback.filterNot { it.hit }.map { it.noteAtMs })
+        session.pause()
+        session.resume()
+        session.observe()
+        player.tick(3_240, 14_740)
+        session.observe()
+        assertEquals(4, session.state.stats?.missed)
+        session.restart()
+        assertTrue(session.state.panelFeedback.isEmpty())
     }
 }

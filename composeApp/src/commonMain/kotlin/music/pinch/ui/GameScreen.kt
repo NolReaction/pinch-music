@@ -28,6 +28,7 @@ import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -99,6 +100,7 @@ private fun Menu(state: ScreenState, actions: Actions) {
     var settings by rememberSaveable { mutableStateOf(false) }
     var library by rememberSaveable { mutableStateOf(false) }
     val chart = state.chart
+    val songAccent = stageColor(stageTheme(state.selectedSong.id).accent)
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -111,7 +113,7 @@ private fun Menu(state: ScreenState, actions: Actions) {
             Spacer(Modifier.weight(1f))
             TextButton(onClick = { settings = true }) { Text("Настройки", color = Muted) }
         }
-        StageTabs(state.stageMode, actions::selectStageMode)
+        StageTabs(state.stageMode, songAccent, actions::selectStageMode)
         TrackCard(state)
         ActionButton("Выбрать мелодию", onClick = { library = true }, primary = false, enabled = !state.importing)
         if (state.recordedAsset != null) {
@@ -130,21 +132,11 @@ private fun Menu(state: ScreenState, actions: Actions) {
             }
         } else if (chart != null) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                ActionButton("Играть", onClick = { actions.start(false) }, modifier = Modifier.weight(1.1f), icon = IconShape.Play)
+                ActionButton("Играть", onClick = { actions.start(false) }, modifier = Modifier.weight(1.1f),
+                    icon = IconShape.Play, accent = songAccent)
                 ActionButton("Послушать", onClick = { actions.start(true) }, modifier = Modifier.weight(1f), primary = false)
             }
-            val hint = when {
-                state.stageMode == StageMode.Planar && state.echoTotal > 0 ->
-                    "Золотые акценты дают очки, бирюзовые метки — эхо. На рельсах можно подыграть вспышкам LED."
-                state.stageMode == StageMode.Planar ->
-                    "Коснись экрана на золотом акценте. На рельсах можно подыграть вспышкам LED."
-                state.echoTotal > 0 ->
-                    "Касайся любой точки сцены в такт. Золотой обод даёт очки, бирюзовые кольца — эхо."
-                state.backingAsset != null ->
-                    "Вся мелодия звучит автоматически. Нажимай, когда шарик ударяет по планке с золотой кромкой."
-                else -> "Коснись экрана, когда шарик ударит по планке с золотой кромкой."
-            }
-            Caption(hint)
+            Caption("Касайся экрана при каждом приземлении шарика на панель. Пока он катится по рельсам, жди.")
             val imported = state.selectedSong.id in state.importedIds
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
                 TextButton(onClick = actions::importAudio) {
@@ -204,23 +196,21 @@ private fun VolumeSlider(volume: Float, save: (Float) -> Unit) {
 }
 
 @Composable
-private fun StageTabs(selected: StageMode, choose: (StageMode) -> Unit) {
+private fun StageTabs(selected: StageMode, accent: Color, choose: (StageMode) -> Unit) {
     val track = RoundedCornerShape(16.dp)
     val modes = StageMode.entries
     val selectedPosition = animateFloatAsState(selected.ordinal.toFloat(), tween(160), label = "Сцена")
-    val selectedTint = if (selected == StageMode.Planar) Mint else Lilac
     Row(Modifier.fillMaxWidth().clip(track).background(Surface).border(1.dp, Line, track)
         .selectableGroup().padding(3.dp).drawBehind {
             val gap = 3.dp.toPx()
             val width = (size.width - gap * (modes.size - 1)) / modes.size
             val start = (width + gap) * selectedPosition.value
             val x = if (layoutDirection == LayoutDirection.Ltr) start else size.width - width - start
-            drawRoundRect(selectedTint.copy(alpha = .15f), Offset(x, 0f), Size(width, size.height),
+            drawRoundRect(accent.copy(alpha = .15f), Offset(x, 0f), Size(width, size.height),
                 cornerRadius = CornerRadius(12.dp.toPx()))
         }, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
         for (mode in modes) {
             val active = selected == mode
-            val accent = if (mode == StageMode.Planar) Mint else Lilac
             val tint = if (active) accent else Muted
             Row(Modifier.weight(1f).clip(RoundedCornerShape(12.dp))
                 .selectable(active, role = Role.Tab, onClick = { if (!active) choose(mode) })
@@ -255,6 +245,8 @@ private fun TrackCard(state: ScreenState) {
     val shape = RoundedCornerShape(20.dp)
     val song = state.selectedSong
     val imported = song.id in state.importedIds
+    val theme = stageTheme(song.id)
+    val accent = stageColor(theme.accent)
     Box(Modifier.fillMaxWidth().heightIn(min = 150.dp).clip(shape).background(Surface).border(1.dp, Line, shape)) {
         val chart = state.chart
         val source = when {
@@ -265,12 +257,12 @@ private fun TrackCard(state: ScreenState) {
             else -> "Фрагмент"
         }
         Box(Modifier.matchParentSize(), contentAlignment = Alignment.CenterEnd) {
-            StageCover(state.stageMode, Modifier.fillMaxWidth(.54f).fillMaxHeight())
+            StageCover(state.stageMode, theme, Modifier.matchParentSize())
             Spacer(Modifier.matchParentSize().background(TrackShade))
         }
         Column(Modifier.fillMaxWidth(.79f).heightIn(min = 150.dp).padding(16.dp),
             verticalArrangement = Arrangement.SpaceBetween) {
-            Caption(source, Lilac)
+            Caption(source, accent)
             Spacer(Modifier.height(14.dp))
             Column {
                 Text(song.title, color = White, fontSize = 29.sp, lineHeight = 32.sp,
@@ -280,7 +272,7 @@ private fun TrackCard(state: ScreenState) {
                     Spacer(Modifier.height(6.dp))
                     val bpm = if (imported) "≈ ${chart.bpm}" else chart.bpm.toString()
                     Text("$bpm BPM  ·  ${durationClock(chart.durationMs)}",
-                        fontSize = 12.sp, color = Lilac, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                        fontSize = 12.sp, color = accent, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -288,12 +280,15 @@ private fun TrackCard(state: ScreenState) {
 }
 
 @Composable
-private fun StageCover(mode: StageMode, modifier: Modifier) {
+private fun StageCover(mode: StageMode, theme: StageTheme, modifier: Modifier) {
     Spacer(modifier.drawWithCache {
-        val w = size.width
+        val w = size.width * .53f
         val h = size.height
-        val unit = size.minDimension
+        val unit = minOf(w, h)
         if (unit <= 0f) return@drawWithCache onDrawBehind {}
+        val backdrop = StageBackdrop(size, theme)
+        val accent = stageColor(theme.accent)
+        val offset = size.width - w
         val ballRadius = .087f * unit
         val ball = when (mode) {
             StageMode.Planar -> Offset(.77f * w, .62f * h - ballRadius)
@@ -303,7 +298,7 @@ private fun StageCover(mode: StageMode, modifier: Modifier) {
         val ballFill = Brush.radialGradient(listOf(White, Coral, Color(0xff8d1b4e), DarkText), light, 1.5f * ballRadius)
         when (mode) {
             StageMode.Planar -> {
-                // Paired rails dip between the keys, with lights set into the path.
+                // Paired rails trace the shape of the cascade.
                 val rails = List(2) { i ->
                     val shift = i * .055f
                     Path().apply {
@@ -315,31 +310,35 @@ private fun StageCover(mode: StageMode, modifier: Modifier) {
                 }
                 val outline = Stroke(.034f * unit)
                 val highlight = Stroke(.012f * unit)
-                val leds = listOf(Offset(.48f * w, .59f * h), Offset(.70f * w, .66f * h), Offset(.92f * w, .53f * h))
                 onDrawBehind {
-                    for (rail in rails) {
-                        drawPath(rail, Line, style = outline)
-                        drawPath(rail, Mint.copy(alpha = .84f), style = highlight)
+                    backdrop.draw(this)
+                    translate(left = offset) {
+                        for (rail in rails) {
+                            drawPath(rail, Line, style = outline)
+                            drawPath(rail, accent, style = highlight)
+                        }
+                        drawCircle(ballFill, ballRadius, ball)
                     }
-                    for (led in leds) drawCircle(Coral, .018f * unit, led)
-                    drawCircle(ballFill, ballRadius, ball)
                 }
             }
             StageMode.Orbit -> {
                 // Suspended circular pads recede towards the top of the scene.
                 val rim = Stroke(.013f * unit)
                 onDrawBehind {
-                    for (i in 0..3) {
-                        val x = (.50f + .27f * i - .095f * i * i) * w
-                        val y = (.14f + .20f * i) * h
-                        val radius = (.065f + .037f * i) * unit
-                        drawLine(Line, Offset(x, 0f), Offset(x, y), strokeWidth = .009f * unit)
-                        val top = Offset(x - radius, y - .32f * radius)
-                        val pad = Size(2f * radius, .64f * radius)
-                        drawOval(Lilac.copy(alpha = .24f), top + Offset(0f, .23f * radius), pad)
-                        drawOval(Lilac, top, pad, style = rim)
+                    backdrop.draw(this)
+                    translate(left = offset) {
+                        for (i in 0..3) {
+                            val x = (.50f + .27f * i - .095f * i * i) * w
+                            val y = (.14f + .20f * i) * h
+                            val radius = (.065f + .037f * i) * unit
+                            drawLine(Line, Offset(x, 0f), Offset(x, y), strokeWidth = .009f * unit)
+                            val top = Offset(x - radius, y - .32f * radius)
+                            val pad = Size(2f * radius, .64f * radius)
+                            drawOval(accent.copy(alpha = .24f), top + Offset(0f, .23f * radius), pad)
+                            drawOval(accent, top, pad, style = rim)
+                        }
+                        drawCircle(ballFill, ballRadius, ball)
                     }
-                    drawCircle(ballFill, ballRadius, ball)
                 }
             }
         }
@@ -451,7 +450,6 @@ private fun ResultScreen(state: ScreenState, actions: Actions) {
             ResultRow("Лишние нажатия", stats.stray.toString())
             Rule()
             ResultRow("Лучшее комбо", "×${stats.maxCombo}", Lilac)
-            if (state.echoTotal > 0) ResultRow("Собрано эхо", "${state.echoesCaught} из ${state.echoTotal}", Mint)
         }
         ActionButton("Ещё раз", actions::restart, icon = IconShape.Play)
         ActionButton("В меню", actions::menu, primary = false)
@@ -524,7 +522,7 @@ internal fun Symbol(icon: IconShape, tint: Color) {
 @Composable
 internal fun ActionButton(
     label: String, onClick: () -> Unit, modifier: Modifier = Modifier,
-    primary: Boolean = true, icon: IconShape? = null, enabled: Boolean = true
+    primary: Boolean = true, icon: IconShape? = null, enabled: Boolean = true, accent: Color = Lilac,
 ) {
     val shape = RoundedCornerShape(14.dp)
     val fg = if (primary) DarkText else White
@@ -535,8 +533,8 @@ internal fun ActionButton(
             scaleY = scale.value
             alpha = if (enabled) 1f else .50f
         }
-        .clip(shape).background(if (primary) Lilac else Surface)
-        .border(1.dp, if (primary) Lilac else Line, shape)
+        .clip(shape).background(if (primary) accent else Surface)
+        .border(1.dp, if (primary) accent else Line, shape)
         // Scrollable parents delay the default ripple. Show contact on down while
         // letting clickable own activation, keyboard semantics and scroll cancellation.
         .pointerInput(enabled) {

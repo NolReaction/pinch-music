@@ -18,14 +18,15 @@ object CascadeRaster {
 }
 
 /** Immutable for the lifetime of one chart. Strides match nativeStage/stage3d.h. */
-internal class CascadeGpuCourse(val keys: FloatArray, val rails: FloatArray, val lamps: FloatArray)
+internal class CascadeGpuCourse(val keys: FloatArray, val rails: FloatArray)
 
 @Composable
 internal expect fun NativeCascadeStage(
     modifier: Modifier,
     course: CascadeGpuCourse,
     frame: (FloatArray) -> Unit,
-    animate: Boolean
+    animate: Boolean,
+    onPresented: () -> Unit,
 )
 
 internal interface CascadeDisplay {

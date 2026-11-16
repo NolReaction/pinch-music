@@ -30,7 +30,7 @@ inline V unit(V v) {
 inline V cross(V a, V b) {
     return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
 }
-enum Surface { Enamel, Skirt, Inlay, Chrome, Iron, Bolt, Accent, Rail, Led, Glass, Copper };
+enum Surface { Enamel, Skirt, Inlay, Chrome, Iron, Bolt, Accent, Rail, Glass, Copper };
 struct Vertex {
     V p, n;
     float material, detail;
@@ -178,13 +178,6 @@ inline Mesh keyMesh(bool shortKey, float side, bool accented) {
         rod(m, {cx, .002f, z}, {cx, -.009f, z}, .045f, Iron, 8);
         ellipsoid(m, {cx, -.009f, z}, {.033f, .021f, .033f}, Bolt, 8, 4);
     }
-    for (float dx : {-.105f, .105f}) {
-        float x = cx + dx;
-        rod(m, {x, depth - .012f, -.32f}, {x, depth + .09f, -.32f}, .029f, Chrome);
-        rod(m, {x, depth + .09f, -.32f}, {x, depth + .09f, WallZ + .025f}, .030f, Chrome);
-        rod(m, {x, depth + .09f, WallZ + .014f}, {x, depth + .09f, WallZ + .065f}, .050f, Iron, 8);
-        rod(m, {x, depth + .09f, WallZ + .056f}, {x, depth + .09f, WallZ + .077f}, .033f, Bolt, 8);
-    }
     if (accented) {
         const float z = frontZ + .0015f;
         // Rounded luminous gasket wrapping the end cap.
@@ -193,10 +186,21 @@ inline Mesh keyMesh(bool shortKey, float side, bool accented) {
         rod(m, {cx - width * .5f + .076f, depth - .037f, z - .009f},
             {cx + width * .5f - .076f, depth - .037f, z - .009f}, .014f, Accent, 6);
     }
+    // Only the cap and its fasteners travel. Guided caps hinge at the rail lip
+    // to keep the transfer surface tangent while the rear of the cap goes down.
+    for (auto& vertex : m.verts)
+        vertex.detail = shortKey ? std::min(1.f, std::abs(vertex.p.x) / width) : 1.f;
+    for (float dx : {-.105f, .105f}) {
+        float x = cx + dx;
+        rod(m, {x, depth - .012f, -.32f}, {x, depth + .09f, -.32f}, .029f, Chrome);
+        rod(m, {x, depth + .09f, -.32f}, {x, depth + .09f, WallZ + .025f}, .030f, Chrome);
+        rod(m, {x, depth + .09f, WallZ + .014f}, {x, depth + .09f, WallZ + .065f}, .050f, Iron, 8);
+        rod(m, {x, depth + .09f, WallZ + .056f}, {x, depth + .09f, WallZ + .077f}, .033f, Bolt, 8);
+    }
     return m;
 }
 
-inline Mesh railMesh(const std::vector<V>& input, const std::vector<V>& lamps, bool launcher) {
+inline Mesh railMesh(const std::vector<V>& input, bool launcher) {
     Mesh m;
     if (input.size() < 2)
         return m;
@@ -258,24 +262,6 @@ inline Mesh railMesh(const std::vector<V>& input, const std::vector<V>& lamps, b
         tube(m, {b, c, d}, .018f, Iron, 7);
         shoes(center[i]);
         rod(m, {d.x, d.y, WallZ + .018f}, {d.x, d.y, WallZ + .055f}, .034f, Bolt, 9);
-    }
-    for (size_t i = 0; i < lamps.size(); ++i) {
-        float distance = 1e20f;
-        V c = center.front();
-        for (size_t j = 1; j < input.size(); ++j) {
-            V segment = input[j] - input[j - 1], toLamp = lamps[i] - input[j - 1];
-            float u =
-                std::max(0.f, std::min(1.f, dot(toLamp, segment) / std::max(1e-12f, dot(segment, segment))));
-            V separation = toLamp - segment * u;
-            if (dot(separation, separation) < distance) {
-                distance = dot(separation, separation);
-                c = center[j - 1] + (center[j] - center[j - 1]) * u;
-            }
-        }
-        // Recessed indicator collars on a short cross-tie, clear of the rolling surface.
-        shoes(c);
-        rod(m, c + V{0, .053f, -.14f}, c + V{0, .053f, .169f}, .026f, Iron);
-        rod(m, c + V{0, .053f, .169f}, c + V{0, .053f, .181f}, .025f, Led, 10, static_cast<float>(i));
     }
     return m;
 }

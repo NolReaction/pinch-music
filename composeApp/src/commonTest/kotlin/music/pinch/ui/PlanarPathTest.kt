@@ -12,8 +12,8 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import music.pinch.core.Chart
 import music.pinch.core.Note
+import music.pinch.core.cascadePreRollMs
 import music.pinch.core.cascadeChart
-import music.pinch.core.echoTargetTimes
 import music.pinch.songLibrary
 
 class PlanarPathTest {
@@ -24,7 +24,6 @@ class PlanarPathTest {
             val score = chart.cascadeChart()
             assertEquals(score.notes.map { it.atMs }, path.attacks.map { it.atMs })
             assertEquals(path.attacks.indices.toList(), path.attacks.map { it.panelIndex })
-            assertEquals(score.echoTargetTimes(), path.attacks.filter { it.isEcho }.map { it.atMs }.toSet())
             for ((i, attack) in path.attacks.withIndex()) {
                 val panel = path.panels[attack.panelIndex]
                 val frame = path.frame(attack.atMs)
@@ -37,7 +36,7 @@ class PlanarPathTest {
                 if (panel.railSamples.isNotEmpty()) assertEquals(frame.marble, panel.railSamples.first())
             }
             assertTrue(path.panels.zipWithNext().all { (a, b) -> a.topY < b.topY })
-            assertEquals(path.frame(0), path.frame(-2))
+            assertEquals(path.frame(-20_000), path.frame(-99_999))
             assertEquals(path.frame(chart.durationMs), path.frame(chart.durationMs + 1))
         }
     }
@@ -81,7 +80,7 @@ class PlanarPathTest {
         val path = PlanarPath(chart)
         val rods = path.panels.map { rodCenters(it.railSamples) }
         val start = rodCenters(path.entryRail)
-        for (ms in 0..chart.durationMs step 5) {
+        for (ms in -chart.cascadeChart().cascadePreRollMs()..chart.durationMs step 5) {
             val frame = path.frame(ms)
             val ball = frame.marble
             val active = path.attacks.getOrNull(frame.attackIndex)?.panelIndex ?: 0
@@ -116,48 +115,52 @@ class PlanarPathTest {
         }
     }
 
-    @Test fun lightsMarkOriginalNotesWhileTheBallRollsAndLeavesTheLipTangentially() {
-        val inclines = mutableSetOf<Int>()
-        for (song in songLibrary) {
-            val path = PlanarPath(requireNotNull(song.bundled))
-            val sourceNotes = requireNotNull(song.bundled).notes.toSet()
-            val strikes = path.attacks.map { it.atMs }.toSet()
-            assertTrue(path.ledCues.all { it in sourceNotes && it.atMs !in strikes })
-            assertEquals(path.ledCues.map { it.atMs }, path.panels.flatMap { it.ledTimesMs })
-            assertTrue(path.ledCues.zipWithNext().all { (a, b) -> a.atMs < b.atMs })
+    @Test fun passiveGuidesConserveRollingEnergyAndLeaveAlongTheLipTangent() {
+        val contours = mutableSetOf<Int>()
+        val sources = songLibrary.map { requireNotNull(it.bundled) } + listOf(-8, 0, 8).map { delta ->
+            Chart("Rest", 120, 3700, listOf(Note("a", 0, 60, 1500, .8f),
+                Note("b", 2500, 60 + delta, 200, .8f)))
+        }
+        for (chart in sources) {
+            val path = PlanarPath(chart)
             for ((index, panel) in path.panels.withIndex()) {
                 val rail = panel.railSamples
                 if (rail.isEmpty()) continue
-                val start = path.attacks[panel.lastAttack].atMs
-                val end = path.attacks[panel.lastAttack + 1].atMs
+                val start = path.attacks[index].atMs
+                val end = path.attacks[index + 1].atMs
+                val direction = if (panel.left) 1 else -1
                 val entry = path.frame(start)
                 val speed0 = (path.frame(start + 4).marble - entry.marble).length() * 250f
-                val direction = if (panel.left) 1 else -1
-                val pitch = (rail.last().y - rail.first().y) / (rail.last().x - rail.first().x)
-                assertEquals(panel.slope, pitch, .0002f, "guide tangent matches the entry key")
-                inclines += (abs(pitch) * 100).toInt()
-                assertTrue(rail.zipWithNext().all { (a, b) -> b.y > a.y })
-                assertTrue(speed0 >= 2.2f, "slow entry at ${song.title} / $start")
-                for ((lamp, time) in panel.ledTimesMs.withIndex()) {
-                    val f = path.frame(time)
-                    assertEquals(index, f.rollingPanel)
-                    assertEquals(lamp, f.litLedIndex)
-                    assertEquals(lamp - 1, path.frame(time - 1).litLedIndex)
-                    assertEquals(panel.ledCenters[lamp], f.marble)
-                    val speed = (path.frame(time + 2).marble - path.frame(time - 2).marble).length() * 250
-                    val energy = speed0 * speed0 + (10 * CascadeGravity / 7) * (f.marble.y - entry.marble.y)
-                    assertTrue(speed >= speed0 - .04f && speed * speed <= energy + .30f, "rolling energy at $time")
-                    var distance = 0f
-                    for (j in 1 until rail.size) {
-                        if ((f.marble.x - rail[j].x) * direction < 0) {
-                            distance += (f.marble - rail[j - 1]).length()
-                            break
-                        }
-                        distance += (rail[j] - rail[j - 1]).length()
+                val segments = rail.zipWithNext { a, b -> b - a }
+                assertEquals(panel.slope, segments.first().y / segments.first().x, .001f)
+                val slopeChange = segments.last().y / abs(segments.last().x) - abs(panel.slope)
+                contours += when { slopeChange < -.15 -> -1; slopeChange > .15 -> 1; else -> 0 }
+                assertTrue(segments.all { it.x * direction > 0 })
+                assertTrue(speed0 >= 2.2f, "slow entry at ${chart.title} / $start")
+                var segment = 0
+                var distanceBefore = 0f
+                for (time in start + 12 until end step 9L) {
+                    if (path.frame(time + 3).rollingPanel != index) break
+                    val frame = path.frame(time)
+                    val speed = (path.frame(time + 3).marble - path.frame(time - 3).marble).length() / .006f
+                    val energy = speed0 * speed0 + (10 * CascadeGravity / 7) * (frame.marble.y - entry.marble.y)
+                    assertEquals(energy.toFloat(), speed * speed, .36f, "energy at ${chart.title} $time")
+                    while (segment < segments.lastIndex && (frame.marble.x - rail[segment + 1].x) * direction > 0) {
+                        distanceBefore += segments[segment++].length()
                     }
-                    assertEquals(distance, (f.rollAngle - entry.rollAngle) * MarbleRadius * direction, .0003f)
+                    val distance = distanceBefore + (frame.marble - rail[segment]).length()
+                    assertEquals(distance, (frame.rollAngle - entry.rollAngle) * MarbleRadius * direction, .0003f)
                 }
-                var lo = panel.ledTimesMs.lastOrNull() ?: start
+                for (i in 1 until segments.size) {
+                    val a = segments[i - 1]
+                    val b = segments[i]
+                    val norm = (a + b).length()
+                    val curvature = 2 * direction * (a.x * b.y - a.y * b.x) / (a.length() * b.length() * norm)
+                    val v2 = speed0 * speed0 + (10 * CascadeGravity / 7) * (rail[i].y - rail.first().y)
+                    assertTrue(CascadeGravity * abs(a.x + b.x) / norm - curvature * v2 >= -.01,
+                        "the ball loses support on ${chart.title} $start/$i")
+                }
+                var lo = start
                 var hi = end
                 while (hi - lo > 1) {
                     val mid = lo + (hi - lo) / 2
@@ -178,7 +181,7 @@ class PlanarPathTest {
                 assertEquals((CascadeGravity * dt * dt / 1e6).toFloat(), c.y - 2 * b.y + a.y, .00023f)
             }
         }
-        assertTrue(inclines.size >= 4, "melodic intervals must produce different grades")
+        assertEquals(setOf(-1, 0, 1), contours, "scoop, swell and diving exit")
     }
 
     @Test fun fastStereoLovePhraseKeepsEachStrikeAndLimitsTravelPerFrame() {
@@ -225,13 +228,25 @@ class PlanarPathTest {
         }
     }
 
+    @Test fun regularBeatAttacksUseIndividualFreeFlightsAndOnlyTheRestGetsRails() {
+        val times = listOf(0L, 500L, 1000L, 1500L, 3500L, 4000L, 4500L)
+        val notes = times.mapIndexed { i, t -> Note(i.toString(), t, 60 + i, 190, .9f) }
+        val path = PlanarPath(Chart("Pulse", 120, 5000, notes))
+        assertEquals(times, path.attacks.map { it.atMs })
+        assertEquals(listOf(3), path.panels.indices.filter { path.panels[it].railSamples.isNotEmpty() })
+        for (t in -1100L until 5000L step 7) {
+            val f = path.frame(t)
+            assertEquals(f.rollingPanel != null, path.onRail(t))
+            if (t in 1501L until 3500L) assertEquals(3, f.attackIndex)
+        }
+    }
+
     @Test fun longSilentHoldHasAContinuousGuideWithoutExtraNotes() {
         val path = PlanarPath(Chart("Выдержанная нота", 120, 14_000, listOf(
             Note("a", 0, 64, 10_000, .8f), Note("b", 12_000, 67, 400, .8f)
         )))
         assertEquals(2, path.panels.size)
         assertTrue(path.panels.first().railSamples.isNotEmpty())
-        assertTrue(path.ledCues.isEmpty())
         assertEquals(0, path.frame(6000).rollingPanel)
         for (t in 0L..11_200L step 100) {
             val current = path.frame(t)
@@ -247,10 +262,11 @@ class PlanarPathTest {
         for (first in listOf(0L, 100L, 639L, 640L, 700L, 2200L, 2800L, 9000L)) {
             val chart = Chart("Intro", 128, first + 1200, listOf(Note("first", first, 55, 200, .8f)))
             val path = PlanarPath(chart)
-            val start = path.frame(0)
+            val lead = chart.cascadePreRollMs()
+            val start = path.frame(-lead)
             val target = path.frame(first).marble
             val rail = path.entryRail
-            assertEquals(first >= 640L, rail.isNotEmpty())
+            assertEquals(first + lead >= 640L, rail.isNotEmpty())
             if (rail.isNotEmpty()) {
                 assertEquals(rail.first(), start.marble)
                 assertTrue(rail.last().y > rail.first().y)
@@ -265,7 +281,7 @@ class PlanarPathTest {
                 val after = (path.frame(first - 318).marble - lip.marble) * 500f
                 assertTrue((before - after).length() < .03f)
             }
-            for (time in 0L until first step 15) {
+            for (time in -lead until first step 15) {
                 val frame = path.frame(time)
                 assertEquals(-1, frame.attackIndex)
                 assertTrue(abs(frame.cameraX - frame.marble.x) < 1.55f)
@@ -275,8 +291,27 @@ class PlanarPathTest {
             }
             assertEquals(0, path.frame(first).attackIndex)
             assertEquals(1, path.attacks.size)
-            assertTrue(path.ledCues.isEmpty())
         }
+    }
+
+    @Test fun theCountInApproachesAnImmediateDownbeatWithoutEarlyContact() {
+        val chart = Chart("First beat", 88, 2400, listOf(Note("a", 0, 60, 200, .9f),
+            Note("b", 620, 65, 200, .9f), Note("c", 1310, 63, 120, .8f)))
+        val path = PlanarPath(chart)
+        val lead = chart.cascadePreRollMs()
+        assertEquals(1364L, lead)
+        val contact = path.frame(0)
+        assertEquals(0, contact.attackIndex)
+        assertEquals(path.attacks.first().x, contact.marble.x)
+        var previous = path.frame(-lead)
+        for (t in -lead + 1 until 0) {
+            val frame = path.frame(t)
+            assertEquals(-1, frame.attackIndex)
+            assertTrue((previous.marble - frame.marble).length() < .012f)
+            previous = frame
+        }
+        assertTrue(contact.marble.y > previous.marble.y)
+        assertTrue((previous.marble - contact.marble).length() < .012f)
     }
 
     @Test fun theCameraKeepsAllMovingLandingsInFrame() {
@@ -307,7 +342,6 @@ class PlanarPathTest {
         val b = path.frame(545).marble
         assertTrue(abs(b.x - a.x) > .01f)
         assertTrue(path.attacks.none { it.atMs == 590L })
-        assertTrue(path.ledCues.isEmpty())
         val single = PlanarPath(Chart("Один удар", 90, 4000, listOf(notes[1])))
         assertNull(single.frame(3800).rollingPanel)
         for (time in 500L..3800L step 10) assertEquals(single.frame(500).marble, single.frame(time).marble)

@@ -49,3 +49,24 @@ internal fun Chart.cascadeChart(): Chart {
     landings.reverse()
     return copy(notes = landings)
 }
+
+/** Give an immediate downbeat two visible count-in beats before the audio clock starts. */
+internal fun Chart.cascadePreRollMs(): Long = if (notes.first().atMs >= 600L) 0L
+    else (120_000.0 / bpm).roundToLong().coerceIn(1000L, 1800L)
+
+/** Sustains and longer breaks can support a passive crossing between actual
+ * strikes. Ordinary attacks within the beat pattern keep an airborne transfer. */
+internal fun Chart.hasGuideAfter(index: Int): Boolean {
+    if (index < 0 || index >= notes.lastIndex) return false
+    val note = notes[index]
+    val next = notes[index + 1]
+    val gap = next.atMs - note.atMs
+    // A free flight this long would produce a very high arc on slow imports.
+    if (gap >= 1550L) return true
+    val beat = 60_000.0 / bpm
+    if (gap < (beat * 2.05).coerceIn(1000.0, 1650.0)) return false
+    val previous = notes.getOrNull(index - 1)?.let { note.atMs - it.atMs } ?: gap
+    val following = notes.getOrNull(index + 2)?.let { it.atMs - next.atMs } ?: gap
+    return gap >= minOf(previous, following) * 1.35 ||
+        gap - note.durationMs >= beat * 1.15 || note.durationMs >= beat * 1.5
+}

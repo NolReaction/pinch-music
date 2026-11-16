@@ -13,6 +13,7 @@ private data class Phrase(
 
 private fun arrangement(
     id: String, title: String, artist: String, bpm: Int, vararg phrases: Phrase,
+    revision: Int = 2,
 ): Song {
     fun time(eighth: Int) = 2_200L + (eighth * 30_000.0 / bpm).roundToLong()
     val notes = buildList {
@@ -43,7 +44,7 @@ private fun arrangement(
         }
     }.sortedBy { it.atMs }
     return Song(id, title, artist, Chart(title, bpm, time(phrases.size * 16) + 650L, notes),
-        bundledRevision = 2)
+        bundledRevision = revision)
 }
 
 internal val songLibrary = listOf(
@@ -79,15 +80,35 @@ internal val songLibrary = listOf(
         Phrase(.92f, lead = listOf(0 to 68, 3 to 66, 6 to 63, 10 to 61),
             answer = listOf(2 to 52, 5 to 54, 8 to 56, 14 to 49))),
     arrangement("stay", "Stay", "The Kid LAROI & Justin Bieber", 170,
-        // A half-time lead leaves room for a moving answer between the longer calls.
+        // Bars 1–4: introduce the short call in half time, leaving the bass to answer.
         Phrase(.88f, lead = listOf(0 to 72, 4 to 73, 8 to 72, 12 to 68),
-            answer = listOf(3 to 60, 7 to 65, 11 to 63)),
-        Phrase(.81f, lead = listOf(0 to 72, 6 to 72, 10 to 73),
-            answer = listOf(2 to 68, 4 to 65, 9 to 63, 13 to 68, 15 to 70)),
-        Phrase(.95f, lead = listOf(0 to 73, 3 to 75, 6 to 77, 10 to 75, 13 to 72),
-            answer = listOf(2 to 65, 8 to 68, 12 to 67)),
-        Phrase(.87f, lead = listOf(0 to 73, 4 to 72, 8 to 68),
-            answer = listOf(2 to 65, 6 to 63, 12 to 60, 15 to 56))),
+            answer = listOf(3 to 53, 7 to 60, 14 to 56)),
+        Phrase(.82f, lead = listOf(1 to 72, 6 to 70, 10 to 68),
+            answer = listOf(0 to 49, 4 to 56, 9 to 63, 14 to 60)),
+        // Bars 5–8: shift the answers ahead of the beat and shorten the second call.
+        Phrase(.86f, lead = listOf(0 to 68, 3 to 70, 7 to 72, 11 to 68),
+            answer = listOf(2 to 51, 5 to 58, 10 to 63, 14 to 58)),
+        Phrase(.88f, lead = listOf(0 to 65, 4 to 68, 7 to 70, 11 to 72),
+            answer = listOf(2 to 53, 6 to 60, 13 to 63, 15 to 65)),
+        // Bars 9–12: the line climbs in dotted-quarter steps, reaching the high A-flat.
+        Phrase(.93f, lead = listOf(0 to 73, 3 to 75, 6 to 77, 10 to 75, 13 to 77),
+            answer = listOf(2 to 61, 5 to 65, 8 to 68, 12 to 65)),
+        Phrase(.98f, lead = listOf(0 to 80, 3 to 77, 7 to 75, 11 to 72),
+            answer = listOf(2 to 56, 5 to 60, 9 to 63, 14 to 60)),
+        // Bars 13–16: strip back to a quiet low exchange with a six-beat gap between attacks.
+        Phrase(.74f, lead = listOf(0 to 68, 8 to 65), answer = listOf(2 to 53)),
+        Phrase(.78f, lead = listOf(4 to 63, 12 to 68), answer = listOf(7 to 58)),
+        // Bars 17–20: return the opening pitches, displace the last one, change the bass.
+        Phrase(.94f, lead = listOf(0 to 72, 4 to 73, 8 to 72, 13 to 68),
+            answer = listOf(2 to 53, 6 to 60, 10 to 65, 15 to 60)),
+        Phrase(.97f, lead = listOf(0 to 70, 3 to 73, 7 to 75, 12 to 73),
+            answer = listOf(2 to 49, 5 to 56, 9 to 61, 15 to 63)),
+        // Bars 21–24: a brief upper-register answer unwinds into an A-flat bass cadence.
+        Phrase(.91f, lead = listOf(0 to 77, 3 to 75, 6 to 73, 10 to 72, 13 to 70),
+            answer = listOf(2 to 51, 5 to 58, 8 to 63)),
+        Phrase(.85f, lead = listOf(0 to 73, 4 to 72, 8 to 68),
+            answer = listOf(2 to 61, 6 to 63, 12 to 60, 15 to 56)),
+        revision = 3),
     arrangement("turn-down-for-what", "Turn Down for What", "DJ Snake & Lil Jon", 100,
         // Repeated low B, a broken-down answer, a higher drop and a half-bar of space at the end.
         Phrase(.94f, lead = listOf(0 to 71, 3 to 59, 5 to 59, 8 to 71, 11 to 59),

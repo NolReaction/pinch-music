@@ -11,7 +11,9 @@ import music.pinch.core.Grade
 import music.pinch.core.RhythmGame
 import music.pinch.core.TapResult
 import music.pinch.core.cascadeChart
-import music.pinch.core.echoTargetTimes
+import music.pinch.core.cascadePreRollMs
+import music.pinch.core.FORGIVING_WINDOW_MS
+import kotlin.math.abs
 import music.pinch.ui.MarblePath
 import music.pinch.ui.PlanarPath
 import music.pinch.ui.PreparedStage
@@ -60,7 +62,12 @@ internal class Session(
     var stage by mutableStateOf<PreparedStage?>(null)
         private set
     private var recordKey = ""
-    private var echoTargets = emptySet<Long>()
+    private var presented = false
+    private var introMs = 0L
+    private var transportStarted = false
+    private var openingEnd: Long? = null
+    private var pendingOpeningNote: Note? = null
+    private var eofObservedAt: Long? = null
     private var lastMistakeAt: Long? = null
     private var lastMistakeTarget: String? = null
 
@@ -85,16 +92,14 @@ internal class Session(
         val imported = storedChart(song)
         val source = imported ?: song.bundled
         sourceChart = source
-        val chart = if (state.stageMode == StageMode.Planar) source?.cascadeChart() else source
-        echoTargets = chart?.echoTargetTimes().orEmpty()
+        val chart = source?.cascadeChart()
         val arrangement = when {
             imported != null -> "import.${savedCharts.getValue(song.id).hashCode()}"
             song.bundledRevision > 1 -> "bundled.v${song.bundledRevision}"
             else -> "bundled"
         }
-        val version = if (state.stageMode == StageMode.Planar) "cascade.v1" else "v3"
-        recordKey = "record.$version.${song.id}.$arrangement"
-        state = state.copy(chart = chart, echoTotal = echoTargets.size, importedIds = savedCharts.keys.toSet(), bestScore = platform.readValue(recordKey)?.toIntOrNull(),
+        recordKey = "record.landings.v1.${state.stageMode.name}.${song.id}.$arrangement"
+        state = state.copy(chart = chart, importedIds = savedCharts.keys.toSet(), bestScore = platform.readValue(recordKey)?.toIntOrNull(),
             availableIds = state.songs.filter { it.bundled != null || it.id in savedCharts }.map { it.id }.toSet())
         courseTask?.cancel()
         val mode = state.stageMode
@@ -189,33 +194,27 @@ internal class Session(
         if (courseTask == null) refreshSong()
         val course = courseTask ?: return
         close()
-        positionMs = 0
-        state = state.copy(scene = Scene.Loading, preview = preview, notice = null,
+        introMs = if (preview) 0L else song.cascadePreRollMs()
+        positionMs = -introMs
+        state = state.copy(scene = Scene.Loading, attempt = state.attempt + 1, preview = preview, notice = null,
             countdown = null, reaction = null, error = null, newRecord = false, stats = null,
-            echoesCaught = 0, collectedEchoMs = null, lastLedTapMs = null)
+            panelFeedback = emptyList())
         try {
             val player = platform.newMedia(song.durationMs, state.instrument)
             media = player
             player.onInterrupted = { if (media === player) pause() }
             val pitches = mutableSetOf<Int>()
             val backing = state.backingAsset
-            automaticNotes = when {
-                backing != null -> emptyList()
-                state.stageMode == StageMode.Planar -> {
-                    // A chord lands once. Its other pitches and any skipped ornaments still sound.
-                    // Reserve the selected pitch for the player's tap even if two voices play it in unison.
-                    val manual = if (preview) emptySet() else
-                        song.notes.filter { it.playable }.mapTo(mutableSetOf()) { it.atMs to it.midi }
-                    source.notes.distinctBy { it.atMs to it.midi }.filterNot { (it.atMs to it.midi) in manual }
-                }
-                preview -> source.notes
-                else -> source.notes.filterNot { it.playable }
+            automaticNotes = if (backing != null) emptyList() else {
+                // Each selected lead is reserved for the down. Chord voices and ornaments
+                // between landings keep their original onset even when the ball is on a rail.
+                val manual = if (preview) emptySet() else song.notes.mapTo(mutableSetOf()) { it.atMs to it.midi }
+                source.notes.distinctBy { it.atMs to it.midi }.filterNot { (it.atMs to it.midi) in manual }
             }
             for (note in automaticNotes) pitches += note.midi
             for (note in song.notes) {
                 if (backing == null) pitches += note.midi
-                if (!preview && note.playable) pitches += wrongPitch(note.midi)
-                if (!preview && note.atMs in echoTargets) pitches += echoPitch(note.midi)
+                if (!preview) pitches += wrongPitch(note.midi)
             }
             player.setBackingVolume(state.volume)
             player.prepare(pitches, backing)
@@ -228,8 +227,7 @@ internal class Session(
                     return@launch
                 }
                 stage = ready
-                val lights = (ready as? PreparedStage.Cascade)?.path?.ledCues.orEmpty()
-                game = if (preview) null else RhythmGame(song, forgiving = true, ledNotes = lights)
+                game = if (preview) null else RhythmGame(song, forgiving = true)
                 state = state.copy(stats = game?.stats)
             }
         } catch (e: Exception) {
@@ -237,6 +235,9 @@ internal class Session(
         }
     }
 
+    override fun stagePresented(attempt: Long) {
+        if (attempt == state.attempt && stage != null) presented = true
+    }
 
     fun observe() {
         val player = media ?: return
@@ -247,9 +248,16 @@ internal class Session(
         }
         when (state.scene) {
             Scene.Loading, Scene.Resuming -> {
-                if (!snap.ready || stage == null) {
+                if (!snap.ready || stage == null || !presented) {
                     val start = waitingSince ?: snap.observedUptimeMs.also { waitingSince = it }
-                    if (snap.observedUptimeMs - start >= 15_000) fail("Не удалось подготовить мелодию.")
+                    if (snap.observedUptimeMs - start >= 15_000) {
+                        fail(if (!snap.ready) "Не удалось подготовить мелодию." else "Не удалось открыть игровую сцену.")
+                    }
+                } else if (!transportStarted && introMs > 0) {
+                    waitingSince = null
+                    openingEnd = snap.observedUptimeMs + introMs
+                    game?.resume()
+                    state = state.copy(scene = Scene.CountIn, countdown = openingCount(introMs))
                 } else if (state.scene == Scene.Loading) {
                     beginPlayback(player, snap)
                 } else {
@@ -262,8 +270,25 @@ internal class Session(
                     }
                 }
             }
+            Scene.CountIn -> {
+                val remaining = (requireNotNull(openingEnd) - snap.observedUptimeMs).coerceIn(0L, introMs)
+                positionMs = -remaining
+                if (remaining == 0L) beginPlayback(player, snap)
+                else {
+                    val count = openingCount(remaining)
+                    if (state.countdown != count) state = state.copy(countdown = count)
+                }
+            }
             Scene.Playing -> {
                 if (snap.ended) {
+                    // A short imported final note may outlive the file's last sample.
+                    val end = eofObservedAt ?: snap.observedUptimeMs.also { eofObservedAt = it }
+                    val tail = state.lastHitWindowMs - state.durationMs
+                    if (!state.preview && tail >= 0 && snap.observedUptimeMs - end <= tail) {
+                        positionMs = state.durationMs
+                        playingAnchor = snap.copy(positionMs = state.durationMs, observedUptimeMs = end, stalled = false)
+                        return
+                    }
                     finish()
                     return
                 }
@@ -300,7 +325,9 @@ internal class Session(
                 }
                 // A small delivery margin lets a frame and a queued input of the same vsync settle.
                 val confirmed = snap.confirmedPositionMs ?: now
-                val missed = game?.advance(confirmed - 32) ?: 0
+                game?.advance(confirmed - 32)
+                val missed = game?.takeMisses().orEmpty()
+                recordMisses(missed, now)
                 game?.takeMissCue(confirmed)?.let { soundMistake(player, it, now, stray = false) }
                 val leadRemaining = (game?.firstTargetMs ?: 0L) - now
                 val beatMs = (60_000L / song.bpm).coerceAtLeast(1)
@@ -312,57 +339,60 @@ internal class Session(
                 if (stats !== state.stats || count != state.countdown || reaction != state.reaction) {
                     state = state.copy(stats = stats, countdown = count, reaction = reaction)
                 }
-                if (missed > 0) showReaction("Пропуск", now)
+                if (missed.isNotEmpty()) showReaction("Пропуск", now)
             }
             else -> Unit
         }
+    }
+
+    private fun openingCount(ms: Long): Int {
+        val beat = (60_000L / state.bpm).coerceAtLeast(1)
+        return ((ms + beat - 1) / beat).toInt()
     }
 
     private fun beginPlayback(player: GameMedia, snap: Playback) {
         waitingSince = null
         resumeAt = null
         hasPlayed = false
+        transportStarted = true
+        positionMs = positionMs.coerceAtLeast(0L)
         playRequestedAt = snap.observedUptimeMs
         game?.resume()
         state = state.copy(scene = Scene.Playing, countdown = null)
         player.play()
         // Anchor once as soon as the native player accepts play. Later frames track decoder drift.
-        if (state.scene == Scene.Playing) playingAnchor = player.snapshot().takeIf { it.playing }
+        if (state.scene == Scene.Playing) {
+            playingAnchor = player.snapshot().takeIf { it.playing }
+            pendingOpeningNote?.let { soundHit(player, it) }
+            pendingOpeningNote = null
+        }
     }
 
     override fun tap(uptimeMs: Long) {
-        if (state.scene != Scene.Playing || state.preview) return
+        if (state.preview || (state.scene != Scene.Playing && state.scene != Scene.CountIn)) return
         val player = media ?: return
-        val snap = playingAnchor ?: return
-        if (uptimeMs < playRequestedAt) return
-        // Pointer timestamps and the audio anchor share an uptime origin. Touch dispatch must not
-        // block on native audio queries merely to measure the intervening milliseconds.
-        val at = if (snap.stalled) snap.positionMs else snap.positionMs + (uptimeMs - snap.observedUptimeMs)
-        val feedbackAt = maxOf(at, snap.positionMs)
         val engine = game ?: return
+        val opening = state.scene == Scene.CountIn
+        val at = if (opening) {
+            (uptimeMs - (openingEnd ?: return)).coerceAtMost(0L)
+        } else {
+            val snap = playingAnchor ?: return
+            if (uptimeMs < playRequestedAt) {
+                val end = openingEnd ?: return
+                // Touch delivered after play(), but physically made in the opening window.
+                if (uptimeMs < end - FORGIVING_WINDOW_MS) return
+                (uptimeMs - end).coerceAtMost(0L)
+            } else if (snap.stalled) snap.positionMs else snap.positionMs + (uptimeMs - snap.observedUptimeMs)
+        }
+        val feedbackAt = maxOf(at, positionMs)
+        val nearest = engine.nearestTarget(at)
+        if (abs(at - nearest.atMs) > FORGIVING_WINDOW_MS && onRail(at)) return
         val result = engine.tap(at)
+        recordMisses(engine.takeMisses(), feedbackAt)
         when (result) {
-            is TapResult.Led -> {
-                // The ornament is already audible in the backing or the automatic voices.
-                if (state.backingAsset != null) player.strike(.22f * state.volume)
-                if (state.haptics) platform.feedback()
-            }
-            is TapResult.Automatic -> {
-                val note = result.note
-                val gain = note.velocity * state.volume
-                if (note.atMs in echoTargets) {
-                    player.note(echoPitch(note.midi), .22f * gain)
-                    state = state.copy(echoesCaught = state.echoesCaught + 1, collectedEchoMs = note.atMs)
-                    showReaction("Эхо +1", feedbackAt)
-                } else if (state.backingAsset != null) {
-                    player.strike(.26f * gain)
-                }
-                if (state.haptics) platform.feedback()
-            }
             is TapResult.Hit -> {
-                val gain = result.note.velocity * state.volume
-                if (state.backingAsset == null) player.note(result.note.midi, gain)
-                else player.strike(.46f * gain)
+                if (opening) pendingOpeningNote = result.note else soundHit(player, result.note)
+                recordFeedback(PanelFeedback(result.note.atMs, feedbackAt, true))
                 if (state.haptics) platform.feedback()
                 val label = when (result.grade) {
                     Grade.Perfect -> "Идеально"
@@ -372,18 +402,40 @@ internal class Session(
                 showReaction(label, feedbackAt)
             }
             TapResult.Stray -> {
-                soundMistake(player, engine.nearestTarget(at), feedbackAt, stray = true)
+                soundMistake(player, nearest, feedbackAt, stray = true)
                 showReaction("Мимо", feedbackAt)
             }
-            TapResult.Ignored -> return
+            TapResult.Ignored -> Unit
         }
-        state = state.copy(stats = engine.stats, lastLedTapMs = result.led?.atMs ?: state.lastLedTapMs)
+        if (state.stats !== engine.stats) state = state.copy(stats = engine.stats)
     }
 
     override fun tapNow() { media?.let { tap(it.uptimeMs()) } }
 
+    private fun onRail(at: Long): Boolean = when (val current = stage) {
+        is PreparedStage.Cascade -> current.path.onRail(at)
+        is PreparedStage.Orbit -> current.path.onRail(at)
+        null -> false
+    }
+
+    private fun recordMisses(notes: List<Note>, at: Long) {
+        for (index in (notes.size - 4).coerceAtLeast(0) until notes.size) {
+            recordFeedback(PanelFeedback(notes[index].atMs, at, false))
+        }
+    }
+
+    private fun recordFeedback(event: PanelFeedback) {
+        val recent = state.panelFeedback.filterNot { it.noteAtMs == event.noteAtMs }.takeLast(3)
+        state = state.copy(panelFeedback = recent + event)
+    }
+
+    private fun soundHit(player: GameMedia, note: Note) {
+        val gain = note.velocity * state.volume
+        if (state.backingAsset == null) player.note(note.midi, gain) else player.strike(.46f * gain)
+    }
+
     private fun soundMistake(player: GameMedia, target: Note, now: Long, stray: Boolean) {
-        // Repeated bad taps still affect score. Keep them from masking the song, including
+        // Keep wrong-note cues from masking the song, including
         // a stray tap delivered in the same beat as that target's automatic miss.
         val previous = lastMistakeAt
         if (previous != null && now - previous < 120 && (stray || lastMistakeTarget == target.id)) return
@@ -399,11 +451,13 @@ internal class Session(
     }
 
     override fun pause() {
-        if (state.scene !in setOf(Scene.Loading, Scene.Playing, Scene.Resuming)) return
+        if (state.scene !in setOf(Scene.Loading, Scene.CountIn, Scene.Playing, Scene.Resuming)) return
         state = state.copy(scene = Scene.Paused, countdown = null, reaction = null)
         game?.pause()
         media?.pause()
-        media?.snapshot()?.let { positionMs = it.positionMs }
+        if (transportStarted) media?.snapshot()?.let { positionMs = it.positionMs }
+        else positionMs = -introMs
+        openingEnd = null
         playingAnchor = null
         hasPlayed = false
         resumeAt = null
@@ -433,7 +487,7 @@ internal class Session(
         positionMs = 0
         state = state.copy(scene = Scene.Menu, preview = false, stats = null,
             error = null, countdown = null, reaction = null, newRecord = false,
-            echoesCaught = 0, collectedEchoMs = null, lastLedTapMs = null)
+            panelFeedback = emptyList())
     }
 
     override fun volume(value: Float) {
@@ -460,6 +514,11 @@ internal class Session(
     }
 
     private fun close() {
+        presented = false
+        transportStarted = false
+        openingEnd = null
+        pendingOpeningNote = null
+        eofObservedAt = null
         pendingStart?.cancel()
         pendingStart = null
         val old = media
@@ -483,5 +542,3 @@ internal class Session(
 
 // Lean one semitone off the expected pitch, including at the MIDI range boundary.
 private fun wrongPitch(midi: Int): Int = if (midi == 127) 126 else midi + 1
-
-private fun echoPitch(midi: Int) = if (midi <= 115) midi + 12 else midi - 12

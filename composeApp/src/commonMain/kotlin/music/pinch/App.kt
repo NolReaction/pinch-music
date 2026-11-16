@@ -24,7 +24,7 @@ fun App(platform: Platform, backHandler: @Composable (Boolean, () -> Unit) -> Un
     }
     backHandler(session.state.scene != Scene.Menu) {
         when (session.state.scene) {
-            Scene.Playing, Scene.Resuming -> session.pause()
+            Scene.CountIn, Scene.Playing, Scene.Resuming -> session.pause()
             else -> session.menu()
         }
     }

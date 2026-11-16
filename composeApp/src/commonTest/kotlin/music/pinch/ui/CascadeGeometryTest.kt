@@ -4,6 +4,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.math.hypot
+import music.pinch.PanelFeedback
 import music.pinch.core.Chart
 import music.pinch.core.Note
 import music.pinch.songLibrary
@@ -15,8 +16,8 @@ class CascadeGeometryTest {
         val course = path.gpuCourse()
         val frame = FloatArray(CascadeFrameSize)
         for ((index, attack) in path.attacks.withIndex()) {
-            val panel = attack.panelIndex
-            val style = if (attack.playable) 1f else if (attack.isEcho) 2f else 0f
+            val panel = attack.panelIndex + if (path.entryRail.isEmpty()) 0 else 1
+            val style = if (attack.playable) 1f else 0f
             if (attack.atMs > 0L) {
                 path.writeGpuFrame(attack.atMs - 1, frame)
                 assertEquals(panel.toFloat(), frame[9])
@@ -61,18 +62,45 @@ class CascadeGeometryTest {
         assertEquals(1f, frame[6])
     }
 
-    @Test fun railTapOnlyBoostsTheReachedLamp() {
-        val chart = requireNotNull(songLibrary.single { it.id == "stereo-love" }.bundled)
-        val path = PlanarPath(chart)
-        val lamp = path.panels.first { it.ledTimesMs.isNotEmpty() }.ledTimesMs.first()
+    @Test fun correctedOrLateScoreColoursItsOwnKeyAndNeverRetriggersItsTravel() {
+        val first = 1000L
+        val second = 1600L
+        val path = PlanarPath(Chart("score", 120, 3000,
+            listOf(Note("one", first, 60, 200, 1f), Note("two", second, 64, 200, 1f))))
         val frame = FloatArray(CascadeFrameSize)
-        path.writeGpuFrame(lamp, frame)
-        val impact = frame[6]
-        assertEquals(0f, frame[11])
-        path.writeGpuFrame(lamp, frame, ledTapMs = lamp)
-        assertEquals(impact, frame[6])
-        assertEquals(1f, frame[11])
-        path.writeGpuFrame(lamp + 185, frame, ledTapMs = lamp)
-        assertEquals(0f, frame[11])
+        path.writeGpuFrame(first, frame)
+        val firstKey = frame[5]
+        assertEquals(0f, frame[7])
+        path.writeGpuFrame(first + 40L, frame)
+        assertTrue(frame[7] > .07f)
+        val miss = PanelFeedback(first, first + 200L, false)
+        val early = PanelFeedback(second, second - 70L, true)
+        path.writeGpuFrame(second - 50, frame, listOf(miss, early))
+        assertEquals(firstKey + 1, frame[17])
+        assertEquals(1f, frame[18])
+        assertEquals(firstKey, frame[19])
+        assertEquals(-1f, frame[20])
+        assertEquals(0f, frame[7])
+
+        val corrected = PanelFeedback(first, second + 60L, true)
+        path.writeGpuFrame(second + 220L, frame, listOf(early, corrected))
+        assertEquals(firstKey, frame[17])
+        assertEquals(1f, frame[18])
+        assertEquals(0f, frame[7])
+        val frozen = frame.copyOf()
+        path.writeGpuFrame(second + 220L, frame, listOf(early, corrected))
+        assertTrue(frozen.contentEquals(frame))
+        path.writeGpuFrame(second + 220L, frame) // Preview has no results.
+        for (slot in 17 until CascadeFrameSize step 2) assertEquals(-1f, frame[slot])
+    }
+
+    @Test fun finalCatcherCarriesTheSeatedBallThroughItsOneStroke() {
+        val path = PlanarPath(Chart("catch", 120, 1500, listOf(Note("single", 400L, 60, 250, 1f))))
+        val frame = FloatArray(CascadeFrameSize)
+        for (t in listOf(400L, 425L, 440L, 470L, 560L, 610L)) {
+            path.writeGpuFrame(t, frame)
+            assertEquals(frame[7], frame[8])
+        }
+        assertEquals(0f, frame[7])
     }
 }

@@ -1,16 +1,13 @@
 package music.pinch.ui
 
 import kotlin.math.sqrt
+import music.pinch.PanelFeedback
 
 internal const val CascadeKeyStride = 5
-internal const val CascadeFrameSize = 13
+internal const val CascadeFrameSize = 25
 
 private val PlanarAttack.material: Int
-    get() = when {
-        playable -> 1
-        isEcho -> 2
-        else -> 0
-    }
+    get() = if (playable) 1 else 0
 
 private val PlanarPath.panelOffset: Int get() = if (entryRail.isEmpty()) 0 else 1
 
@@ -18,9 +15,7 @@ private val PlanarPath.panelOffset: Int get() = if (entryRail.isEmpty()) 0 else 
 internal fun PlanarPath.gpuCourse(): CascadeGpuCourse {
     val keys = FloatArray((panelOffset + panels.size) * CascadeKeyStride)
     val rails = FloatArray((entryRail.size + panels.sumOf { it.railSamples.size }) * 3)
-    val lamps = FloatArray(panels.sumOf { it.ledCenters.size } * 3)
     var rail = 0
-    var lamp = 0
     fun addRail(index: Int, samples: List<StagePoint>) {
         for (point in samples) {
             rails[rail++] = index.toFloat()
@@ -48,16 +43,12 @@ internal fun PlanarPath.gpuCourse(): CascadeGpuCourse {
         keys[base + 3] = first.material.toFloat()
         keys[base + 4] = panel.slope
         addRail(index, panel.railSamples)
-        for (point in panel.ledCenters) {
-            lamps[lamp++] = index.toFloat()
-            lamps[lamp++] = point.x
-            lamps[lamp++] = point.y
-        }
     }
-    return CascadeGpuCourse(keys, rails, lamps)
+    return CascadeGpuCourse(keys, rails)
 }
 
-internal fun PlanarPath.writeGpuFrame(timeMs: Long, out: FloatArray, ledTapMs: Long? = null) {
+internal fun PlanarPath.writeGpuFrame(timeMs: Long, out: FloatArray,
+    feedback: List<PanelFeedback> = emptyList(), theme: StageTheme = StageTheme.Stereo) {
     val pose = frame(timeMs)
     val active = attacks.getOrNull(pose.attackIndex)
     val next = attacks.getOrNull(pose.attackIndex + 1)
@@ -67,13 +58,32 @@ internal fun PlanarPath.writeGpuFrame(timeMs: Long, out: FloatArray, ledTapMs: L
     out[3] = pose.cameraY
     out[4] = pose.rollAngle
     out[5] = (active?.let { it.panelIndex + panelOffset } ?: -1).toFloat()
-    // A key flashes once, at physical contact. Input on a rail only lights its own lamp.
+    // The cap starts moving at physical contact. A delayed score update only changes its colour.
     out[6] = active?.let { (1f - (timeMs - it.atMs) / 235f).coerceIn(0f, 1f) } ?: 0f
-    out[7] = (pose.rollingPanel?.plus(panelOffset) ?: -1).toFloat()
-    out[8] = pose.litLedIndex.toFloat()
+    val age = timeMs - (active?.atMs ?: timeMs)
+    val travel = if (age in 0L..190L) {
+        val u = if (age < 40) age / 40f else (190L - age) / 150f
+        .081f * u * u * (3f - 2f * u)
+    } else 0f
+    out[7] = travel
+    out[8] = if (active != null && next == null) travel else 0f // ball stays seated in the last catcher
     out[9] = (next?.let { it.panelIndex + panelOffset } ?: -1).toFloat()
     out[10] = pose.cameraX
-    val lamp = pose.rollingPanel?.let { panels[it].ledTimesMs.getOrNull(pose.litLedIndex) }
-    out[11] = if (lamp != null && lamp == ledTapMs) (1f - (timeMs - lamp) / 180f).coerceIn(0f, 1f) else 0f
+    out[11] = theme.ordinal.toFloat()
     out[12] = pose.cameraTravel
+    // All 24-bit sRGB values are represented exactly in a 32-bit float.
+    out[13] = theme.wall.toFloat()
+    out[14] = theme.light.toFloat()
+    out[15] = theme.panel.toFloat()
+    out[16] = theme.accent.toFloat()
+    for (slot in 0 until 4) {
+        val base = 17 + 2 * slot
+        val result = feedback.getOrNull(feedback.lastIndex - slot)
+        val elapsed = if (result != null) timeMs - result.shownAtMs else -1
+        val opacity = feedbackStrength(elapsed)
+        val index = if (result != null && opacity > 0f)
+            attacks.binarySearchBy(result.noteAtMs) { it.atMs } else -1
+        out[base] = if (index >= 0) (attacks[index].panelIndex + panelOffset).toFloat() else -1f
+        out[base + 1] = if (index < 0 || result == null) 0f else if (result.hit) opacity else -opacity
+    }
 }

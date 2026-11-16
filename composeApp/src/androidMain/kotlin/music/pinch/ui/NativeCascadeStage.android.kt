@@ -13,7 +13,10 @@ import android.util.Log
 import android.view.TextureView
 import android.view.View
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
@@ -23,28 +26,38 @@ private object CascadeGL {
     init { System.loadLibrary("pinch_stage") }
     external fun create(): Long
     external fun destroy(stage: Long)
-    external fun upload(stage: Long, keys: FloatArray, rails: FloatArray, lamps: FloatArray)
+    external fun upload(stage: Long, keys: FloatArray, rails: FloatArray)
     external fun draw(stage: Long, width: Int, height: Int, frame: FloatArray)
 }
 
 @Composable
 internal actual fun NativeCascadeStage(
-    modifier: Modifier, course: CascadeGpuCourse, frame: (FloatArray) -> Unit, animate: Boolean
+    modifier: Modifier, course: CascadeGpuCourse, frame: (FloatArray) -> Unit, animate: Boolean,
+    onPresented: () -> Unit,
 ) {
     val context = LocalContext.current
-    val display = remember(context) { CascadeTexture(context) }
+    val presented = remember(course) { mutableStateOf(false) }
+    val notifyPresented by rememberUpdatedState {
+        presented.value = true
+        onPresented()
+    }
+    val display = remember(context) { CascadeTexture(context) { notifyPresented() } }
     AndroidView(factory = { display }, modifier = modifier, onRelease = { it.release() })
-    CascadeFrameClock(display, course, frame, animate)
+    CascadeFrameClock(display, course, frame, animate || !presented.value)
 }
 
 /** A texture participates in normal Compose clipping, opacity and HUD compositing. */
-private class CascadeTexture(context: Context) : TextureView(context), TextureView.SurfaceTextureListener, CascadeDisplay {
+private class CascadeTexture(context: Context, private val onPresented: () -> Unit) :
+    TextureView(context), TextureView.SurfaceTextureListener, CascadeDisplay {
     private var worker: CascadeWorker? = null
     private var course: CascadeGpuCourse? = null
     private val lastFrame = FloatArray(CascadeFrameSize)
     private var renderWidth = 0
     private var renderHeight = 0
     private var released = false
+    private var swappedCourse: CascadeGpuCourse? = null
+    private var textureUpdated = false
+    private var presented = false
 
     init {
         surfaceTextureListener = this
@@ -55,6 +68,12 @@ private class CascadeTexture(context: Context) : TextureView(context), TextureVi
     }
 
     override fun present(course: CascadeGpuCourse, frame: FloatArray) {
+        if (released) return
+        if (this.course !== course) {
+            swappedCourse = null
+            textureUpdated = false
+            presented = false
+        }
         this.course = course
         frame.copyInto(lastFrame)
         redraw()
@@ -69,11 +88,25 @@ private class CascadeTexture(context: Context) : TextureView(context), TextureVi
 
     override fun onSurfaceTextureAvailable(surface: SurfaceTexture, w: Int, h: Int) {
         if (released) return
-        worker = CascadeWorker(surface)
+        textureUpdated = false
+        swappedCourse = null
+        worker = CascadeWorker(surface) { drawn ->
+            post {
+                if (!released && worker != null && surfaceTexture === surface && course === drawn) {
+                    swappedCourse = drawn
+                    notifyIfVisible()
+                }
+            }
+        }
         onSurfaceTextureSizeChanged(surface, w, h)
     }
 
     override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, w: Int, h: Int) {
+        if (w <= 0 || h <= 0) {
+            renderWidth = 0
+            renderHeight = 0
+            return
+        }
         // Keep a phone's high-density display from multiplying fragment shading cost.
         val scale = CascadeRaster.scale(w.toDouble(), h.toDouble(), 1.0)
         renderWidth = (w * scale).roundToInt().coerceAtLeast(1)
@@ -87,11 +120,26 @@ private class CascadeTexture(context: Context) : TextureView(context), TextureVi
         if (visibility == View.VISIBLE) redraw()
     }
 
-    override fun onSurfaceTextureUpdated(surface: SurfaceTexture) = Unit
+    override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {
+        if (surfaceTexture !== surface) return
+        textureUpdated = true
+        notifyIfVisible()
+    }
+
+    private fun notifyIfVisible() {
+        // The GL producer swapped successfully and TextureView latched a buffer on the UI thread.
+        if (!presented && !released && textureUpdated && swappedCourse === course && course != null &&
+            width > 0 && height > 0 && isShown && windowVisibility == View.VISIBLE && isAttachedToWindow) {
+            presented = true
+            onPresented()
+        }
+    }
 
     override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
         val active = worker ?: return true
         worker = null
+        textureUpdated = false
+        swappedCourse = null
         active.stop()
         // The worker releases its SurfaceTexture after finishing the in-flight swap.
         return false
@@ -106,7 +154,7 @@ private class CascadeTexture(context: Context) : TextureView(context), TextureVi
 }
 
 /** At most one frame waits for the GL thread, even if a swap misses a display refresh. */
-private class CascadeWorker(private val texture: SurfaceTexture) {
+private class CascadeWorker(private val texture: SurfaceTexture, private val onSwap: (CascadeGpuCourse) -> Unit) {
     private val thread = HandlerThread("Cascade GLES").apply { start() }
     private val handler = Handler(thread.looper)
     private val lock = Any()
@@ -118,6 +166,7 @@ private class CascadeWorker(private val texture: SurfaceTexture) {
     private var queued = false
     private var stopped = false
     private val egl = CascadeEgl()
+    private var reported: CascadeGpuCourse? = null
 
     fun submit(course: CascadeGpuCourse, values: FloatArray, w: Int, h: Int) {
         synchronized(lock) {
@@ -145,7 +194,10 @@ private class CascadeWorker(private val texture: SurfaceTexture) {
             h = height
             pending.copyInto(drawing)
         }
-        egl.render(texture, course, drawing, w, h)
+        if (egl.render(texture, course, drawing, w, h) && reported !== course) {
+            reported = course
+            onSwap(course)
+        }
     }
 
     fun stop() {
@@ -191,16 +243,17 @@ private class CascadeEgl {
         return stage != 0L
     }
 
-    fun render(texture: SurfaceTexture, course: CascadeGpuCourse, frame: FloatArray, w: Int, h: Int) {
+    fun render(texture: SurfaceTexture, course: CascadeGpuCourse, frame: FloatArray, w: Int, h: Int): Boolean {
+        if (course.keys.isEmpty()) return false
         if (stage == 0L && !open(texture)) {
             if (!warned) Log.w("CascadeGL", "Could not initialize GLES stage, EGL error ${EGL14.eglGetError()}")
             warned = true
             close()
-            return
+            return false
         }
         warned = false
         if (uploaded !== course) {
-            CascadeGL.upload(stage, course.keys, course.rails, course.lamps)
+            CascadeGL.upload(stage, course.keys, course.rails)
             uploaded = course
         }
         // EGL switches its back buffers on swap. Following a resize the current
@@ -209,8 +262,11 @@ private class CascadeEgl {
             EGL14.eglQuerySurface(display, surface, EGL14.EGL_WIDTH, drawableSize, 0)
             EGL14.eglQuerySurface(display, surface, EGL14.EGL_HEIGHT, drawableSize, 1)
         }
+        if (drawableSize[0] <= 0 || drawableSize[1] <= 0) return false
         CascadeGL.draw(stage, drawableSize[0], drawableSize[1], frame)
-        if (!EGL14.eglSwapBuffers(display, surface)) close()
+        if (EGL14.eglSwapBuffers(display, surface)) return true
+        close()
+        return false
     }
 
     fun close() {

@@ -5,20 +5,13 @@ import kotlin.math.abs
 enum class Grade { Perfect, Good, Okay }
 
 sealed interface TapResult {
-    val led: Note? get() = null
-    data class Hit(val note: Note, val grade: Grade, val errorMs: Long, override val led: Note? = null) : TapResult
-    data class Automatic(val note: Note, override val led: Note? = null) : TapResult
-    data class Led(override val led: Note) : TapResult
+    data class Hit(val note: Note, val grade: Grade, val errorMs: Long) : TapResult
     data object Stray : TapResult
     data object Ignored : TapResult
 }
 
 private const val WINDOW_MS = 120L
 internal const val FORGIVING_WINDOW_MS = 195L
-private const val AUTOMATIC_WINDOW_MS = 55L
-private const val LED_WINDOW_MS = 65L
-private const val LED_OVERLAP_MS = 25L
-internal const val FORGIVING_AUTOMATIC_WINDOW_MS = 85L
 private const val DOUBLE_TAP_MS = 75L
 private const val MAX_MISS_CUE_FRAME_MS = 125L
 
@@ -46,150 +39,105 @@ data class GameStats(
 }
 
 /**
- * Call from one serial input/playback context. A delivered touch carries its original media time.
- * A video frame can arrive before a slightly older touch: keep frame-only misses provisional
- * until the next touch, so crossing a window during dispatch does not silence a valid note.
+ * Input and decoder observations arrive on the same thread, but not always in timestamp order.
+ * A missed window seen by a frame can still be corrected by an on-time queued touch.
  */
-class RhythmGame internal constructor(chart: Chart, private val forgiving: Boolean, private val ledNotes: List<Note>) {
-    constructor(chart: Chart, forgiving: Boolean = false) : this(chart, forgiving, emptyList())
+class RhythmGame(chart: Chart, private val forgiving: Boolean = false) {
     private val windowMs = if (forgiving) FORGIVING_WINDOW_MS else WINDOW_MS
-    private val automaticWindowMs = if (forgiving) FORGIVING_AUTOMATIC_WINDOW_MS else AUTOMATIC_WINDOW_MS
-    private val notes = chart.notes.filter { it.playable }
-    private val automatic = chart.notes.filterNot { it.playable }.distinctBy { it.atMs }
-    internal val firstTargetMs = notes.firstOrNull()?.atMs
+    // Older/imported scores may contain a chord. The ball contacts one panel at its onset.
+    private val notes = buildList<Note> {
+        for (voice in chart.notes) {
+            val previous = lastOrNull()
+            if (previous == null || previous.atMs != voice.atMs) add(voice)
+            else if (!previous.playable && voice.playable) set(lastIndex, voice)
+        }
+    }
+    internal val firstTargetMs = notes.first().atMs
     private val hit = BooleanArray(notes.size)
     private enum class Phase { Playing, Paused, Finished }
-
     private var phase = Phase.Playing
-    private var committed = GameStats(notes.size)
+    private var expiredEnd = 0
+    private var reportedEnd = 0
     private var nextMissCue = 0
     private var previousCueTime = -1L
-    private var firstUnexpired = 0
-    private var frameEnd = 0
-    private var provisionalMisses = 0
-    private var lastTouchMs = -1L
-    private var lastContactTapMs = -1L
-    private var lastContact: Note? = null
-    private var lastAutomaticMs = -1L
-    private var lastLedMs = -1L
-    private var latestMediaMs = 0L
-    var stats: GameStats = committed
+    private var lastTouchMs = Long.MIN_VALUE
+    private var lastHitMs = Long.MIN_VALUE
+    private var lastHitIndex = -1
+    private var lastStrayMs = Long.MIN_VALUE
+    private var hitStreak = 0
+    var stats = GameStats(notes.size)
         private set
 
-    fun advance(positionMs: Long): Int {
-        if (phase != Phase.Playing || positionMs <= latestMediaMs) return 0
-        latestMediaMs = positionMs
-        val end = expiryEnd(positionMs, frameEnd)
-        val misses = countUnhit(frameEnd, end)
-        frameEnd = end
-        if (misses > 0) {
-            provisionalMisses += misses
-            refreshFrameStats()
+    fun advance(positionMs: Long) {
+        if (phase != Phase.Playing || positionMs < 0) return
+        var misses = 0
+        while (expiredEnd < notes.size && positionMs - notes[expiredEnd].atMs > windowMs) {
+            if (!hit[expiredEnd]) misses++
+            expiredEnd++
         }
-        return misses
+        if (misses > 0) {
+            // In overlapping windows the previous panel can expire after the next one was hit.
+            val combo = if (expiredEnd > lastHitIndex + 1) 0 else stats.combo
+            stats = stats.copy(missed = stats.missed + misses, combo = combo)
+        }
+    }
+
+    /** Drain every newly missed physical panel, including windows crossed by tap() between frames. */
+    internal fun takeMisses(): List<Note> {
+        if (reportedEnd == expiredEnd) return emptyList()
+        val from = reportedEnd
+        reportedEnd = expiredEnd
+        return buildList {
+            for (index in from until expiredEnd) if (!hit[index]) add(notes[index])
+        }
     }
 
     fun tap(positionMs: Long): TapResult {
-        if (phase != Phase.Playing || notes.isEmpty() || positionMs < 0 || positionMs < lastTouchMs) return TapResult.Ignored
-        val passive = if (automatic.isEmpty()) null else nearest(automatic, positionMs)
-        val passiveDistance = passive?.let { abs(positionMs - it.atMs) } ?: Long.MAX_VALUE
-        val lamp = if (ledNotes.isEmpty()) null else nearest(ledNotes, positionMs)
-            .takeIf { abs(positionMs - it.atMs) <= LED_WINDOW_MS }
-        if (lamp == null && passiveDistance > automaticWindowMs &&
-            (positionMs - notes.first().atMs < -windowMs || positionMs - notes.last().atMs > windowMs)) {
-            advance(positionMs)
+        if (phase != Phase.Playing || positionMs < firstTargetMs - windowMs || positionMs <= lastTouchMs) {
             return TapResult.Ignored
         }
         lastTouchMs = positionMs
         advance(positionMs)
-        val end = expiryEnd(positionMs, firstUnexpired)
-        val expired = countUnhit(firstUnexpired, end)
-        provisionalMisses -= expired
-        committed = committed.withMisses(expired)
-        firstUnexpired = end
-
-        var nearestIndex = -1
-        var nearestDistance = Long.MAX_VALUE
-        for (index in firstUnexpired until notes.size) {
-            val note = notes[index]
-            val error = positionMs - note.atMs
-            if (error < -windowMs) break
-            if (hit[index]) continue
-            val distance = abs(error)
-            if (distance < nearestDistance ||
-                (distance == nearestDistance && note.atMs == notes[nearestIndex].atMs && note.id < notes[nearestIndex].id)
-            ) {
-                nearestIndex = index
-                nearestDistance = distance
-            }
-        }
-        // Clearly struck passive contacts keep their own timing. Near the midpoint, give
-        // the pending accent a small advantage so a slightly early/late tap still scores.
-        val accentPreference = if (forgiving && passiveDistance > 30L) 24L else 0L
-        val usePassive = passive != null && passiveDistance <= automaticWindowMs &&
-            passiveDistance + accentPreference < nearestDistance
-        val exactLamp = lamp?.takeIf { abs(positionMs - it.atMs) <= LED_OVERLAP_MS && it.atMs != lastLedMs }
-        // A close strike can collect a lingering chart target and touch a lamp at the same time.
-        // If the optional chart key was already played, the exact lamp stands on its own.
-        val target = if (usePassive) {
-            if (passive?.atMs == lastAutomaticMs && exactLamp != null) exactLamp else passive
-        } else notes.getOrNull(nearestIndex) ?: lamp
-        if (forgiving && isRepeatDown(positionMs, target)) {
-            refreshFrameStats()
-            return TapResult.Ignored
-        }
-        if (target == null) {
-            committed = committed.copy(stray = committed.stray + 1, combo = 0)
-            refreshFrameStats()
+        val index = nearestIndex(positionMs)
+        val note = notes[index]
+        val error = positionMs - note.atMs
+        if (abs(error) > windowMs) {
+            if (positionMs < firstTargetMs || positionMs > notes.last().atMs) return TapResult.Ignored
+            val previous = maxOf(lastHitMs, lastStrayMs)
+            if (previous != Long.MIN_VALUE && positionMs - DOUBLE_TAP_MS <= previous) return TapResult.Ignored
+            lastStrayMs = positionMs
+            hitStreak = 0
+            stats = stats.copy(stray = stats.stray + 1, combo = 0)
             return TapResult.Stray
         }
-        if ((target === passive && target.atMs == lastAutomaticMs) || (target === lamp && target.atMs == lastLedMs)) {
-            refreshFrameStats()
-            return TapResult.Ignored
+        // Assign the down to the nearest physical panel even if it already scored. Otherwise
+        // a second finger on that panel could silently spend the next overlapping window.
+        if (hit[index]) return TapResult.Ignored
+        if (lastHitIndex >= 0) {
+            val spacing = note.atMs - notes[lastHitIndex].atMs
+            val debounce = minOf(DOUBLE_TAP_MS, spacing / 2)
+            // Two downs straddling the midpoint are one gesture unless the second is already
+            // within a display frame of the next contact. Fast exact landings always count.
+            if (positionMs - debounce < lastHitMs && -error > minOf(16L, spacing / 4)) return TapResult.Ignored
         }
-        lastContact = target
-        lastContactTapMs = positionMs
-        if (target === lamp) {
-            lastLedMs = target.atMs
-            refreshFrameStats()
-            return TapResult.Led(target)
-        }
-        if (exactLamp != null) lastLedMs = exactLamp.atMs
-        if (usePassive) {
-            lastAutomaticMs = target.atMs
-            refreshFrameStats()
-            return TapResult.Automatic(target, exactLamp)
-        }
-        val error = positionMs - target.atMs
         val grade = if (forgiving) when (abs(error)) {
             in 0..80 -> Grade.Perfect
             in 81..135 -> Grade.Good
             else -> Grade.Okay
         } else requireNotNull(gradeFor(error))
-        hit[nearestIndex] = true
-        if (nearestIndex < frameEnd) provisionalMisses--
-        val combo = committed.combo + 1
-        committed = committed.copy(
-            perfect = committed.perfect + if (grade == Grade.Perfect) 1 else 0,
-            good = committed.good + if (grade == Grade.Good) 1 else 0,
-            okay = committed.okay + if (grade == Grade.Okay) 1 else 0,
-            combo = combo,
-            maxCombo = maxOf(combo, committed.maxCombo),
+        hitStreak = if (index == lastHitIndex + 1) hitStreak + 1 else 1
+        lastHitIndex = index
+        lastHitMs = positionMs
+        hit[index] = true
+        stats = stats.copy(
+            perfect = stats.perfect + if (grade == Grade.Perfect) 1 else 0,
+            good = stats.good + if (grade == Grade.Good) 1 else 0,
+            okay = stats.okay + if (grade == Grade.Okay) 1 else 0,
+            missed = stats.missed - if (index < expiredEnd) 1 else 0,
+            combo = if (expiredEnd > index + 1) 0 else hitStreak,
+            maxCombo = maxOf(hitStreak, stats.maxCombo),
         )
-        refreshFrameStats()
-        return TapResult.Hit(target, grade, error, exactLamp)
-    }
-
-    private fun isRepeatDown(positionMs: Long, target: Note?): Boolean {
-        val previous = lastContact ?: return false
-        val elapsed = positionMs - lastContactTapMs
-        if (elapsed > DOUBLE_TAP_MS) return false
-        if (target == null) return true
-        // Simultaneous playable voices may be played separately. During a fast run,
-        // allow a down closer to the next contact, with one frame of dispatch slack.
-        if (target.atMs == previous.atMs) return !target.playable
-        val distance = abs(target.atMs - positionMs)
-        return distance > 0 && distance >= minOf(elapsed + 16, abs(previous.atMs - positionMs))
+        return TapResult.Hit(note, grade, error)
     }
 
     /**
@@ -218,39 +166,23 @@ class RhythmGame internal constructor(chart: Chart, private val forgiving: Boole
         return latest
     }
 
-    internal fun nearestTarget(positionMs: Long) = nearest(notes, positionMs)
+    internal fun nearestTarget(positionMs: Long): Note = notes[nearestIndex(positionMs)]
 
-    private fun nearest(candidates: List<Note>, positionMs: Long): Note {
-        val index = candidates.binarySearchBy(positionMs) { it.atMs }
-        if (index >= 0) return candidates[index]
-        val after = -(index + 1)
-        if (after == 0) return candidates.first()
-        if (after == candidates.size) return candidates.last()
-        val before = candidates[after - 1]
-        return if (positionMs - before.atMs <= candidates[after].atMs - positionMs) before else candidates[after]
-    }
-
-    private fun expiryEnd(positionMs: Long, from: Int): Int {
-        var end = from
-        while (end < notes.size && positionMs - notes[end].atMs > windowMs) end++
-        return end
-    }
-
-    private fun countUnhit(from: Int, end: Int): Int {
-        var missed = 0
-        for (index in from until end) if (!hit[index]) missed++
-        return missed
-    }
-
-    private fun GameStats.withMisses(count: Int) =
-        if (count == 0) this else copy(missed = missed + count, combo = 0)
-
-    private fun refreshFrameStats() {
-        stats = committed.withMisses(provisionalMisses)
+    private fun nearestIndex(positionMs: Long): Int {
+        val exact = notes.binarySearchBy(positionMs) { it.atMs }
+        if (exact >= 0) return exact
+        val after = -(exact + 1)
+        if (after == 0) return 0
+        if (after == notes.size) return notes.lastIndex
+        return if (positionMs - notes[after - 1].atMs <= notes[after].atMs - positionMs) after - 1 else after
     }
 
     fun pause() {
-        if (phase == Phase.Playing) phase = Phase.Paused
+        if (phase != Phase.Playing) return
+        phase = Phase.Paused
+        // Discard miss sounds already waiting for dispatch before the interruption.
+        nextMissCue = maxOf(nextMissCue, expiredEnd)
+        previousCueTime = -1L
     }
 
     fun resume() {
@@ -259,7 +191,10 @@ class RhythmGame internal constructor(chart: Chart, private val forgiving: Boole
 
     fun finish(): GameStats {
         if (phase != Phase.Finished) {
-            stats = committed.withMisses(countUnhit(firstUnexpired, notes.size))
+            val remaining = notes.size - stats.perfect - stats.good - stats.okay - stats.missed
+            val missedAfterLastHit = lastHitIndex != notes.lastIndex
+            stats = stats.copy(missed = stats.missed + remaining, combo = if (missedAfterLastHit) 0 else stats.combo)
+            expiredEnd = notes.size
             phase = Phase.Finished
         }
         return stats
@@ -267,19 +202,16 @@ class RhythmGame internal constructor(chart: Chart, private val forgiving: Boole
 
     fun restart() {
         hit.fill(false)
+        expiredEnd = 0
+        reportedEnd = 0
         nextMissCue = 0
         previousCueTime = -1
-        firstUnexpired = 0
-        frameEnd = 0
-        provisionalMisses = 0
-        lastTouchMs = -1
-        lastContact = null
-        lastContactTapMs = -1
-        lastAutomaticMs = -1
-        lastLedMs = -1
-        latestMediaMs = 0
-        committed = GameStats(notes.size)
-        stats = committed
+        lastTouchMs = Long.MIN_VALUE
+        lastHitMs = Long.MIN_VALUE
+        lastHitIndex = -1
+        lastStrayMs = Long.MIN_VALUE
+        hitStreak = 0
+        stats = GameStats(notes.size)
         phase = Phase.Playing
     }
 }

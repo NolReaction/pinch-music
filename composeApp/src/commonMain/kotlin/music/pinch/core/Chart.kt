@@ -17,7 +17,7 @@ data class Chart(
 ) {
     init {
         require(title.isNotBlank() && bpm > 0 && durationMs > 0) { "Некорректное описание мелодии" }
-        require(notes.any { it.playable }) { "В мелодии нет игровых нот" }
+        require(notes.isNotEmpty()) { "В мелодии нет нот" }
 
         val ids = mutableSetOf<String>()
         var previousOnset = -1L
