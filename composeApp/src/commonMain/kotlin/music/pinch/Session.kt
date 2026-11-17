@@ -18,6 +18,7 @@ import kotlin.math.abs
 import music.pinch.ui.MarblePath
 import music.pinch.ui.PlanarPath
 import music.pinch.ui.PreparedStage
+import music.pinch.ui.orbitShape
 import music.pinch.ui.stageTheme
 
 /** Session commands, native events and frame observations all run on the UI thread. */
@@ -173,7 +174,7 @@ internal class Session(
         courseTask = scope.async(courseDispatcher, start = CoroutineStart.LAZY) {
             try {
                 Result.success(when (mode) {
-                    StageMode.Orbit -> PreparedStage.Orbit(MarblePath(chart), stageTheme(song.id))
+                    StageMode.Orbit -> PreparedStage.Orbit(MarblePath(chart, stageTheme(song.id).orbitShape), stageTheme(song.id))
                     StageMode.Planar -> PreparedStage.Cascade(PlanarPath(source, chart))
                 })
             } catch (e: CancellationException) {

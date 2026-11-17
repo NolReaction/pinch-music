@@ -173,26 +173,24 @@ struct KeyDesign {
     float corner;
     Surface rim, band;
     float lacquer, reflection, grainX, grainZ;
-    int instrument; // 0 wood, 1 keys, 2 tubes, 3 tubes + pitched pads, 4 wood + metal tongues
+    int instrument; // 0 wood, 1 keys, 2 tubes, 3 pads, 4 metal tongues; fixed for a whole song
     int keyCount = 3;
 };
 inline const KeyDesign& keyDesign(int motif) {
     static constexpr KeyDesign designs[] = {
         {4, .050f, Ivory, Chrome, .34f, .63f, 1.05f, .14f, 1}, // Floor: amber satin keys
-        {3, .058f, Wood, Wood, .70f, .40f, .14f, 2.7f, 4}, // Stereo: wood and metal tongues
+        {3, .058f, Wood, Wood, .70f, .40f, .14f, 2.7f, 0}, // Stereo: suspended marimba bars
         {4, .050f, Ivory, Chrome, .83f, .24f, .14f, 2.7f, 1, 2}, // Gypsy: sea-glass organ levers
-        {3, .080f, Chrome, Accent, .82f, .44f, 1.4f, 1.4f, 3}, // Levels: pipes and pitched pads
-        {4, .050f, Ivory, Chrome, .65f, .46f, .35f, .35f, 1}, // Stay: ivory keyboard
-        {3, .054f, Chrome, Accent, .86f, .29f, 2.1f, .21f, 2}, // Turn Down: violet pipes
+        {3, .080f, Chrome, Accent, .82f, .44f, 1.4f, 1.4f, 2}, // Levels: tuned hollow pipes
+        {4, .050f, Tongue, Chrome, .65f, .46f, .35f, .35f, 4}, // Stay: brushed metallic tines
+        {3, .054f, Chrome, Accent, .86f, .29f, 2.1f, .21f, 3}, // Turn Down: violet electronic pads
         {3, .058f, Wood, Wood, .70f, .40f, .14f, 2.7f, 0}, // Yeah: honey marimba
         {3, .080f, Chrome, Accent, .74f, .62f, 1.8f, .23f, 2}, // Countdown: indigo pipes
     };
     return designs[motif >= 0 && motif < 8 ? motif : 1];
 }
 
-inline int keyInstrument(const KeyDesign& design, bool accented) {
-    if (design.instrument == 3) return accented ? 3 : 2;
-    if (design.instrument == 4) return accented ? 4 : 0;
+inline int keyInstrument(const KeyDesign& design, bool /*accented*/) {
     return design.instrument;
 }
 
@@ -202,9 +200,9 @@ inline float keyCenterX(bool shortKey, float side) {
 
 inline float keyDepth(const KeyDesign& design, bool accented) {
     const int instrument = keyInstrument(design, accented);
-    return instrument == 1 ? (accented ? .088f : .075f) :
+    return instrument == 1 ? .082f :
            instrument == 2 ? .206f : instrument == 3 ? .18f :
-           instrument == 4 ? .10f : (accented ? .15f : .115f);
+           instrument == 4 ? .10f : .13f;
 }
 
 // A small bevel carries the broad studio light across every key edge. Separate
@@ -260,6 +258,14 @@ inline Mesh keyboardMesh(bool shortKey, float side, bool accented, const KeyDesi
         sculptedSlab(m,x,(back-.305f)*.5f,spacing*.40f,-.305f-back,
                      -.062f,.060f,.014f,Ebony);
     }
+    // A felt damper and a fine nickel lip give the tiny keyboard a real mechanism.
+    // Both stay behind/below the tangent, so the marble never hits decoration.
+    rod(m,{cx-width*.43f,.018f,back+.035f},{cx+width*.43f,.018f,back+.035f},.010f,Iron,8);
+    for(int k=0;k<keyCount;++k) {
+        const float x=cx+(k-(keyCount-1)*.5f)*spacing;
+        rod(m,{x-keyWidth*.34f,.003f,-.255f},{x+keyWidth*.34f,.003f,-.255f},.005f,Copper,6);
+    }
+    rod(m,{cx-width*.43f,depth*.60f,front-.017f},{cx+width*.43f,depth*.60f,front-.017f},.007f,Chrome,8);
     // Open nickel carrier: no solid black box beneath the ivory keyboard.
     const float railY=depth+.017f;
     for(float x : {cx-width*.36f,cx+width*.36f})
@@ -319,7 +325,7 @@ inline Mesh percussionTube(bool shortKey, float side) {
         for (float r : {inner,radius}) for (int i=0;i<sides;++i) {
             const float angle=i*2.f*Pi/sides;
             m.point({end ? b : a,cy+std::cos(angle)*r,std::sin(angle)*r},
-                    {end ? 1.f : -1.f,0,0},TubePaint);
+                    {end ? 1.f : -1.f,0,0},Chrome);
         }
         for (int i=0;i<sides;++i) m.quad(begin+i,begin+(i+1)%sides,begin+sides+(i+1)%sides,begin+sides+i);
     }
@@ -406,6 +412,11 @@ inline Mesh metalTongue(bool shortKey, float side) {
         end.push_back({cx+std::cos(a)*slot,-.001f,-.13f+std::sin(a)*.06f});
     }
     tube(m,end,.006f,Groove,6);
+    // Recessed fixing washers and an underside resonator mark the clamped end.
+    for(float x:{cx-width*.30f,cx+width*.30f}) {
+        rod(m,{x,.001f,back+.07f},{x,-.002f,back+.07f},.020f,Iron,10);
+        rod(m,{x,-.002f,back+.07f},{x,-.005f,back+.07f},.010f,Bolt,8);
+    }
     rod(m,{cx,.148f,back+.12f},{cx,.148f,front-.09f},.036f,Copper,12);
     for(auto& vertex:m.verts)
         vertex.detail=shortKey ? std::min(1.f,std::abs(vertex.p.x)/width) : 1.f;

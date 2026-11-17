@@ -237,8 +237,8 @@ internal class PlanarPath(chart: Chart, contactChart: Chart = chart.cascadeChart
         var runSteps = 0
         var spin = direction * entry.spin(1f) % 6.2831855f
         for ((i, note) in notes.withIndex()) {
-            // Instrument shapes follow musical accents, independently of whether
-            // a contact is scored. This never moves an onset or changes the route.
+            // Retain musical accent metadata independently of the song's instrument
+            // family. This never moves an onset or changes the route.
             val beatPosition = (note.atMs - notes.first().atMs) / beat
             val nearestBeat = kotlin.math.round(beatPosition)
             val accent = note.playable && abs(beatPosition - nearestBeat) <= .075 &&
@@ -303,9 +303,9 @@ internal class PlanarPath(chart: Chart, contactChart: Chart = chart.cascadeChart
             } else carriedSpeed
             val energy = incomingX * incomingX + incomingY * incomingY
             // Reversing vx costs at least 2 * |vx| / MaxKeySlope in vertical velocity.
-            // Gravity can restore g*t before the next impact. Respect that limit in a
-            // roll to keep the sphere descending clear of even a long row of sixteenths.
-            val returnLimit = if (inBurst) .5 * MaxKeySlope * CascadeGravity * seconds else reachSpeed
+            // Gravity can restore g*t before the next impact. Respect that budget at
+            // every reversal: fast eighths need the same clearance as sixteenth rolls.
+            val returnLimit = if (inBurst || turn) .5 * MaxKeySlope * CascadeGravity * seconds else reachSpeed
             val speed = minOf(reachSpeed, returnLimit, .94 * sqrt(energy))
             var panel = PlanarPanel(direction > 0, center.y + MarbleRadius, i, i)
             val slope: Double

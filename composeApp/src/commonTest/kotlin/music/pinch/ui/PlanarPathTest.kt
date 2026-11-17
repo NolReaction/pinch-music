@@ -6,6 +6,7 @@ import kotlin.math.sqrt
 import kotlin.math.sign
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToLong
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -79,9 +80,15 @@ class PlanarPathTest {
         val roll = Chart("Sixteenths", 130, 3600, (0..20).map { i ->
             Note("r$i", if (i == 0) 0L else 460L + (i - 1) * 115L, 64 + i % 2, 85L, .9f)
         }, authoredLandings = true)
-        assertCourseClear(roll, roll.title)
+        // At a fast tempo, repeated eighths also reverse before gravity has
+        // restored the previous bounce's momentum. Keep full-size bodies apart.
+        val eighths = Chart("Fast eighths", 170, 9000, (0..40).map { i ->
+            Note("e$i", if (i == 0) 0L else 529L + ((i - 1) * 60000.0 / 340).roundToLong(),
+                60 + (i / 8) % 2, 90L, .9f)
+        }, authoredLandings = true)
+        for (chart in listOf(roll, eighths)) assertCourseClear(chart, chart.title)
         val scores = songLibrary.filter { it.backingAsset != null }.map { requireNotNull(it.bundled) }
-        for (chart in scores + roll) {
+        for (chart in scores + listOf(roll, eighths)) {
             val path = PlanarPath(chart)
             val bodies = path.panels.mapIndexed { i, panel ->
                 val dx = 1f / hypot(1f, panel.slope)

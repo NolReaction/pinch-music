@@ -5,7 +5,6 @@ import kotlin.math.ceil
 import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.round
 import kotlin.math.sin
 import kotlin.math.sqrt
 import music.pinch.core.Chart
@@ -188,7 +187,7 @@ internal data class MarbleFrame(
 
 /** An absolute media timestamp indexes both the sounding attack and this exact contact.
  * Coincident pitches share one physical bar. Their manual accent survives either note order. */
-internal class MarblePath(chart: Chart) {
+internal class MarblePath(chart: Chart, panelShape: PanelShape = PanelShape.WoodBar) {
     private val attacks = chart.notes.groupBy { it.atMs }.values.map { chord ->
         chord.firstOrNull { it.playable } ?: chord.first()
     }
@@ -266,11 +265,6 @@ internal class MarblePath(chart: Chart) {
             integratedX[i] = integratedX[i - 1] + (times[i] - times[i - 1]) * (previous.x + next.x).toDouble() / 2
         }
         spans = sections
-        val gaps = attacks.zipWithNext { a, b -> (b.atMs - a.atMs).toDouble() }.sorted()
-        val usualStep = gaps.getOrNull(gaps.size/2) ?: beatMs
-        val sustainedMs = max(.75*beatMs, .88*usualStep)
-        val longGapMs = max(1.25*beatMs, 1.40*usualStep)
-        val firstAttack = attacks.first().atMs
         keys = attacks.mapIndexed { i, note ->
             val outgoing = spans[i + 1]
             val angle = angles[i + 1]
@@ -282,17 +276,9 @@ internal class MarblePath(chart: Chart) {
             val normal = if (outgoing.railEnd > 0f) (outgoing.railNormal(0f) + direction * .18f).unit()
                 else StagePoint(.10f * sin(angle).toFloat(), -1f, .16f * cos(angle).toFloat()).unit()
             val outward = StagePoint(-direction.z, 0f, direction.x).unit()
-            // Sustains ring on a fork. Beat-aligned strikes get a skin; the smaller
-            // wood bars keep the intervening subdivisions legible in a fast run.
-            val beat = (note.atMs - firstAttack) / beatMs
-            val nearestBeat = round(beat)
-            val downbeat = nearestBeat.toLong() % 4L == 0L
-            val shape = when {
-                note.durationMs >= sustainedMs || outgoing.durationMs >= longGapMs -> PanelShape.Fork
-                abs(beat-nearestBeat) <= .075 && (downbeat || note.durationMs < .67*beatMs) -> PanelShape.Drum
-                else -> PanelShape.WoodBar
-            }
-            StageKey(note.atMs, note.midi, shape, centers[i + 1], normal, outward,
+            // Timbre is a property of the song. Fast notes may use a shorter
+            // version of its instrument, but never swap into another family.
+            StageKey(note.atMs, note.midi, panelShape, centers[i + 1], normal, outward,
                 min(spans[i].durationMs, outgoing.durationMs))
         }
     }

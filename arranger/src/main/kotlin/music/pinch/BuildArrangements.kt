@@ -86,8 +86,14 @@ fun main(args: Array<String>) {
     val levels = renderGenerated("levels", output, scratch, codec) { wav ->
         writeDanceMaster(wav, requireNotNull(levelsSong.bundled), DanceStyle.Levels)
     }
+    val stay = renderGenerated("stay", output, scratch, codec) { wav ->
+        writeStayMaster(wav, requireNotNull(staySong.bundled))
+    }
+    val turnDown = renderGenerated("turn-down-for-what", output, scratch, codec) { wav ->
+        writeTurnDownMaster(wav, requireNotNull(turnDownForWhatSong.bundled))
+    }
     writeLaunchSound(assets.resolve("launch.wav"))
-    val current = setOf(stereoLove, floor, gypsy, levels)
+    val current = setOf(stereoLove, floor, gypsy, levels, stay, turnDown)
     output.listFiles().orEmpty().filter { it.isFile && it !in current }.forEach { Files.delete(it.toPath()) }
     // Upgrading a checkout with old generated previews must also retire its artifacts.
     val previews = assets.resolve("arrangements")

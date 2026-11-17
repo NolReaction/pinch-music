@@ -20,7 +20,15 @@ varying mediump vec2 vMat;
 varying mediump vec2 vFace;
 void main(){
     mat2 turn=mat2(uTilt.x,uTilt.y,-uTilt.y,uTilt.x);
-    vPos=vec3(turn*(aPos.xy+vec2(0.,uKey.w*aMat.y)),aPos.z)+uOffset;
+    // A tiny damped flex lives at the far end of wooden/metal resonators.
+    // It is zero at the sphere tangent and only moves away from the sphere.
+    float flex=0.;
+    if(uKey.x>0. && ((aMat.x>13.5 && aMat.x<14.5) || (aMat.x>19.5 && aMat.x<20.5))) {
+        float phase=1.-sqrt(uKey.x);
+        flex=(1.-cos(phase*18.))*uKey.x*.0035*
+            smoothstep(.18,.48,abs(aPos.z))*aMat.y;
+    }
+    vPos=vec3(turn*(aPos.xy+vec2(0.,uKey.w*aMat.y+flex)),aPos.z)+uOffset;
     vec3 d=vPos-eye;
     float z=dot(d,forward);
     gl_Position=vec4(dot(d,right)*uLens.x,dot(d,up)*uLens.y,
@@ -138,12 +146,14 @@ void main(){
         col=mix(col,mix(uAccent,col,.67),preview*top*.63);
         // A single pressure wave expands from the tangent point on the playing face.
         // Its light decays independently of the mechanical return and score.
-        float arrival=abs(length(vFace)-.96*(1.-impact));
-        float wave=1.-smoothstep(.035,.15,arrival);
-        float release=impact*impact;
-        float flash=impact*(.70+.21*top)+.14*release*wave;
-        col=mix(col,accent*(.38+.48*top+.14*nl)+env*.075,min(1.,flash));
-        col+=vec3(.37,.29,.18)*release*wave*top;
+        if(impact>0.) {
+            float arrival=abs(length(vFace)-.96*(1.-impact));
+            float wave=1.-smoothstep(.035,.15,arrival);
+            float release=impact*impact;
+            float flash=impact*(.70+.21*top)+.14*release*wave;
+            col=mix(col,accent*(.38+.48*top+.14*nl)+env*.075,min(1.,flash));
+            col+=vec3(.37,.29,.18)*release*wave*top;
+        }
     } else if(mat<2.5) {
         col=mix(mix(vec3(.060,.069,.075),accent,.27),accent,min(1.,impact+preview*.98));
     } else if(mat<3.5 || (mat>4.5 && mat<5.5) || (mat>6.5 && mat<7.5)) {
@@ -167,7 +177,8 @@ void main(){
         float ambient=.83+.14*max(0.,-n.y)+.08*nl;
         float fres=.028+.16*edge;
         vec3 ivory=mix(vec3(.94,.92,.86),uPaint,.90);
-        col=ivory*ambient*(1.-fres)+env*fres+vec3(.085*sheen);
+        float satin=texture2D(uGrain,vFace*vec2(.15,2.0)+vec2(.37,.12)).r-.5;
+        col=ivory*ambient*(1.-fres)+env*fres+vec3(.085*sheen+.014*satin);
     } else if(mat<13.5) {
         // Softer satin ebony shows its sculpted edges without chrome-like glitter.
         float sheen=pow(max(0.,dot(n,normalize(L+v))),34.);
@@ -194,17 +205,21 @@ void main(){
         float rings=.5+.5*sin(length(vFace)*91.);
         vec3 skin=mix(uPaint,vec3(.18,.22,.30),.27);
         col=skin*(.78+.32*nl)+env*(.035+.09*edge)+vec3(.014*rings);
-        float wave=1.-smoothstep(.014,.052,abs(length(vFace)-.34*(1.-impact)));
-        col+=uAccent*wave*impact*.38;
+        if(impact>0.) {
+            float wave=1.-smoothstep(.014,.052,abs(length(vFace)-.34*(1.-impact)));
+            col+=uAccent*wave*impact*.38;
+        }
     } else if(mat<18.5) {
+        float groove=.5+.5*sin(vPos.y*175.);
         col=mix(vec3(.055,.065,.092),uPaint,.34)*(.72+.30*nl)+env*(.13+.22*edge);
+        col*=.97+.03*groove;
     } else if(mat<19.5) {
         // A narrow diffuser, restrained at rest and luminous only on contact.
         col=uAccent*(.44+.24*nl)+env*.08;
         col+=uAccent*impact*impact*.82;
     } else if(mat<20.5) {
         float brush=texture2D(uGrain,vFace*vec2(.18,2.4)).r-.5;
-        vec3 alloy=mix(vec3(.19,.44,.46),uAccent,.40);
+        vec3 alloy=mix(uPaint,uAccent,.22);
         col=alloy*(.62+.32*nl)+env*(.22+.20*edge)+vec3(.045*brush+.12*spec);
     } else {
         col=vec3(.025,.045,.051)+env*.035;
@@ -213,14 +228,23 @@ void main(){
         float distance=length(vPos.xz-uBall.xz);
         float ao=1.-.17*exp(-12.*distance*distance)*(1.-smoothstep(.22,.62,abs(vPos.y-uBall.y)));
         col*=ao;
-        // A narrow warm response leaves the instrument material visible.
-        float pulse=impact*impact;
-        col=mix(col,accent*(.66+.22*nl)+env*.10,pulse*.42+preview*.045);
+        // The strike travels across the material, then dies away with the
+        // resonator. A thin glint preserves its wood/metal finish under feedback.
+        if(impact>0. || preview>0.) {
+            float phase=1.-sqrt(max(0.,impact));
+            float wave=1.-smoothstep(.025,.105,abs(length(vFace*vec2(.88,1.16))-.94*phase));
+            float pulse=impact*impact;
+            col=mix(col,accent*(.66+.22*nl)+env*.10,pulse*.25+preview*.045);
+            col+=accent*wave*impact*.28;
+        }
     }
     // A judgement is attached to its scored cap only, even if the marble has moved on.
     if(mat<2.5 || (mat>5.5 && mat<6.5) || (mat>11.5 && mat<15.5) || (mat>16.5 && mat<20.5)) {
         vec3 result=uKey.y<0. ? vec3(1.,.286,.298) : vec3(.435,.945,.675);
-        col=mix(col, result*(.67+.27*max(0.,-n.y)) + env*.075, abs(uKey.y)*.96);
+        float marker=(mat>1.5 && mat<2.5) || (mat>5.5 && mat<6.5) || (mat>18.5 && mat<19.5) ? 1. : 0.;
+        float darkKey=mat>12.5 && mat<13.5 ? 1. : 0.;
+        float tint=uKey.y<0. ? mix(.72,.18,darkKey) : mix(mix(.28,.76,marker),.045,darkKey);
+        col=mix(col,result*(.67+.27*max(0.,-n.y))+env*.075,abs(uKey.y)*tint);
     }
     gl_FragColor=vec4(col,1.);
 }

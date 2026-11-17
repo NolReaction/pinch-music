@@ -156,8 +156,10 @@ private class PanelSides {
 internal class OrbitMaterials(val theme: StageTheme) {
     private val pigment = stageColor(theme.panel)
     private val light = stageColor(theme.light)
-    val ivoryBars = theme in setOf(StageTheme.Floor, StageTheme.Gypsy, StageTheme.Stay)
-    val wood = if (ivoryBars) Finish(lerp(pigment, Color(0xff766a58), .09f), lerp(pigment, light, .31f))
+    val ivoryBars = theme == StageTheme.Floor || theme == StageTheme.Gypsy
+    val tubes = theme.hasTubes
+    val wood = if (tubes) Finish(lerp(pigment, stageColor(theme.accent), .62f), lerp(stageColor(theme.accent), light, .38f))
+        else if (ivoryBars) Finish(lerp(pigment, Color(0xff766a58), .09f), lerp(pigment, light, .31f))
         else Finish(lerp(Color(0xffa17c55), pigment, .12f), Color(0xffdfc391))
     val drum = Finish(lerp(pigment, Color(0xff252d3e), .52f), lerp(pigment, light, .20f))
     val fork = Finish(lerp(pigment, Steel, .47f), lerp(stageColor(theme.accent), Silver, .39f))
@@ -206,6 +208,10 @@ private val Circle = Array(Corners) { i ->
     Offset(cos(angle), sin(angle))
 }
 
+private val TubeShade = IntArray(Corners) { i ->
+    ((.5f + .5f*sin((i+.5f)*2f*PI.toFloat()/Corners))*ShadeSteps).roundToInt()
+}
+
 internal class Bar(val key: StageKey, index: Int, private val materials: OrbitMaterials) {
     val finish = when (key.shape) {
         PanelShape.WoodBar -> materials.wood
@@ -215,7 +221,7 @@ internal class Bar(val key: StageKey, index: Int, private val materials: OrbitMa
     private val length = key.halfLength
     private val width = key.halfWidth
     val thickness = when (key.shape) {
-        PanelShape.WoodBar -> if (materials.ivoryBars) .070f else .090f
+        PanelShape.WoodBar -> if (materials.tubes) .17f else if (materials.ivoryBars) .070f else .090f
         PanelShape.Drum -> .13f
         PanelShape.Fork -> .070f
     }
@@ -261,7 +267,7 @@ internal class Bar(val key: StageKey, index: Int, private val materials: OrbitMa
     val skin = if (key.shape == PanelShape.Drum) ring(length*.79f, width*.79f) else emptyArray()
     // Fine curved fibers follow the long axis. These world-space paths are
     // prepared with the bar, so neither the grain nor its phase swims on camera moves.
-    val woodGrain = if (key.shape == PanelShape.WoodBar && !materials.ivoryBars) Array(5) { row ->
+    val woodGrain = if (key.shape == PanelShape.WoodBar && !materials.ivoryBars && !materials.tubes) Array(5) { row ->
         Array(12) { sample ->
             val t = sample / 11f
             val x = length * (-.80f + 1.60f * t)
@@ -269,6 +275,23 @@ internal class Bar(val key: StageKey, index: Int, private val materials: OrbitMa
             key.point(x, 0f, z)
         }
     } else emptyArray()
+    // The hollow resonator is a real cylinder within the same conservative
+    // key bounds. Four cached rings hold outer/inner points at its two ends.
+    val tubeRings = if (materials.tubes) Array(4*Corners) { n ->
+        val ring = n/Corners
+        val angle = n%Corners * (2f*PI.toFloat()/Corners)
+        val radius = if (ring < 2) .085f else .068f
+        key.point(if (ring%2 == 0) -length else length,
+            .085f + cos(angle)*radius, sin(angle)*radius)
+    } else emptyArray()
+    val keyDivisions = if (materials.ivoryBars) Array(if (materials.theme == StageTheme.Gypsy) 1 else 2) { i ->
+        val count = if (materials.theme == StageTheme.Gypsy) 2 else 3
+        val x = length * (-1f + 2f*(i+1)/count)
+        arrayOf(key.point(x,0f,-width*.82f), key.point(x,0f,width*.82f))
+    } else emptyArray()
+    val lip = if (materials.ivoryBars) arrayOf(key.point(-length*.88f,thickness*.38f,width*.94f),
+        key.point(length*.88f,thickness*.38f,width*.94f)) else emptyArray()
+    val faceRing = ring(length*.85f, width*.85f)
     val depthAxis = key.point(0f,0f,1f) - key.center
     val shading = IntArray(Corners) { i ->
         val a = mesh[i+Corners]
@@ -283,7 +306,7 @@ internal class Bar(val key: StageKey, index: Int, private val materials: OrbitMa
     val pins = when (key.shape) {
         PanelShape.Fork -> arrayOf(key.point(-length*.72f, 0f, 0f))
         PanelShape.Drum -> emptyArray()
-        PanelShape.WoodBar -> if (materials.ivoryBars) emptyArray()
+        PanelShape.WoodBar -> if (materials.ivoryBars || materials.tubes) emptyArray()
             else arrayOf(key.point(-length*.64f, 0f, 0f), key.point(length*.64f, 0f, 0f))
     }
     private val mountSpacing = length * if (key.shape == PanelShape.Fork) .19f else .43f
@@ -427,6 +450,10 @@ internal class MarbleScene(private val meshes: OrbitMeshes, private val marbleAt
         result: PanelFeedback?, timeMs: Long, marble: StagePoint,
     ) {
         val unit = camera.unit(bar.key.center)
+        if (bar.tubeRings.isNotEmpty()) {
+            tubeBar(bar, camera, age, light, incoming, result, timeMs)
+            return
+        }
         // The fork flexes at its far tips. Its solid heel, the actual contact
         // point and the mounting hardware remain fixed on the rail plane.
         val flex = if (bar.key.shape == PanelShape.Fork && age in 1..360) {
@@ -514,7 +541,7 @@ internal class MarbleScene(private val meshes: OrbitMeshes, private val marbleAt
                 val progress = age/260f
                 val center = camera.project(bar.key.center)
                 scale(.10f+.88f*progress, center) {
-                    drawPath(detail, PinLight, alpha=.78f*(1f-progress), style=Stroke(unit*.023f))
+                    drawPath(detail, accent, alpha=.78f*(1f-progress), style=Stroke(unit*.023f))
                 }
             }
         }
@@ -528,6 +555,25 @@ internal class MarbleScene(private val meshes: OrbitMeshes, private val marbleAt
                 drawPath(detail, if (row % 3 == 0) PinLight else PinShade,
                     alpha = if (row % 3 == 0) .20f else .17f,
                     style = Stroke(unit * .006f, cap = StrokeCap.Round))
+            }
+        }
+
+        for (line in bar.keyDivisions) {
+            drawLine(PinShade, camera.project(line[0]), camera.project(line[1]),
+                unit*.008f, StrokeCap.Round, alpha=.47f)
+        }
+        if (bar.lip.isNotEmpty()) drawLine(meshes.materials.trim,
+            camera.project(bar.lip[0]), camera.project(bar.lip[1]), unit*.010f, StrokeCap.Round, alpha=.75f)
+        if (age in 1..300 && bar.skin.isEmpty()) {
+            // One expanding glint, clipped by the actual playing face.
+            val progress = age/300f
+            val contact = camera.project(bar.key.center)
+            detailLoop(bar.faceRing, camera)
+            clipPath(outline) {
+                scale(.12f + .95f*progress, contact) {
+                    drawPath(detail, accent, alpha=.52f*(1f-progress)*(1f-progress),
+                        style=Stroke(unit*.018f))
+                }
             }
         }
 
@@ -559,11 +605,65 @@ internal class MarbleScene(private val meshes: OrbitMeshes, private val marbleAt
         }
     }
 
+    private fun DrawScope.tubeBar(
+        bar: Bar, camera: Camera, age: Long, light: Float, incoming: Float,
+        result: PanelFeedback?, timeMs: Long,
+    ) {
+        val unit = camera.unit(bar.key.center)
+        for (i in bar.tubeRings.indices) {
+            val p = camera.project(bar.tubeRings[i])
+            projectedX[i] = p.x
+            projectedY[i] = p.y
+        }
+        if (projectedX.all { it < -unit } || projectedX.all { it > size.width+unit } ||
+            projectedY.all { it < -unit } || projectedY.all { it > size.height+unit }) return
+        val step = (light*LightSteps).roundToInt().coerceIn(0,LightSteps)
+        val response = result?.let { feedbackStrength(timeMs-it.shownAtMs)*(if (it.hit) .28f else .66f) } ?: 0f
+        val responseColor = if (result?.hit == false) MissColor else HitColor
+        for (i in 0 until Corners) {
+            val next = (i+1)%Corners
+            val a=i; val b=i+Corners; val c=next+Corners; val d=next
+            val winding=(projectedX[b]-projectedX[a])*(projectedY[d]-projectedY[a])-
+                (projectedY[b]-projectedY[a])*(projectedX[d]-projectedX[a])
+            if (winding >= 0f) continue
+            outline.rewind()
+            outline.moveTo(projectedX[a],projectedY[a]); outline.lineTo(projectedX[b],projectedY[b])
+            outline.lineTo(projectedX[c],projectedY[c]); outline.lineTo(projectedX[d],projectedY[d]); outline.close()
+            val shade=TubeShade[i]
+            val shadeIndex=(step*(ShadeSteps+1)+shade)*3
+            val color=bar.finish.sides[shadeIndex]
+            if (sides != null) {
+                val argb=if (response > 0f) lerp(color,responseColor,response).toArgb() else bar.finish.sideArgb[shadeIndex]
+                sides.add(projectedX,projectedY,a,b,c,d,argb)
+            } else drawPath(outline,if (response > 0f) lerp(color,responseColor,response) else color)
+        }
+        sides?.draw(this)
+        // The nearer annular cap reveals its dark bore; the far opening is occluded.
+        val near = if (camera.depth(bar.tubeRings[0]) > camera.depth(bar.tubeRings[Corners])) 0 else 1
+        fun cap(ring: Int) {
+            val start=ring*Corners
+            detail.rewind(); detail.moveTo(projectedX[start],projectedY[start])
+            for (i in 1 until Corners) detail.lineTo(projectedX[start+i],projectedY[start+i])
+            detail.close()
+        }
+        cap(near)
+        drawPath(detail,meshes.materials.trim)
+        drawPath(detail,PinLight,alpha=.70f,style=Stroke(unit*.008f))
+        cap(near+2)
+        drawPath(detail,PinShade)
+        if (age in 1..280 || incoming > 0f) {
+            val strength = if (age in 1..280) (1f-age/280f) else incoming*.28f
+            val a=camera.project(bar.key.point(-bar.key.halfLength*.90f,0f,0f))
+            val b=camera.project(bar.key.point(bar.key.halfLength*.90f,0f,0f))
+            drawLine(accent,a,b,unit*.016f,StrokeCap.Round,alpha=strength*.75f)
+        }
+    }
+
     private fun DrawScope.mark(result: PanelFeedback, timeMs: Long, unit: Float) {
         val intensity = feedbackStrength(timeMs - result.shownAtMs)
         if (intensity <= 0f) return
         val color = if (result.hit) HitColor else MissColor
-        drawPath(outline, color, alpha = .38f * intensity)
+        drawPath(outline, color, alpha = (if (result.hit) .25f else .48f) * intensity)
         drawPath(outline, color, alpha = intensity, style = Stroke(unit * .041f))
     }
 

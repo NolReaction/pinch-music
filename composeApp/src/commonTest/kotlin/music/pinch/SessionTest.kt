@@ -146,6 +146,28 @@ class SessionTest {
         assertTrue(host.referenceFiles.keys.isEmpty())
     }
 
+    @Test fun newSongsOpenTheSameFullMasterForPlayAndListenInBothScenes() {
+        for (id in listOf("stay", "turn-down-for-what")) {
+            val track = songLibrary.single { it.id == id }
+            for (mode in StageMode.entries) for (preview in listOf(false, true)) {
+                val host = Host()
+                val run = session(host, songLibrary)
+                assertEquals(6, run.state.availableIds.size)
+                run.selectSong(id)
+                run.selectStageMode(mode)
+                assertTrue(run.state.canPlay, "$id must be available from the catalogue")
+                run.start(preview)
+                run.readyToPlay(host.player)
+                assertEquals("backing/$id.m4a", host.player.backing)
+                assertNull(host.player.generated)
+                assertTrue(host.player.prepared.isEmpty())
+                assertEquals(track.bundledDurationMs, run.state.durationMs)
+                assertEquals(requireNotNull(track.bundled).notes, requireNotNull(run.state.chart).notes)
+                run.dispose()
+            }
+        }
+    }
+
     @Test fun aPartialRunKeepsItsHitsThroughPauseAndProcessRecreation() {
         val host = Host()
         host.values["record.landings.v1.Orbit.test.bundled"] = "65000"

@@ -27,7 +27,7 @@ class MarblePathTest {
     @Test fun everyFullArrangementHasOneTangentContactAtEachWrittenLanding() {
         for (song in songLibrary.filter { it.backingAsset != null }) {
             val score = requireNotNull(song.bundled).cascadeChart()
-            val path = MarblePath(score)
+            val path = MarblePath(score, stageTheme(song.id).orbitShape)
             assertEquals(score.notes.map { it.atMs }.distinct(), path.keys.map { it.atMs })
             for ((i, key) in path.keys.withIndex()) {
                 val frame = path.frame(key.atMs)
@@ -41,7 +41,7 @@ class MarblePathTest {
         }
     }
 
-    @Test fun instrumentAssignmentsFollowMusicalTimeAcrossTempos() {
+    @Test fun oneInstrumentFamilySurvivesFastStrikesSustainsAndTempoChanges() {
         for (bpm in listOf(100, 200)) {
             val beat = 60_000L / bpm
             val onsets = listOf(0L, beat, beat*3/2, beat*2, beat*3, beat*7/2)
@@ -49,18 +49,27 @@ class MarblePathTest {
             val score = Chart("Тема", bpm, intro+beat*4, onsets.mapIndexed { i, onset ->
                 Note("hit-$i", intro+onset, 60+i, if (i == 3) beat*4/5 else beat/4, .9f)
             })
-            val keys = MarblePath(score).keys
-            assertEquals(listOf(PanelShape.Drum, PanelShape.Drum, PanelShape.WoodBar, PanelShape.Fork,
-                PanelShape.Drum, PanelShape.WoodBar), keys.map { it.shape })
-            for (drum in keys.filter { it.shape == PanelShape.Drum }) assertEquals(drum.halfLength, drum.halfWidth)
+            val reference = MarblePath(score)
+            for (shape in PanelShape.entries) {
+                val path = MarblePath(score, shape)
+                assertEquals(setOf(shape), path.keys.map { it.shape }.toSet())
+                assertEquals(onsets.map { intro+it }, path.keys.map { it.atMs })
+                for (time in intro..score.durationMs step 37) near(reference.frame(time).marble, path.frame(time).marble)
+                if (shape == PanelShape.Drum) for (key in path.keys) assertEquals(key.halfLength, key.halfWidth)
+            }
         }
     }
 
-    @Test fun everyBundledArrangementIncludesFastStrikesBeatPadsAndSustains() {
+    @Test fun everyBundledArrangementKeepsItsOwnFamilyAcrossTheWholeOrbit() {
         for (song in songLibrary) {
-            val keys = MarblePath(requireNotNull(song.bundled)).keys
-            assertEquals(PanelShape.entries.toSet(), keys.map { it.shape }.toSet(), song.title)
+            val shape = stageTheme(song.id).orbitShape
+            val keys = MarblePath(requireNotNull(song.bundled), shape).keys
+            assertEquals(setOf(shape), keys.map { it.shape }.toSet(), song.title)
         }
+        assertEquals(PanelShape.Drum, StageTheme.TurnDown.orbitShape)
+        assertEquals(PanelShape.Fork, StageTheme.Stay.orbitShape)
+        assertTrue(StageTheme.Levels.hasTubes)
+        assertTrue(!StageTheme.Stereo.hasTubes)
     }
 
     @Test fun fullArrangementsLeadThroughClockwiseAndCounterclockwisePhrases() {
@@ -154,8 +163,8 @@ class MarblePathTest {
     @Test fun bundledCoursesHaveNoEarlyPanelIntersectionsDuringFlight() {
         for (song in songLibrary) {
             val score = requireNotNull(song.bundled)
-            checkPanelClearance(MarblePath(score))
-            checkPanelClearance(MarblePath(score.cascadeChart()))
+            checkPanelClearance(MarblePath(score, stageTheme(song.id).orbitShape))
+            checkPanelClearance(MarblePath(score.cascadeChart(), stageTheme(song.id).orbitShape))
         }
     }
 
