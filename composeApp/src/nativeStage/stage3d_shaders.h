@@ -78,27 +78,35 @@ void main(){
         float facing=max(0.,dot(n,v));
         vec3 ray=refract(-v,n,1./1.52);
         float approach=dot(n,ray);
-        float discriminant=approach*approach-(1.-.52*.52);
+        float discriminant=approach*approach-(1.-.62*.62);
         float entry=-approach-sqrt(max(0.,discriminant));
         vec3 inner=n+entry*ray;
-        vec3 bn=vec3(inner.x*uSpin.x+inner.y*uSpin.y,-inner.x*uSpin.y+inner.y*uSpin.x,inner.z);
+        // A true rotation around an oblique axle carries inclusions through the
+        // front and rear volume. The reflection remains fixed in world space.
+        // Rodrigues is periodic in the existing roll angle, so seek, pause and
+        // opposite travel directions retain the path's continuous orientation.
+        const vec3 axle=vec3(.48,.64,.60);
+        vec3 bn=inner*uSpin.x-cross(axle,inner)*uSpin.y+
+            axle*dot(axle,inner)*(1.-uSpin.x);
         float coreMask=smoothstep(-.015,.028,discriminant);
-        vec3 transmission=mix(uRoom,vec3(.64,.78,.81),.17);
+        vec3 transmission=mix(uRoom,vec3(.24,.45,.56),.44);
         transmission*=.94+.06*smoothstep(-.85,.65,-ray.y);
         float twist=bn.x+.24*sin(4.3*bn.y+3.0*bn.z);
-        float ribbon=(1.-smoothstep(.060,.115,abs(twist)))*coreMask;
-        float folded=(1.-smoothstep(.045,.095,abs(twist+.27-.16*bn.y)))*coreMask;
+        float ribbon=(1.-smoothstep(.085,.165,abs(twist)))*coreMask;
+        float folded=(1.-smoothstep(.060,.125,abs(twist+.27-.16*bn.y)))*coreMask;
         float seam=bn.y-.19*sin(4.8*bn.z-2.0*bn.x)-.13;
-        float gold=(1.-smoothstep(.035,.075,abs(seam)))*smoothstep(-.40,.15,bn.x)*coreMask;
-        vec3 cobalt=mix(vec3(.032,.22,.54),vec3(.035,.61,.54),smoothstep(-.42,.46,bn.y));
-        vec3 body=mix(transmission,cobalt,ribbon*.93);
-        body=mix(body,vec3(.26,.16,.49),folded*.80);
+        float gold=(1.-smoothstep(.045,.095,abs(seam)))*smoothstep(-.40,.15,bn.x)*coreMask;
+        vec3 cobalt=mix(vec3(.032,.24,.54),vec3(.035,.59,.55),smoothstep(-.42,.46,bn.y));
+        vec3 core=mix(vec3(.055,.19,.36),vec3(.045,.41,.43),smoothstep(-.48,.48,bn.y));
+        vec3 body=mix(transmission,core,coreMask*.64);
+        body=mix(body,cobalt,ribbon*.93);
+        body=mix(body,vec3(.29,.13,.49),folded*.83);
         body=mix(body,vec3(.93,.62,.16),gold*.90);
         // A faint thickness line follows the internal ribbon, not the sphere rim.
-        float edgeLine=(1.-smoothstep(.008,.023,abs(abs(twist)-.062)))*coreMask;
+        float edgeLine=(1.-smoothstep(.010,.029,abs(abs(twist)-.087)))*coreMask;
         body=mix(body,vec3(.43,.77,.73),edgeLine*.27);
         float fres=.042+.958*pow(1.-facing,5.);
-        body=mix(body,vec3(.55,.70,.73),pow(1.-facing,2.)*.15);
+        body=mix(body,vec3(.17,.32,.39),pow(1.-facing,2.)*.23);
         vec3 color=mix(body,studio(r),fres*.86);
         float softbox=strip(r.x+.43+.15*r.y,.18,.08)*strip(r.y+.25,.35,.12)*smoothstep(-.20,.40,r.z);
         color=mix(color,vec3(.99,.99,.96),softbox*(.15+.55*fres));
@@ -106,9 +114,9 @@ void main(){
         color+=vec3(.70,.72,.70)*highlight;
         float caustic=pow(max(0.,dot(n,normalize(vec3(-.30,.63,.72)))),14.);
         color+=vec3(.075,.13,.13)*caustic*(1.-coreMask*.5);
-        float coreOpacity=max(ribbon*.95,max(folded*.86,gold*.95));
+        float coreOpacity=max(coreMask*.80,max(ribbon*.95,max(folded*.90,gold*.95)));
         float shellOpacity=max(fres,max(softbox*.55,highlight*.80));
-        float opacity=.34+.66*max(coreOpacity,shellOpacity);
+        float opacity=.60+.40*max(coreOpacity,shellOpacity);
         gl_FragColor=vec4(color,opacity); return;
     }
     vec3 env=studio(r);
@@ -120,7 +128,7 @@ void main(){
     vec3 col;
     if(mat<1.5) {
         float top=1.-step(.5,mat);
-        float ao=1.-.38*exp(-17.*dot(vPos.xz-uBall.xz,vPos.xz-uBall.xz))*
+        float ao=1.-.20*exp(-11.*dot(vPos.xz-uBall.xz,vPos.xz-uBall.xz))*
                      (1.-smoothstep(.22,.64,abs(vPos.y-uBall.y)));
         float brush=texture2D(uGrain,vFace*uFinish.zw+vec2(.23,.31)).r-.5;
         vec3 alloy=mix(vec3(.62,.64,.64),uPaint,uFinish.x);
@@ -152,13 +160,13 @@ void main(){
     } else if(mat<11.5) {
         col=vec3(.22,.085,.037)+env*vec3(.75,.38,.20)+vec3(.34,.18,.093)*spec;
     } else if(mat<12.5) {
-        // Ceramic-like ivory: bright broad faces, a satin highlight and just
-        // enough Fresnel reflection for a curved lip to read at phone size.
+        // Pigmented satin keys keep their own colour against a light wall.
+        // The broad sheen still describes the rounded lip without bleaching it.
         vec3 halfVector=normalize(L+v);
         float sheen=pow(max(0.,dot(n,halfVector)),42.);
         float ambient=.83+.14*max(0.,-n.y)+.08*nl;
         float fres=.028+.16*edge;
-        vec3 ivory=mix(vec3(.97,.968,.942),uPaint,.14);
+        vec3 ivory=mix(vec3(.94,.92,.86),uPaint,.90);
         col=ivory*ambient*(1.-fres)+env*fres+vec3(.085*sheen);
     } else if(mat<13.5) {
         // Softer satin ebony shows its sculpted edges without chrome-like glitter.
@@ -178,19 +186,39 @@ void main(){
         vec3 plastic=mix(vec3(.22,.12,.70),uAccent,.72);
         float sheen=pow(max(0.,dot(n,normalize(L+v))),42.);
         col=plastic*(.62+.32*nl)+env*(.055+.20*edge)+vec3(.20,.22,.25)*sheen;
-    } else {
+    } else if(mat<16.5) {
         col=mix(vec3(.031,.020,.074),uAccent*.11,.52)*(.67+.30*nl)+env*.025;
+    } else if(mat<17.5) {
+        // A matte tuned skin has a shallow circular grain and a travelling
+        // light ripple. It remains opaque and readable between accents.
+        float rings=.5+.5*sin(length(vFace)*91.);
+        vec3 skin=mix(uPaint,vec3(.18,.22,.30),.27);
+        col=skin*(.78+.32*nl)+env*(.035+.09*edge)+vec3(.014*rings);
+        float wave=1.-smoothstep(.014,.052,abs(length(vFace)-.34*(1.-impact)));
+        col+=uAccent*wave*impact*.38;
+    } else if(mat<18.5) {
+        col=mix(vec3(.055,.065,.092),uPaint,.34)*(.72+.30*nl)+env*(.13+.22*edge);
+    } else if(mat<19.5) {
+        // A narrow diffuser, restrained at rest and luminous only on contact.
+        col=uAccent*(.44+.24*nl)+env*.08;
+        col+=uAccent*impact*impact*.82;
+    } else if(mat<20.5) {
+        float brush=texture2D(uGrain,vFace*vec2(.18,2.4)).r-.5;
+        vec3 alloy=mix(vec3(.19,.44,.46),uAccent,.40);
+        col=alloy*(.62+.32*nl)+env*(.22+.20*edge)+vec3(.045*brush+.12*spec);
+    } else {
+        col=vec3(.025,.045,.051)+env*.035;
     }
-    if(mat>11.5 && mat<15.5) {
+    if((mat>11.5 && mat<15.5) || (mat>16.5 && mat<17.5) || (mat>19.5 && mat<20.5)) {
         float distance=length(vPos.xz-uBall.xz);
-        float ao=1.-.30*exp(-19.*distance*distance)*(1.-smoothstep(.22,.62,abs(vPos.y-uBall.y)));
+        float ao=1.-.17*exp(-12.*distance*distance)*(1.-smoothstep(.22,.62,abs(vPos.y-uBall.y)));
         col*=ao;
         // A narrow warm response leaves the instrument material visible.
         float pulse=impact*impact;
         col=mix(col,accent*(.66+.22*nl)+env*.10,pulse*.42+preview*.045);
     }
     // A judgement is attached to its scored cap only, even if the marble has moved on.
-    if(mat<2.5 || (mat>5.5 && mat<6.5) || (mat>11.5 && mat<15.5)) {
+    if(mat<2.5 || (mat>5.5 && mat<6.5) || (mat>11.5 && mat<15.5) || (mat>16.5 && mat<20.5)) {
         vec3 result=uKey.y<0. ? vec3(1.,.286,.298) : vec3(.435,.945,.675);
         col=mix(col, result*(.67+.27*max(0.,-n.y)) + env*.075, abs(uKey.y)*.96);
     }

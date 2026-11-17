@@ -49,6 +49,7 @@ internal class DanceStudio(chart: Chart, private val style: DanceStyle) {
     private val left = FloatArray(length)
     private val right = FloatArray(length)
     private val kicks = FloatArray(length)
+    private val melodyPresence = if (style == DanceStyle.GypsyWoman) FloatArray(length) else FloatArray(0)
     private val sawTables = mutableMapOf<Int, FloatArray>()
 
     init {
@@ -61,14 +62,28 @@ internal class DanceStudio(chart: Chart, private val style: DanceStyle) {
                 level *= recovery
             }
         }
+        if (style == DanceStyle.GypsyWoman) {
+            val release = danceDecay(.090)
+            for (note in chart.notes.filter { gypsyTextureAt(it.atMs) != GypsyTexture.Organ }) {
+                val first = danceFrames(note.atMs)
+                val gate = first + danceFrames(note.durationMs)
+                var presence = 1f
+                for (i in first until min(length, gate + danceFrames(450))) {
+                    if (i >= gate) presence *= release
+                    melodyPresence[i] = maxOf(melodyPresence[i], presence * min(1f, (i - first) / 128f))
+                }
+            }
+        }
     }
 
-    private fun place(mono: FloatArray, start: Int, gain: Float, pan: Double = 0.0, duck: Float = 0f) {
+    private fun place(mono: FloatArray, start: Int, gain: Float, pan: Double = 0.0,
+        duck: Float = 0f, melodyDuck: Float = 0f) {
         val l = (cos((pan + 1) * PI / 4) * gain).toFloat()
         val r = (sin((pan + 1) * PI / 4) * gain).toFloat()
         for (i in 0 until min(mono.size, length - start)) {
             val frame = start + i
-            val value = mono[i] * (1f - duck * kicks[frame])
+            val space = if (melodyDuck > 0f) 1f - melodyDuck * melodyPresence[frame] else 1f
+            val value = mono[i] * (1f - duck * kicks[frame]) * space
             left[frame] += value * l
             right[frame] += value * r
         }
@@ -76,7 +91,7 @@ internal class DanceStudio(chart: Chart, private val style: DanceStyle) {
 
     fun leadSamples(note: Note): FloatArray = when (danceLeadVoice(style, note.atMs)) {
         DanceLeadVoice.OrganStab -> organ(note.midi, note.durationMs, note.atMs, note.velocity)
-        DanceLeadVoice.ElectricPiano -> studioElectricPiano(note.midi, note.durationMs, note.velocity)
+        DanceLeadVoice.ElectricPiano -> gypsyMelodicKeys(note)
         DanceLeadVoice.Mallet -> studioMallet(note.midi, note.durationMs, note.velocity)
         DanceLeadVoice.PluckedString -> studioPluckedString(note.midi, note.durationMs, note.velocity)
         DanceLeadVoice.Piano -> studioPiano(note.midi, note.durationMs, note.velocity)
@@ -87,12 +102,12 @@ internal class DanceStudio(chart: Chart, private val style: DanceStyle) {
         val start = danceFrames(note.atMs)
         val tone = leadSamples(note)
         if (style == DanceStyle.GypsyWoman) {
-            // The riff remains the foreground throughout. Material changes are
-            // deliberate eight-bar sections, always playing the same harmonic role.
+            // One continuous warm melodic voice carries verses and refrains;
+            // the organ riff sits behind it instead of replacing the melody.
             val gain = when (gypsyTextureAt(note.atMs)) {
                 GypsyTexture.Organ -> .54f
-                GypsyTexture.ElectricPiano -> .57f
-                GypsyTexture.Mallet -> .79f
+                GypsyTexture.ElectricPiano -> .62f
+                GypsyTexture.Mallet -> .83f
             } * note.velocity
             place(tone, start, gain, -.025, .10f)
             place(tone, start + danceFrames(29), gain * .070f, .58)
@@ -114,18 +129,17 @@ internal class DanceStudio(chart: Chart, private val style: DanceStyle) {
         when (note.voice) {
             BackingVoice.Keys -> {
                 val pan = ((note.midi - 60) / 34.0).coerceIn(-.50, .50)
-                val tone = if (style == DanceStyle.GypsyWoman) when (gypsyTextureAt(note.atMs)) {
-                    GypsyTexture.Organ -> organ(note.midi, note.durationMs, note.atMs, note.velocity)
-                    GypsyTexture.ElectricPiano, GypsyTexture.Mallet ->
-                        studioElectricPiano(note.midi, note.durationMs, note.velocity)
-                } else chordVoice(note.midi, note.durationMs)
+                val tone = if (style == DanceStyle.GypsyWoman)
+                    organ(note.midi, note.durationMs, note.atMs, note.velocity)
+                else chordVoice(note.midi, note.durationMs)
                 val gain = if (style == DanceStyle.GypsyWoman) when (gypsyTextureAt(note.atMs)) {
-                    GypsyTexture.ElectricPiano -> .31f
-                    GypsyTexture.Mallet -> .36f
+                    GypsyTexture.ElectricPiano -> .34f
+                    GypsyTexture.Mallet -> .28f
                     GypsyTexture.Organ -> .39f
                 } else .39f
-                place(tone, start, gain * note.velocity, pan, .10f)
-                place(tone, start + danceFrames(37), .022f * note.velocity, -pan, .10f)
+                val space = if (style == DanceStyle.GypsyWoman) .22f else 0f
+                place(tone, start, gain * note.velocity, pan, .10f, space)
+                place(tone, start + danceFrames(37), .022f * note.velocity, -pan, .10f, space)
             }
             BackingVoice.Pad -> {
                 val colour = if (style == DanceStyle.GypsyWoman) gypsyColourAt(note.atMs) else GypsyColour.Strings
@@ -162,6 +176,14 @@ internal class DanceStudio(chart: Chart, private val style: DanceStyle) {
     private fun chordVoice(midi: Int, durationMs: Long): FloatArray = when (style) {
         DanceStyle.GypsyWoman -> organ(midi, durationMs)
         DanceStyle.Levels -> levelsSynth(midi, durationMs)
+    }
+
+    private fun gypsyMelodicKeys(note: Note): FloatArray {
+        val tine = studioElectricPiano(note.midi, note.durationMs, note.velocity)
+        val wood = studioMallet(note.midi, note.durationMs, note.velocity)
+        // A small wooden strike distinguishes the melody from tonewheel chords;
+        // its body stays warm and sustained across the hook's octave descent.
+        return FloatArray(tine.size) { i -> .88f * tine[i] + if (i < wood.size) .18f * wood[i] else 0f }
     }
 
     private fun organ(midi: Int, durationMs: Long, atMs: Long = 0, velocity: Float = .8f): FloatArray {

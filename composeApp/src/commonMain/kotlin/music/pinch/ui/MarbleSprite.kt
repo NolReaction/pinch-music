@@ -20,9 +20,9 @@ import kotlin.math.roundToInt
 
 /** Use the same baked lighting and angular frames in each projection. */
 internal fun DrawScope.drawStudioMarble(atlas: ImageBitmap, center: Offset, radius: Float, angle: Float) {
-    // Match the 48 baked phases in tools/render_marble.py (7.5 degrees per tile).
-    val columns = 8
-    val rows = 6
+    // Match the 96 baked phases in tools/render_marble.py (3.75 degrees per tile).
+    val columns = 12
+    val rows = 8
     val turns = angle / (2f * PI.toFloat())
     val tile = floor((turns - floor(turns)) * (rows * columns)).toInt().coerceIn(0, rows * columns - 1)
     val width = atlas.width / columns

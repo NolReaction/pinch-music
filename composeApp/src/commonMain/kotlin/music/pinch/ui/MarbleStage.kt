@@ -66,6 +66,14 @@ private val ShadowFeather = Brush.radialGradient(listOf(
     WallShadow.copy(alpha=.31f), WallShadow.copy(alpha=.18f), WallShadow.copy(alpha=.045f),
     WallShadow.copy(alpha=0f)
 ), Offset.Zero, 1f)
+private val BallShadowFeather = Brush.radialGradient(listOf(
+    WallShadow.copy(alpha=.18f), WallShadow.copy(alpha=.085f), WallShadow.copy(alpha=.018f),
+    WallShadow.copy(alpha=0f)
+), Offset.Zero, 1f)
+private val BallContactFeather = Brush.radialGradient(listOf(
+    WallShadow.copy(alpha=.23f), WallShadow.copy(alpha=.13f), WallShadow.copy(alpha=.03f),
+    WallShadow.copy(alpha=0f)
+), Offset.Zero, 1f)
 
 private class Camera(size: Size, target: StagePoint) {
     private val ox = size.width * .50f
@@ -148,13 +156,13 @@ private class PanelSides {
 internal class OrbitMaterials(val theme: StageTheme) {
     private val pigment = stageColor(theme.panel)
     private val light = stageColor(theme.light)
-    val ivoryBars = theme in setOf(StageTheme.Floor, StageTheme.Stereo, StageTheme.Gypsy, StageTheme.Stay)
-    val wood = if (ivoryBars) Finish(Color(0xffeeeee6), Color(0xfffff7d9))
+    val ivoryBars = theme in setOf(StageTheme.Floor, StageTheme.Gypsy, StageTheme.Stay)
+    val wood = if (ivoryBars) Finish(lerp(pigment, Color(0xff766a58), .09f), lerp(pigment, light, .31f))
         else Finish(lerp(Color(0xffa17c55), pigment, .12f), Color(0xffdfc391))
-    val drum = Finish(lerp(pigment, Steel, .32f), lerp(pigment, light, .75f))
-    val fork = Finish(lerp(Silver, pigment, .13f), Color(0xfff7f8ed))
+    val drum = Finish(lerp(pigment, Color(0xff252d3e), .52f), lerp(pigment, light, .20f))
+    val fork = Finish(lerp(pigment, Steel, .47f), lerp(stageColor(theme.accent), Silver, .39f))
     val membrane = Array(LightSteps + 1) { i ->
-        lerp(lerp(pigment, light, .62f), light, i / LightSteps.toFloat())
+        lerp(lerp(pigment, Color(0xff31394a), .29f), lerp(pigment, light, .37f), i / LightSteps.toFloat())
     }
     val trim = lerp(stageColor(theme.accent), Silver, .42f)
 }
@@ -533,8 +541,10 @@ internal class MarbleScene(private val meshes: OrbitMeshes, private val marbleAt
             val spot = unit*(MarbleRadius*.73f + gap*.26f)
             // The contact darkening only falls on the upper surface that receives it.
             clipPath(outline) {
-                drawOval(WallShadow,foot-Offset(spot,spot*.32f),Size(spot*2,spot*.64f),
-                    alpha=.38f*(1-gap/.48f))
+                withTransform({
+                    translate(foot.x, foot.y)
+                    scale(spot*1.16f, spot*.43f, Offset.Zero)
+                }) { drawCircle(BallContactFeather, 1f, Offset.Zero, alpha=1-gap/.48f) }
             }
         }
         drawPath(outline, lerp(Silver, accent, incoming), alpha = .46f + .36f * incoming,
@@ -598,11 +608,11 @@ internal class MarbleScene(private val meshes: OrbitMeshes, private val marbleAt
             barShadow(bar,camera)
         }
         val wallContact = camera.project(shadow(frame.marble))
-        val wallR = camera.unit(frame.marble)*MarbleRadius*1.58f
+        val wallR = camera.unit(frame.marble)*MarbleRadius*1.95f
         withTransform({
             translate(wallContact.x, wallContact.y)
             scale(wallR, wallR*.88f, Offset.Zero)
-        }) { drawCircle(ShadowFeather,1f,Offset.Zero) }
+        }) { drawCircle(BallShadowFeather,1f,Offset.Zero) }
         for (i in start..min(path.spans.lastIndex, end + 1)) {
             val run = path.spans[i]
             if (run.railEnd <= 0f) continue

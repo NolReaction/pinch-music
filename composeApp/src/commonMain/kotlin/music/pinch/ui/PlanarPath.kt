@@ -14,7 +14,7 @@ import music.pinch.core.hasGuideAfter
 
 internal data class PlanarAttack(
     val atMs: Long, val panelIndex: Int, val x: Float, val midi: Int,
-    val playable: Boolean,
+    val playable: Boolean, val accent: Boolean = playable,
 )
 
 /** The renderer offsets these centreline samples along the normal to make the two supporting rods. */
@@ -237,7 +237,13 @@ internal class PlanarPath(chart: Chart, contactChart: Chart = chart.cascadeChart
         var runSteps = 0
         var spin = direction * entry.spin(1f) % 6.2831855f
         for ((i, note) in notes.withIndex()) {
-            strikes += PlanarAttack(note.atMs, i, center.x, note.midi, note.playable)
+            // Instrument shapes follow musical accents, independently of whether
+            // a contact is scored. This never moves an onset or changes the route.
+            val beatPosition = (note.atMs - notes.first().atMs) / beat
+            val nearestBeat = kotlin.math.round(beatPosition)
+            val accent = note.playable && abs(beatPosition - nearestBeat) <= .075 &&
+                (nearestBeat.toLong() % 2L == 0L || note.durationMs < .67 * beat)
+            strikes += PlanarAttack(note.atMs, i, center.x, note.midi, note.playable, accent)
             val next = notes.getOrNull(i + 1)
             if (next == null) {
                 keys += PlanarPanel(direction > 0, center.y + MarbleRadius, i, i)

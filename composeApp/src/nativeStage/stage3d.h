@@ -8,8 +8,9 @@ extern "C" {
  * The caller provides a framebuffer with a depth attachment. World Y points down. */
 void* stage3d_create(void);
 void stage3d_destroy(void* stage);
-/* keys: [faceContactX, faceContactY, side (-1/+1), style (0 accent, 1 target),
+/* keys: [faceContactX, faceContactY, side (-1/+1), style (0 light beat, 1 rhythmic accent),
  *        signed slope dy/dx]. The first two values locate the tangent point on the key.
+ * Style selects an instrument variation; scoring eligibility is carried separately.
  * A style of -1 denotes a silent launcher; its x/y are the rail origin and no key is drawn.
  * Rails: [panel index, x, y] in panel/travel order. (x,y,0) is the
  * centre of the marble at contact. Data is copied, counts are numbers of rows. */

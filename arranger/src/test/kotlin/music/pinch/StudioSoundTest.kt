@@ -16,29 +16,36 @@ class StudioSoundTest {
     private val probe = Note("probe", 0, 65, 700, .9f)
     private val chart = Chart("Sound check", 120, 2000, listOf(probe))
 
-    @Test fun gypsyRiffKeepsItsRoleAndChangesMaterialOnlyAtWrittenSections() {
+    @Test fun gypsyMelodyKeepsOneWarmVoiceWhileTheOrganGetsItsOwnInterlude() {
         val song = requireNotNull(gypsyWomanSong.bundled)
         assertEquals(DanceLeadVoice.OrganStab, danceLeadVoice(DanceStyle.GypsyWoman, 0))
-        assertEquals(DanceLeadVoice.OrganStab, danceLeadVoice(DanceStyle.GypsyWoman, 8_875))
-        assertEquals(DanceLeadVoice.OrganStab, danceLeadVoice(DanceStyle.GypsyWoman, 36_000))
-        assertEquals(DanceLeadVoice.ElectricPiano, danceLeadVoice(DanceStyle.GypsyWoman, 80_000))
+        assertEquals(DanceLeadVoice.ElectricPiano, danceLeadVoice(DanceStyle.GypsyWoman, 8_000))
+        assertEquals(DanceLeadVoice.ElectricPiano, danceLeadVoice(DanceStyle.GypsyWoman, 40_000))
+        assertEquals(DanceLeadVoice.ElectricPiano, danceLeadVoice(DanceStyle.GypsyWoman, 88_000))
+        assertEquals(DanceLeadVoice.OrganStab, danceLeadVoice(DanceStyle.GypsyWoman, 104_000))
         assertEquals(DanceLeadVoice.Mallet, danceLeadVoice(DanceStyle.GypsyWoman, 128_000))
-        assertEquals(DanceLeadVoice.OrganStab, danceLeadVoice(DanceStyle.GypsyWoman, 144_000))
+        assertEquals(DanceLeadVoice.ElectricPiano, danceLeadVoice(DanceStyle.GypsyWoman, 144_000))
         assertTrue(song.notes.none { danceLeadVoice(DanceStyle.GypsyWoman, it.atMs) == DanceLeadVoice.Piano })
 
         val studio = DanceStudio(chart, DanceStyle.GypsyWoman)
-        val organ = studio.leadSamples(probe.copy(atMs = 8_875))
+        val organ = studio.leadSamples(probe)
         // Tonewheel body retains the sustain and audible drawbars, without metallic piano overtones.
         assertTrue(rms(organ, 300, 500) > rms(organ, 40, 140) * .55)
         val hz = 440.0 * 2.0.pow((probe.midi - 69) / 12.0)
         val third = partial(organ, hz * 3, 100, 300) / partial(organ, hz, 100, 300)
         assertTrue(third in .025.. .18)
+        val melodic = studio.leadSamples(probe.copy(atMs = 8_000))
+        val refrain = studio.leadSamples(probe.copy(atMs = 40_000))
+        assertTrue(melodic.contentEquals(refrain), "Verse and refrain share one continuous foreground timbre")
+        assertTrue(rms(melodic, 300, 500) > rms(melodic, 40, 140) * .55,
+            "The melodic voice must retain its held-note body")
+        assertTrue(!melodic.contentEquals(organ), "The foreground must be distinguishable from the backing riff")
     }
 
     @Test fun synthesizedVoicesKeepTheirAttackAndReleaseClickFree() {
         for (style in DanceStyle.entries) {
             val studio = DanceStudio(chart, style)
-            for (at in listOf(0L, 8_875L, 36_000L, 80_000L, 96_000L, 128_000L)) {
+            for (at in listOf(0L, 8_875L, 40_000L, 96_000L, 104_000L, 128_000L)) {
                 for (midi in listOf(45, 60, 74, 84)) {
                     val samples = studio.leadSamples(probe.copy(atMs = at, midi = midi))
                     assertTrue(samples.all { it.isFinite() })

@@ -462,9 +462,10 @@ struct Stage {
                 const float w = guided ? .23f : .35f, center = keyCenterX(guided, it->side);
                 const float cs = it->tiltCos, sn = it->tiltSin;
                 const bool accented = it->style > .5f;
+                const int instrument = keyInstrument(design, accented);
                 const float depth = keyDepth(design, accented);
                 const float back = guided ? -.585f : -.66f, zLength = .25f - back;
-                if (design.instrument == 2) {
+                if (instrument == 2) {
                     // Hollow pipes have a narrow cylindrical silhouette. Project
                     // their two real saddles instead of the keyboard's broad plate.
                     for (float dx : {-w*.60f,w*.60f}) {
@@ -476,6 +477,16 @@ struct Stage {
                            origin.y+center*sn+.103f*cs+castY*-WallZ,
                            cs*(w+.06f),sn*(w+.06f),-.165f*sn+castX*.07f,
                            .165f*cs+castY*.07f,.20f,.25f);
+                } else if (instrument == 3) {
+                    // The membrane is an ellipse in the playing plane. Project
+                    // its own round silhouette rather than a keyboard rectangle.
+                    const float mountX=origin.x+center*cs-.244f*sn;
+                    const float mountY=origin.y+center*sn+.244f*cs;
+                    lineShadow({mountX,mountY,0},{mountX+castX*1.275f,mountY+castY*1.275f,0},.06f,.17f);
+                    shadow(origin.x+center*cs-.09f*sn+castX*-WallZ,
+                           origin.y+center*sn+.09f*cs+castY*-WallZ,
+                           cs*(w+.07f),sn*(w+.07f),castX*.31f-.11f*sn,
+                           castY*.31f+.11f*cs,0.f,.23f);
                 } else {
                 const float lift = (.25f + back) * .5f - WallZ;
                 const float mountX = origin.x + center * cs - (depth + .092f) * sn;
@@ -499,7 +510,7 @@ struct Stage {
             }
         }
         shadow(ball.x + castX * -WallZ, ball.y + castY * -WallZ,
-               .35f, -.04f, -.07f, .34f, 0.f, .23f);
+               .46f, -.05f, -.08f, .43f, 0.f, .13f);
         flush();
         glDisable(GL_BLEND);
         glEnable(GL_DEPTH_TEST);

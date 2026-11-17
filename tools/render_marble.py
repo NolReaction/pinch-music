@@ -1,4 +1,4 @@
-"""Bake a clear marble with coloured internal ribbons under a fixed studio environment.
+"""Bake a readable, tinted marble with a coloured core in a fixed studio environment.
 
 The sprite atlas rotates the internal glass inclusions. The reflected softboxes stay
 in camera space, as they would on a rotating sphere. Run with NumPy and Pillow.
@@ -10,8 +10,8 @@ from PIL import Image
 
 
 TILE = 112
-COLUMNS = 8
-ROWS = 6
+COLUMNS = 12
+ROWS = 8
 STEPS = COLUMNS * ROWS
 SAMPLES = TILE * 3
 PADDING = 2  # Transparent texels prevent neighbouring angular frames from bleeding.
@@ -63,7 +63,7 @@ rim_box = studio_panel([-.65, -.2, -.63], [.1, 1, .2], .032, .77)
 eta = 1 / 1.52
 ray = -eta * eye + (eta*z - np.sqrt(1 - eta*eta*(1-z*z)))[..., None] * normal
 n_dot_ray = np.sum(normal*ray, axis=-1)
-intersection = n_dot_ray*n_dot_ray - (1 - .52**2)
+intersection = n_dot_ray*n_dot_ray - (1 - .62**2)
 core_mask = smooth((intersection + .015) / .043)
 depth = -n_dot_ray - np.sqrt(np.maximum(0, intersection))
 inside = normal + depth[..., None]*ray
@@ -79,30 +79,35 @@ horizon = reflection[..., 1] - .11*reflection[..., 0] - .12
 dome = smooth((horizon-.055)*4) * smooth(.83-.74*reflection[..., 0])
 light = np.maximum(0, normal @ normalize([-.55, .65, .56]))
 atlas = Image.new("RGBA", (COLUMNS*TILE, ROWS*TILE))
+axle = np.array([.48, .64, .60])  # Unit length, shared with the native shader.
+axial = (inside @ axle)[..., None] * axle
+crossed = np.cross(axle, inside)
 for frame in range(STEPS):
     angle = 2*np.pi*frame/STEPS
     c, s = np.cos(angle), np.sin(angle)
-    # The swirl rolls around a diagonal axle while front-surface reflections hold still.
-    u = inside[..., 0]*c + inside[..., 1]*s
-    v = -inside[..., 0]*s + inside[..., 1]*c
-    w = inside[..., 2]
+    # Inverse Rodrigues rotation moves inclusions through all three dimensions;
+    # reflections and the spherical silhouette do not rotate with the pigment.
+    rotated = inside*c - crossed*s + axial*(1-c)
+    u, v, w = rotated.transpose(2, 0, 1)
     # The same blue/turquoise, violet and amber ribbons as the native sphere.
     # The clear volume remains visible between them, unlike a painted solid ball.
     thread = u + .24*np.sin(4.3*v + 3.0*w)
-    ribbon = (1 - smooth((np.abs(thread) - .060) / .055)) * core_mask
-    violet = (1 - smooth((np.abs(thread + .27 - .16*v) - .045) / .050)) * core_mask
+    ribbon = (1 - smooth((np.abs(thread) - .085) / .080)) * core_mask
+    violet = (1 - smooth((np.abs(thread + .27 - .16*v) - .060) / .065)) * core_mask
     curl = v - .19*np.sin(4.8*w - 2.0*u) - .13
-    amber = (1 - smooth((np.abs(curl) - .035) / .04)) * smooth((u + .40) / .55) * core_mask
-    glass = tint(rgb(187, 209, 214), rgb(232, 240, 231), .35 + .60*transmission)
+    amber = (1 - smooth((np.abs(curl) - .045) / .050)) * smooth((u + .40) / .55) * core_mask
+    glass = tint(rgb(111, 149, 171), rgb(180, 200, 201), .35 + .60*transmission)
     glass *= (.94 + .06*light)[..., None]
-    core = tint(rgb(8, 56, 138), rgb(9, 156, 138), smooth((v + .40) / .92))
-    glass = tint(glass, core, ribbon*.88)
-    glass = tint(glass, rgb(66, 41, 125), violet*.77)
-    glass = tint(glass, rgb(237, 158, 41), amber*.87)
+    pigment = tint(rgb(14, 48, 92), rgb(11, 105, 110), smooth((v + .48) / .96))
+    glass = tint(glass, pigment, core_mask*.64)
+    core = tint(rgb(8, 61, 138), rgb(9, 150, 140), smooth((v + .42) / .88))
+    glass = tint(glass, core, ribbon*.93)
+    glass = tint(glass, rgb(74, 33, 125), violet*.83)
+    glass = tint(glass, rgb(237, 158, 41), amber*.90)
     # A fine light edge and the faint submerged shadow give the ribbon thickness.
-    lip = np.exp(-((np.abs(thread) - .062) / .016)**2) * core_mask
+    lip = np.exp(-((np.abs(thread) - .087) / .020)**2) * core_mask
     glass = tint(glass, rgb(126, 221, 214), lip*.28)
-    glass = tint(glass, rgb(104, 141, 151), .12*(1-z)**2)
+    glass = tint(glass, rgb(43, 82, 99), .23*(1-z)**2)
     glass = tint(glass, rgb(219, 248, 218), smooth((-y-.33)*1.95)*window*.26)
     surface = tint(glass, sky, .055 + .82*fresnel)
     surface = tint(surface, rgb(222, 232, 226), .13*dome)
@@ -114,9 +119,9 @@ for frame in range(STEPS):
     surface = tint(surface, rgb(226, 239, 246), rim_box * (.38+.47*fresnel))
     shine = np.exp(-((x+.23)**2/.0016 + (y-.44)**2/.00058))
     surface = tint(surface, rgb(255, 248, 234), shine*.88)
-    core_opacity = np.maximum(ribbon*.95, np.maximum(violet*.86, amber*.95))
+    core_opacity = np.maximum(core_mask*.80, np.maximum(ribbon*.95, np.maximum(violet*.90, amber*.95)))
     shell_opacity = np.maximum(fresnel, np.maximum(left_box*.62, np.maximum(right_box*.50, shine*.80)))
-    opacity = .34 + .66*np.maximum(core_opacity, shell_opacity)
+    opacity = .60 + .40*np.maximum(core_opacity, shell_opacity)
     rgba = np.dstack((np.clip(surface, 0, 1), alpha*opacity))
     tile = Image.fromarray(np.rint(rgba*255).astype("uint8")).resize((TILE, TILE), Image.Resampling.LANCZOS)
     # Remove Lanczos ringing in the padding, so atlas sampling cannot leak an

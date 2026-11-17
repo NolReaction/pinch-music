@@ -20,7 +20,7 @@ class CascadeGeometryTest {
         val frame = FloatArray(CascadeFrameSize)
         for ((index, attack) in path.attacks.withIndex()) {
             val panel = attack.panelIndex + if (path.entryRail.isEmpty()) 0 else 1
-            val style = if (attack.playable) 1f else 0f
+            val style = if (attack.accent) 1f else 0f
             if (attack.atMs > 0L) {
                 path.writeGpuFrame(attack.atMs - 1, frame)
                 assertEquals(panel.toFloat(), frame[9])
@@ -43,6 +43,26 @@ class CascadeGeometryTest {
             if (index == path.attacks.lastIndex) assertEquals(-1f, frame[9])
         }
         assertEquals(path.panels.indices.toList(), path.attacks.map { it.panelIndex })
+    }
+
+    @Test fun earlyLevelsUsesBothPitchedPadsAndTubesWithoutChangingScoredContacts() {
+        val chart = requireNotNull(songLibrary.single { it.id == "levels" }.bundled)
+        val contacts = chart.cascadeChart()
+        val path = PlanarPath(chart, contacts)
+        val course = path.gpuCourse()
+        val offset = if (path.entryRail.isEmpty()) 0 else 1
+        val early = path.attacks.filter { it.atMs < 4_000L }
+        assertTrue(early.any { it.accent })
+        assertTrue(early.any { !it.accent && it.playable })
+        assertEquals(contacts.notes.map { it.atMs }, path.attacks.map { it.atMs })
+        assertEquals(contacts.notes.map { it.playable }, path.attacks.map { it.playable })
+        for (attack in early) {
+            val key = (attack.panelIndex + offset) * CascadeKeyStride
+            assertEquals(if (attack.accent) 1f else 0f, course.keys[key + 3])
+            val frame = FloatArray(CascadeFrameSize)
+            path.writeGpuFrame(attack.atMs, frame)
+            assertEquals(MarbleRadius, hypot(frame[0] - course.keys[key], frame[1] - course.keys[key + 1]), .0001f)
+        }
     }
 
     @Test fun silentLeadInHasRailsAndNeverActivatesAMusicalKey() {

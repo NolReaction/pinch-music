@@ -32,7 +32,7 @@ inline V cross(V a, V b) {
     return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
 }
 enum Surface { Face, Skirt, Inlay, Chrome, Iron, Bolt, Accent, Rail, Glass, Copper, TimingArc, Ember,
-               Ivory, Ebony, Wood, TubePaint, TubeInside };
+               Ivory, Ebony, Wood, TubePaint, TubeInside, DrumSkin, DrumShell, LightRim, Tongue, Groove };
 struct Vertex {
     V p, n;
     float material, detail;
@@ -173,15 +173,15 @@ struct KeyDesign {
     float corner;
     Surface rim, band;
     float lacquer, reflection, grainX, grainZ;
-    int instrument; // 0: wood bar, 1: ivory/ebony keyboard, 2: hollow percussion tube
+    int instrument; // 0 wood, 1 keys, 2 tubes, 3 tubes + pitched pads, 4 wood + metal tongues
     int keyCount = 3;
 };
 inline const KeyDesign& keyDesign(int motif) {
     static constexpr KeyDesign designs[] = {
-        {4, .050f, Ivory, Chrome, .34f, .63f, 1.05f, .14f, 1}, // Floor: sculpted ivory keys
-        {4, .050f, Ivory, Chrome, .34f, .63f, 1.05f, .14f, 1}, // Stereo: ivory keyboard
-        {4, .050f, Ivory, Chrome, .83f, .24f, .14f, 2.7f, 1, 2}, // Gypsy: broad organ levers
-        {3, .080f, Chrome, Accent, .82f, .44f, 1.4f, 1.4f, 2}, // Levels: blue pipes
+        {4, .050f, Ivory, Chrome, .34f, .63f, 1.05f, .14f, 1}, // Floor: amber satin keys
+        {3, .058f, Wood, Wood, .70f, .40f, .14f, 2.7f, 4}, // Stereo: wood and metal tongues
+        {4, .050f, Ivory, Chrome, .83f, .24f, .14f, 2.7f, 1, 2}, // Gypsy: sea-glass organ levers
+        {3, .080f, Chrome, Accent, .82f, .44f, 1.4f, 1.4f, 3}, // Levels: pipes and pitched pads
         {4, .050f, Ivory, Chrome, .65f, .46f, .35f, .35f, 1}, // Stay: ivory keyboard
         {3, .054f, Chrome, Accent, .86f, .29f, 2.1f, .21f, 2}, // Turn Down: violet pipes
         {3, .058f, Wood, Wood, .70f, .40f, .14f, 2.7f, 0}, // Yeah: honey marimba
@@ -190,13 +190,21 @@ inline const KeyDesign& keyDesign(int motif) {
     return designs[motif >= 0 && motif < 8 ? motif : 1];
 }
 
+inline int keyInstrument(const KeyDesign& design, bool accented) {
+    if (design.instrument == 3) return accented ? 3 : 2;
+    if (design.instrument == 4) return accented ? 4 : 0;
+    return design.instrument;
+}
+
 inline float keyCenterX(bool shortKey, float side) {
     return side * (shortKey ? .218f : .22f);
 }
 
 inline float keyDepth(const KeyDesign& design, bool accented) {
-    return design.instrument == 1 ? (accented ? .088f : .075f) :
-           design.instrument == 2 ? .206f : (accented ? .15f : .115f);
+    const int instrument = keyInstrument(design, accented);
+    return instrument == 1 ? (accented ? .088f : .075f) :
+           instrument == 2 ? .206f : instrument == 3 ? .18f :
+           instrument == 4 ? .10f : (accented ? .15f : .115f);
 }
 
 // A small bevel carries the broad studio light across every key edge. Separate
@@ -334,11 +342,90 @@ inline Mesh percussionTube(bool shortKey, float side) {
     return m;
 }
 
+// A shallow tuned percussion pad, not a full-sized snare drum. The top membrane
+// and its flush light ring share y=0, including the rail's inward landing lip.
+inline Mesh percussionPad(bool shortKey, float side) {
+    Mesh m;
+    const float width = shortKey ? .46f : .70f, cx = keyCenterX(shortKey, side);
+    const float rx = width*.5f, rz = .24f, depth = .18f;
+    constexpr int sides = 32;
+    auto ring = [&](float scale, float y, Surface material, bool face) {
+        const int start = static_cast<int>(m.verts.size());
+        for (int i=0;i<sides;++i) {
+            const float a=2*Pi*i/sides, x=std::cos(a), z=std::sin(a);
+            m.point({cx+x*rx*scale,y,z*rz*scale},face ? V{0,-1,0} : unit({x/rx,0,z/rz}),material);
+        }
+        return start;
+    };
+    const int center = m.point({cx,0,0},{0,-1,0},DrumSkin);
+    const int skin = ring(.89f,0,DrumSkin,true);
+    for (int i=0;i<sides;++i) m.tri(center,skin+i,skin+(i+1)%sides);
+    const int inner = ring(.89f,0,LightRim,true), outer = ring(.955f,0,LightRim,true);
+    const int rim = ring(.955f,0,Chrome,true), edge = ring(1.f,0,Chrome,true);
+    for (int i=0;i<sides;++i) {
+        const int n=(i+1)%sides;
+        m.quad(inner+i,outer+i,outer+n,inner+n);
+        m.quad(rim+i,edge+i,edge+n,rim+n);
+    }
+    const int top = ring(1.f,0,DrumShell,false), bottom = ring(.95f,depth,DrumShell,false);
+    for (int i=0;i<sides;++i) m.quad(top+i,top+(i+1)%sides,bottom+(i+1)%sides,bottom+i);
+    const int base=m.point({cx,depth,0},{0,1,0},DrumShell);
+    for(int i=0;i<sides;++i) {
+        const float a=2*Pi*i/sides;
+        m.point({cx+std::cos(a)*rx*.95f,depth,std::sin(a)*rz*.95f},{0,1,0},DrumShell);
+    }
+    for(int i=0;i<sides;++i) m.tri(base,base+1+i,base+1+(i+1)%sides);
+    // Six small tension fittings give the side a recognisable percussion silhouette.
+    for (int i=0;i<6;++i) {
+        const float a=2*Pi*i/6;
+        const float x=cx+std::cos(a)*rx*.94f, z=std::sin(a)*rz*.94f;
+        rod(m,{x,.037f,z},{x,.142f,z},.010f,Chrome,6);
+    }
+    for (auto& vertex:m.verts)
+        vertex.detail=shortKey ? std::min(1.f,std::abs(vertex.p.x)/width) : 1.f;
+    const float mountY=depth+.064f;
+    rod(m,{cx,mountY,WallZ+.045f},{cx,mountY,-.075f},.023f,Chrome,10);
+    rod(m,{cx,mountY,-.075f},{cx,depth,-.075f},.022f,Chrome,10);
+    ellipsoid(m,{cx,mountY,WallZ+.035f},{.058f,.058f,.027f},Bolt,12,6);
+    return m;
+}
+
+inline Mesh metalTongue(bool shortKey, float side) {
+    Mesh m;
+    const float width=shortKey ? .46f : .70f, cx=keyCenterX(shortKey,side);
+    const float back=shortKey ? -.585f:-.66f, front=.25f, cz=(front+back)*.5f;
+    sculptedSlab(m,cx,cz,width,front-back,0,.10f,.055f,Tongue);
+    // The U-shaped cut is behind the rolling lane; its dark recessed line makes
+    // the central vibrating tongue legible without obstructing the contact point.
+    const float slot=width*.19f;
+    for(float x : {cx-slot,cx+slot})
+        rod(m,{x,-.001f,back+.09f},{x,-.001f,-.13f},.006f,Groove,6);
+    std::vector<V> end;
+    for(int i=0;i<=12;++i) {
+        const float a=i*Pi/12;
+        end.push_back({cx+std::cos(a)*slot,-.001f,-.13f+std::sin(a)*.06f});
+    }
+    tube(m,end,.006f,Groove,6);
+    rod(m,{cx,.148f,back+.12f},{cx,.148f,front-.09f},.036f,Copper,12);
+    for(auto& vertex:m.verts)
+        vertex.detail=shortKey ? std::min(1.f,std::abs(vertex.p.x)/width) : 1.f;
+    const float mountY=.205f;
+    rod(m,{cx,mountY,WallZ+.045f},{cx,mountY,-.40f},.024f,Chrome,10);
+    rod(m,{cx-width*.28f,mountY,-.40f},{cx+width*.28f,mountY,-.40f},.018f,Chrome,8);
+    for(float x:{cx-width*.28f,cx+width*.28f})
+        rod(m,{x,.11f,-.40f},{x,mountY,-.40f},.015f,Chrome,8);
+    ellipsoid(m,{cx,mountY,WallZ+.035f},{.060f,.060f,.028f},Bolt,12,6);
+    return m;
+}
+
 // Loft rounded rectangular contours. Bevel normals angle smoothly into the flat top.
 // The two fasteners sit inside recessed ferrules on the playing face.
 inline Mesh keyMesh(bool shortKey, float side, bool accented, const KeyDesign& design) {
-    if (design.instrument == 2) return percussionTube(shortKey,side);
-    if (design.instrument == 1) return keyboardMesh(shortKey,side,accented,design);
+    const int instrument = keyInstrument(design, accented);
+    if (instrument == 2) return percussionTube(shortKey,side);
+    if (instrument == 3) return percussionPad(shortKey,side);
+    if (instrument == 4) return metalTongue(shortKey,side);
+    if (instrument == 1) return keyboardMesh(shortKey,side,accented,design);
     Mesh m;
     const Surface playing = design.instrument == 1 ? Ivory : Wood;
     float width = shortKey ? .46f : .70f;

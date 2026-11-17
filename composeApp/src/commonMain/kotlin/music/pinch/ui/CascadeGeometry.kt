@@ -7,7 +7,7 @@ internal const val CascadeKeyStride = 5
 internal const val CascadeFrameSize = 31
 
 private val PlanarAttack.material: Int
-    get() = if (playable) 1 else 0
+    get() = if (accent) 1 else 0
 
 private val PlanarPath.panelOffset: Int get() = if (entryRail.isEmpty()) 0 else 1
 
